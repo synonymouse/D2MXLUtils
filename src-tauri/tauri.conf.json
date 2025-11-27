@@ -1,0 +1,30 @@
+{
+  "productName": "D2MXLUtils",
+  "version": "0.1.0",
+  "identifier": "com.d2mxlutils.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": null
+    },
+    "windows": [
+      {
+        "title": "D2MXLUtils",
+        "width": 1024,
+        "height": 640,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ]
+  },
+  "bundle": {},
+  "plugins": {}
+}
+
+
+
