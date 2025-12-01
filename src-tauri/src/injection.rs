@@ -5,7 +5,7 @@
 use windows::Win32::Foundation::HANDLE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
-    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+    VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
@@ -13,6 +13,8 @@ use windows::Win32::System::Threading::{
 };
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
+#[cfg(target_os = "windows")]
+use std::sync::OnceLock;
 
 use crate::offsets::{d2client, d2common};
 use crate::process::ProcessHandle;
@@ -25,14 +27,18 @@ pub struct RemoteAlloc {
     size: usize,
 }
 
+// NOTE: We intentionally do NOT free the remote memory in Drop.
+// Original D2Stats allocates its injection buffers once per Diablo II
+// process and keeps them alive for the entire lifetime of the game.
+// Releasing the buffers while the injected helper code still references
+// their addresses can lead to subtle bugs between scanner restarts.
 #[cfg(target_os = "windows")]
 impl Drop for RemoteAlloc {
     fn drop(&mut self) {
-        if self.address != 0 {
-            unsafe {
-                let _ = VirtualFreeEx(self.handle, self.address as *mut c_void, 0, MEM_RELEASE);
-            }
-        }
+        // Important: we intentionally do NOT free the remote memory here.
+        // We allocate the injection buffers once per Diablo II process and
+        // reuse the same addresses across scanner restarts. The OS will
+        // reclaim the memory when the game process exits.
     }
 }
 
@@ -60,6 +66,34 @@ impl RemoteAlloc {
             size,
         })
     }
+}
+
+// Global injection buffers that are allocated once per Diablo II
+// process and then reused across scanner restarts, mirroring the
+// original D2Stats behaviour.
+#[cfg(target_os = "windows")]
+static STRING_BUFFER_ADDR: OnceLock<usize> = OnceLock::new();
+#[cfg(target_os = "windows")]
+static PARAMS_BUFFER_ADDR: OnceLock<usize> = OnceLock::new();
+
+/// Helper: get or lazily allocate a remote buffer, returning its address.
+#[cfg(target_os = "windows")]
+fn get_or_init_addr(
+    cell: &OnceLock<usize>,
+    process: &ProcessHandle,
+    size: usize,
+) -> Result<usize, String> {
+    if let Some(addr) = cell.get() {
+        return Ok(*addr);
+    }
+
+    let alloc = RemoteAlloc::new(process, size)?;
+    let addr = alloc.address;
+
+    // Ignore error if another thread initialized first.
+    let _ = cell.set(addr);
+
+    Ok(*cell.get().unwrap_or(&addr))
 }
 
 /// Execute a function in the remote process via CreateRemoteThread
@@ -117,9 +151,23 @@ impl D2Injector {
         d2_client: usize,
         d2_common: usize,
     ) -> Result<Self, String> {
-        // Allocate buffers in game memory
-        let string_buffer = RemoteAlloc::new(process, 0x1000)?;
-        let params_buffer = RemoteAlloc::new(process, 0x100)?;
+        // Allocate (or reuse) global buffers in game memory.
+        // This ensures the injection shellcode always points to
+        // the same string/params buffers across scanner restarts.
+        let string_addr = get_or_init_addr(&STRING_BUFFER_ADDR, process, 0x1000)?;
+        let params_addr = get_or_init_addr(&PARAMS_BUFFER_ADDR, process, 0x100)?;
+
+        // Create local wrappers for convenience (Drop is a no-op).
+        let string_buffer = RemoteAlloc {
+            handle: process.handle,
+            address: string_addr,
+            size: 0x1000,
+        };
+        let params_buffer = RemoteAlloc {
+            handle: process.handle,
+            address: params_addr,
+            size: 0x100,
+        };
 
         let inject_base = d2_client + d2client::INJECT_BASE;
         let inject_print = inject_base + d2client::inject::PRINT;
@@ -195,19 +243,24 @@ impl D2Injector {
         process.write_buffer(self.inject_get_item_name, &get_name_code)?;
 
         // GetItemStat injection
-        // push edi
-        // mov edi, string_addr
-        // push 0
-        // push 0
-        // push ebx (pUnit)
-        // call D2Client+0x560B0
-        // pop edi
-        // ret
+        // D2Client.dll+CDE40 - 57                    - push edi
+        // D2Client.dll+CDE41 - BF *                  - mov edi,D2Client.dll+CDEF0 (string addr)
+        // D2Client.dll+CDE43 - 6A 00                 - push 00
+        // D2Client.dll+CDE45 - 6A 01                 - push 01
+        // D2Client.dll+CDE47 - 53                    - push ebx (pUnit)
+        // D2Client.dll+CDE4B - E8 *                  - call D2Client.dll+560B0 (GetItemStat)
+        // D2Client.dll+CDE50 - 5F                    - pop edi
+        // D2Client.dll+CDE51 - C3                    - ret
+        //
+        // NOTE: The relative offset must match the original AutoIt injection:
+        //   iIDWNTT = (D2Client+0x560B0) - (D2Client+0xCDE4E)
+        // So we subtract (inject_base + GET_ITEM_STAT + 0x10), *not* +0x0E.
         let get_stat_offset = (d2_client + d2client::func::GET_ITEM_STAT) as i32
-            - (inject_base + d2client::inject::GET_ITEM_STAT + 0x0E) as i32;
+            - (inject_base + d2client::inject::GET_ITEM_STAT + 0x10) as i32;
         let mut get_stat_code: Vec<u8> = vec![0x57, 0xBF];
         get_stat_code.extend_from_slice(&swap_endian(string_addr));
-        get_stat_code.extend_from_slice(&[0x6A, 0x00, 0x6A, 0x00, 0x53, 0xE8]);
+        // push 0, push 1, push ebx (pUnit), call GetItemStatЫФ
+        get_stat_code.extend_from_slice(&[0x6A, 0x00, 0x6A, 0x01, 0x53, 0xE8]);
         get_stat_code.extend_from_slice(&(get_stat_offset as u32).to_le_bytes());
         get_stat_code.extend_from_slice(&[0x5F, 0xC3]);
         process.write_buffer(self.inject_get_item_stat, &get_stat_code)?;
@@ -234,14 +287,15 @@ impl D2Injector {
     /// Get item name by calling the injected function
     pub fn get_item_name(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
         // Clear buffer before use
-        let zeros = vec![0u8; 256];
+        // Original D2Stats reads wchar[256] → 512 bytes
+        let zeros = vec![0u8; 512];
         process.write_buffer(self.string_buffer.address, &zeros)?;
 
         // Call GetItemName with pUnit in EBX
         remote_thread(process, self.inject_get_item_name, p_unit as usize)?;
 
         // Read the result string (wide char)
-        let buffer = process.read_buffer(self.string_buffer.address, 256)?;
+        let buffer = process.read_buffer(self.string_buffer.address, 512)?;
         
         // Convert from UTF-16LE to String
         let wide: Vec<u16> = buffer
@@ -256,14 +310,15 @@ impl D2Injector {
     /// Get item stats by calling the injected function
     pub fn get_item_stats(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
         // Clear buffer before use
-        let zeros = vec![0u8; 2048];
+        // Original D2Stats reads wchar[2048] → 4096 bytes
+        let zeros = vec![0u8; 4096];
         process.write_buffer(self.string_buffer.address, &zeros)?;
 
         // Call GetItemStats with pUnit in EBX
         remote_thread(process, self.inject_get_item_stat, p_unit as usize)?;
 
         // Read the result string
-        let buffer = process.read_buffer(self.string_buffer.address, 2048)?;
+        let buffer = process.read_buffer(self.string_buffer.address, 4096)?;
         
         // Convert from UTF-16LE to String
         let wide: Vec<u16> = buffer

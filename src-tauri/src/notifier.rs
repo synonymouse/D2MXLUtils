@@ -34,6 +34,8 @@ pub struct DropScanner {
     injector: D2Injector,
     /// Cache of already-seen item IDs (to avoid duplicate notifications)
     seen_items: HashSet<u32>,
+    /// One-shot debug flag to log pointer chain / counts once per game session
+    debug_logged_paths: bool,
 }
 
 #[cfg(target_os = "windows")]
@@ -52,6 +54,7 @@ impl DropScanner {
             ctx,
             injector,
             seen_items: HashSet::new(),
+            debug_logged_paths: false,
         })
     }
     
@@ -105,6 +108,15 @@ impl DropScanner {
             Ok(p) => p as usize,
             _ => return events,
         };
+
+        // Log pointer chain once to help debug cases when no items are detected.
+        if !self.debug_logged_paths {
+            println!(
+                "Notifier debug: ptr1=0x{:08X}, ptr2=0x{:08X}, ptr3=0x{:08X}, p_paths=0x{:08X}, i_paths={}",
+                ptr1, ptr2, ptr3, p_paths, i_paths
+            );
+            self.debug_logged_paths = true;
+        }
         
         // Iterate through each path/room
         for i in 0..i_paths {
@@ -123,12 +135,16 @@ impl DropScanner {
                 if let Some(event) = self.process_unit(p_unit) {
                     events.push(event);
                 }
-                
-                // Move to next unit
-                p_unit = match self.ctx.process.read_memory::<u32>(p_unit as usize + 0xE4) {
-                    Ok(p) => p,
-                    _ => break,
+
+                // Move to next unit (use struct layout for safety instead of hardcoded offset)
+                let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        eprintln!("Notifier debug: failed to read UnitAny at 0x{:08X}: {}", p_unit, e);
+                        break;
+                    }
                 };
+                p_unit = unit.p_next_unit;
             }
         }
         
@@ -157,21 +173,63 @@ impl DropScanner {
         
         let item_data: ItemData = self.ctx.process.read_memory(unit.p_unit_data as usize).ok()?;
         
-        // Create scanned item
+        // Create scanned item and try to enrich it using injected game functions.
         let mut scanned = ScannedItem::from_unit(&unit, &item_data, p_unit);
-        
-        // Get item name via injection
-        if let Ok(name) = self.injector.get_item_name(&self.ctx.process, p_unit) {
-            // Strip color codes (ÿc.) from name
-            let clean_name = strip_color_codes(&name);
-            scanned.name = Some(clean_name);
+
+        // Try to resolve item name via injected GetItemName.
+        match self
+            .injector
+            .get_item_name(&self.ctx.process, p_unit)
+        {
+            Ok(raw_name) => {
+                let cleaned = strip_color_codes(&raw_name);
+
+                // Use the last non-empty line as the display name (matches D2Stats behavior).
+                if let Some(last_line) = cleaned
+                    .lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                {
+                    scanned.name = Some(last_line.to_string());
+                } else if !cleaned.trim().is_empty() {
+                    scanned.name = Some(cleaned.trim().to_string());
+                } else {
+                    println!(
+                        "Notifier debug: empty item name after injection for unit {} (class {}), raw='{}'",
+                        unit.unit_id,
+                        unit.class,
+                        raw_name
+                    );
+                }
+            }
+            Err(e) => {
+                println!(
+                    "Notifier debug: get_item_name failed for unit {} (class {}): {}",
+                    unit.unit_id,
+                    unit.class,
+                    e
+                );
+            }
         }
-        
-        // Get item stats via injection (for identified items)
-        if item_data.is_identified() {
-            if let Ok(stats) = self.injector.get_item_stats(&self.ctx.process, p_unit) {
-                let clean_stats = strip_color_codes(&stats);
-                scanned.stats = Some(clean_stats);
+
+        // Try to resolve item stats text via injected GetItemStats.
+        match self
+            .injector
+            .get_item_stats(&self.ctx.process, p_unit)
+        {
+            Ok(raw_stats) => {
+                let cleaned = strip_color_codes(&raw_stats);
+                if !cleaned.trim().is_empty() {
+                    scanned.stats = Some(cleaned);
+                }
+            }
+            Err(e) => {
+                println!(
+                    "Notifier debug: get_item_stats failed for unit {} (class {}): {}",
+                    unit.unit_id,
+                    unit.class,
+                    e
+                );
             }
         }
         
@@ -183,7 +241,10 @@ impl DropScanner {
             unit_id: scanned.unit_id,
             class: scanned.class,
             quality: scanned.quality_name().to_string(),
-            name: scanned.name.unwrap_or_else(|| format!("Item #{}", scanned.class)),
+            // Fallback to a generic name if injection failed or returned empty text.
+            name: scanned
+                .name
+                .unwrap_or_else(|| format!("Item #{}", scanned.class)),
             stats: scanned.stats.unwrap_or_default(),
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,

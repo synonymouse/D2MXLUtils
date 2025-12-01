@@ -1,7 +1,10 @@
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE};
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
 #[cfg(target_os = "windows")]
@@ -148,7 +151,14 @@ pub fn open_process_by_window_class(class_name: &str) -> Result<ProcessHandle, S
              return Err("Failed to get process ID".to_string());
         }
 
-        let handle = OpenProcess(PROCESS_ALL_ACCESS, false, pid)
+        // Request only necessary permissions for memory reading/writing and thread creation
+        let access_flags = PROCESS_VM_READ
+            | PROCESS_VM_WRITE
+            | PROCESS_VM_OPERATION
+            | PROCESS_QUERY_INFORMATION
+            | PROCESS_CREATE_THREAD;
+        
+        let handle = OpenProcess(access_flags, false, pid)
             .map_err(|e| format!("Failed to open process: {}", e))?;
 
         Ok(ProcessHandle { handle, pid })
