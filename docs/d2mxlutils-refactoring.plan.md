@@ -160,10 +160,16 @@ Refакторим `D2Stats` в `D2MXLUtils` для игры Diablo 2 LoD с мо
 
 1. `setup-tauri`: Инициализировать проект Tauri с фронтендом Svelte + TypeScript + Tailwind. **(выполнено)**
 2. `rust-backend-base`: Настроить базовые Tauri-команды и event-эмиттер. **(выполнено)**
-3. `rust-process-layer`: Реализовать модуль процесса (через crate `windows`).
-4. `rust-d2-types-offsets`: Описать структуры и оффсеты.
-5. `rust-injection-layer`: Реализовать инъекции и вызовы внутренних функций D2.
-6. `rust-drop-scanner`: Собрать DropScanner и сканирование предметов.
-7. `rust-rules-json`: Загрузка и интерпретация JSON-фильтров (новая структура).
+3. `rust-process-layer`: Реализовать модуль процесса (через crate `windows`). **(выполнено)**
+4. `rust-d2-types-offsets`: Описать структуры и оффсеты. **(выполнено 01.12.2025)**
+5. `rust-injection-layer`: Реализовать инъекции и вызовы внутренних функций D2. **(выполнено 01.12.2025)**
+6. `rust-drop-scanner`: Собрать DropScanner и сканирование предметов. **(выполнено 01.12.2025)**
+7. `rust-rules-json`: Загрузка и интерпретация JSON-фильтров (новая структура). **(выполнено 01.12.2025)**
 8. `overlay-window`: Реализовать поведение оверлея в Tauri.
 9. `svelte-ui`: Создать Svelte/Tailwind UI и связать с событиями.
+
+---
+
+## Progress Log
+
+**01.12.2025** — см. [checkpoint](./progress-checkpoint-2025-12-01.md)

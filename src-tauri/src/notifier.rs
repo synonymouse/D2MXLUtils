@@ -1,0 +1,235 @@
+//! Drop Notifier - scans ground items and emits events for matching items
+//!
+//! This module implements the core NotifierMain logic from D2Stats.au3
+
+use std::collections::HashSet;
+
+#[cfg(target_os = "windows")]
+use crate::d2types::{ItemData, ScannedItem, UnitAny};
+#[cfg(target_os = "windows")]
+use crate::injection::D2Injector;
+#[cfg(target_os = "windows")]
+use crate::offsets::{d2client, paths, unit_type};
+#[cfg(target_os = "windows")]
+use crate::process::D2Context;
+
+/// Payload sent to frontend when an item is found
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ItemDropEvent {
+    pub unit_id: u32,
+    pub class: u32,
+    pub quality: String,
+    pub name: String,
+    pub stats: String,
+    pub is_ethereal: bool,
+    pub is_identified: bool,
+}
+
+/// Drop scanner that iterates through ground items
+#[cfg(target_os = "windows")]
+pub struct DropScanner {
+    /// D2 context with process handle and DLL bases
+    ctx: D2Context,
+    /// Injector for calling game functions
+    injector: D2Injector,
+    /// Cache of already-seen item IDs (to avoid duplicate notifications)
+    seen_items: HashSet<u32>,
+}
+
+#[cfg(target_os = "windows")]
+impl DropScanner {
+    /// Create a new scanner attached to the D2 process
+    pub fn new() -> Result<Self, String> {
+        let ctx = D2Context::new()?;
+        let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common)?;
+        
+        println!("DropScanner initialized:");
+        println!("  D2Client: 0x{:08X}", ctx.d2_client);
+        println!("  D2Common: 0x{:08X}", ctx.d2_common);
+        println!("  StringBuffer: 0x{:08X}", injector.string_buffer.address);
+        
+        Ok(Self {
+            ctx,
+            injector,
+            seen_items: HashSet::new(),
+        })
+    }
+    
+    /// Check if player is in game
+    pub fn is_ingame(&self) -> bool {
+        let player_unit_ptr = self.ctx.d2_client + d2client::PLAYER_UNIT;
+        match self.ctx.process.read_memory::<u32>(player_unit_ptr) {
+            Ok(ptr) => ptr != 0,
+            Err(_) => false,
+        }
+    }
+    
+    /// Clear the seen items cache (call when entering a new game)
+    pub fn clear_cache(&mut self) {
+        self.seen_items.clear();
+    }
+    
+    /// Scan for ground items and return new items found
+    pub fn tick(&mut self) -> Vec<ItemDropEvent> {
+        let mut events = Vec::new();
+        
+        if !self.is_ingame() {
+            return events;
+        }
+        
+        // Read paths structure to iterate through rooms/units
+        let base_ptr = self.ctx.d2_client + d2client::PLAYER_UNIT;
+        
+        // Follow pointer chain: [base] -> [+0x2C] -> [+0x1C] -> pPaths (at +0x0) and iPaths (at +0x24)
+        let ptr1 = match self.ctx.process.read_memory::<u32>(base_ptr) {
+            Ok(p) if p != 0 => p as usize,
+            _ => return events,
+        };
+        
+        let ptr2 = match self.ctx.process.read_memory::<u32>(ptr1 + paths::TO_PATHS_PTR[1]) {
+            Ok(p) if p != 0 => p as usize,
+            _ => return events,
+        };
+        
+        let ptr3 = match self.ctx.process.read_memory::<u32>(ptr2 + paths::TO_PATHS_PTR[2]) {
+            Ok(p) if p != 0 => p as usize,
+            _ => return events,
+        };
+        
+        let p_paths = match self.ctx.process.read_memory::<u32>(ptr3 + paths::TO_PATHS_PTR[3]) {
+            Ok(p) if p != 0 => p as usize,
+            _ => return events,
+        };
+        
+        let i_paths = match self.ctx.process.read_memory::<u32>(ptr3 + paths::TO_PATHS_COUNT[3]) {
+            Ok(p) => p as usize,
+            _ => return events,
+        };
+        
+        // Iterate through each path/room
+        for i in 0..i_paths {
+            let p_path = match self.ctx.process.read_memory::<u32>(p_paths + 4 * i) {
+                Ok(p) if p != 0 => p as usize,
+                _ => continue,
+            };
+            
+            let mut p_unit = match self.ctx.process.read_memory::<u32>(p_path + paths::PATH_TO_UNIT) {
+                Ok(p) if p != 0 => p,
+                _ => continue,
+            };
+            
+            // Iterate through units in this room
+            while p_unit != 0 {
+                if let Some(event) = self.process_unit(p_unit) {
+                    events.push(event);
+                }
+                
+                // Move to next unit
+                p_unit = match self.ctx.process.read_memory::<u32>(p_unit as usize + 0xE4) {
+                    Ok(p) => p,
+                    _ => break,
+                };
+            }
+        }
+        
+        events
+    }
+    
+    /// Process a single unit, returning an event if it's a new item
+    fn process_unit(&mut self, p_unit: u32) -> Option<ItemDropEvent> {
+        // Read UnitAny structure
+        let unit: UnitAny = self.ctx.process.read_memory(p_unit as usize).ok()?;
+        
+        // Only process items (unit_type == 4)
+        if unit.unit_type != unit_type::ITEM {
+            return None;
+        }
+        
+        // Skip if we've already seen this item
+        if self.seen_items.contains(&unit.unit_id) {
+            return None;
+        }
+        
+        // Read ItemData
+        if unit.p_unit_data == 0 {
+            return None;
+        }
+        
+        let item_data: ItemData = self.ctx.process.read_memory(unit.p_unit_data as usize).ok()?;
+        
+        // Create scanned item
+        let mut scanned = ScannedItem::from_unit(&unit, &item_data, p_unit);
+        
+        // Get item name via injection
+        if let Ok(name) = self.injector.get_item_name(&self.ctx.process, p_unit) {
+            // Strip color codes (ÿc.) from name
+            let clean_name = strip_color_codes(&name);
+            scanned.name = Some(clean_name);
+        }
+        
+        // Get item stats via injection (for identified items)
+        if item_data.is_identified() {
+            if let Ok(stats) = self.injector.get_item_stats(&self.ctx.process, p_unit) {
+                let clean_stats = strip_color_codes(&stats);
+                scanned.stats = Some(clean_stats);
+            }
+        }
+        
+        // Mark as seen
+        self.seen_items.insert(unit.unit_id);
+        
+        // Create event
+        Some(ItemDropEvent {
+            unit_id: scanned.unit_id,
+            class: scanned.class,
+            quality: scanned.quality_name().to_string(),
+            name: scanned.name.unwrap_or_else(|| format!("Item #{}", scanned.class)),
+            stats: scanned.stats.unwrap_or_default(),
+            is_ethereal: scanned.is_ethereal,
+            is_identified: scanned.is_identified,
+        })
+    }
+}
+
+/// Strip D2 color codes from string (ÿc followed by color char)
+fn strip_color_codes(s: &str) -> String {
+    let mut result = String::new();
+    let mut chars = s.chars().peekable();
+    
+    while let Some(c) = chars.next() {
+        if c == 'ÿ' {
+            // Skip 'c' and the color character
+            if chars.peek() == Some(&'c') {
+                chars.next(); // skip 'c'
+                chars.next(); // skip color char
+                continue;
+            }
+        }
+        result.push(c);
+    }
+    
+    result
+}
+
+// --- Stub for Non-Windows ---
+
+#[cfg(not(target_os = "windows"))]
+pub struct DropScanner;
+
+#[cfg(not(target_os = "windows"))]
+impl DropScanner {
+    pub fn new() -> Result<Self, String> {
+        Err("Not supported on this OS".to_string())
+    }
+    
+    pub fn is_ingame(&self) -> bool {
+        false
+    }
+    
+    pub fn clear_cache(&mut self) {}
+    
+    pub fn tick(&mut self) -> Vec<ItemDropEvent> {
+        Vec::new()
+    }
+}
+
