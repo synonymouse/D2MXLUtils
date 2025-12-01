@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod process;
+
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -17,9 +19,14 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
     println!("Scanner started");
     
     // Emit event to frontend to update status
-    // The payload can be any serializable type
     if let Err(e) = app.emit("scanner-status", "running") {
         eprintln!("Failed to emit event: {}", e);
+    }
+
+    // Try to attach to D2 process
+    match process::D2Context::new() {
+        Ok(ctx) => println!("Successfully attached to Diablo II. D2Client base: 0x{:x}", ctx.d2_client),
+        Err(e) => println!("Could not attach to Diablo II: {}", e),
     }
     
     // TODO: In the future, when an item is found, we will emit:

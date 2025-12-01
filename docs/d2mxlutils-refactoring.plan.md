@@ -2,7 +2,7 @@
 
 ## Общее описание
 
-Refакторим `D2Stats` в `D2MXLUtils`, оставляя только функционал Drop Notifier. Стек: **Tauri (Rust backend)** + **Svelte + TypeScript + Tailwind**. Все низкоуровневые операции (чтение памяти, инъекции, управление окнами) реализуем на Rust, используя официальный crate [`windows`](https://learn.microsoft.com/ru-ru/windows/dev-environment/rust/rust-for-windows?utm_source=openai) для доступа к WinAPI. Фронтенд — Svelte-оверлей, который получает события из Rust через Tauri.
+Refакторим `D2Stats` в `D2MXLUtils` для игры Diablo 2 LoD с модом MedianXL, оставляя только функционал Drop Notifier. Стек: **Tauri (Rust backend)** + **Svelte + TypeScript + Tailwind**. Все низкоуровневые операции (чтение памяти, инъекции, управление окнами) реализуем на Rust, используя официальный crate [`windows`](https://learn.microsoft.com/ru-ru/windows/dev-environment/rust/rust-for-windows?utm_source=openai) для доступа к WinAPI. Фронтенд — Svelte-оверлей, который получает события из Rust через Tauri.
 
 ---
 
