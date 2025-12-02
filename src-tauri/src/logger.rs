@@ -35,10 +35,14 @@ fn write_line(prefix: &str, msg: &str) {
 }
 
 pub fn info(msg: &str) {
+    // Mirror to stdout for convenient live debugging
+    println!("{}", msg);
     write_line("[INFO] ", msg);
 }
 
 pub fn error(msg: &str) {
+    // Mirror to stderr for convenient live debugging
+    eprintln!("{}", msg);
     write_line("[ERROR] ", msg);
 }
 

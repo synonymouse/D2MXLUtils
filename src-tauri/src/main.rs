@@ -61,12 +61,10 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
     
     // Set scanning flag
     state.is_scanning.store(true, Ordering::SeqCst);
-    println!("Scanner starting...");
     log_info("Scanner starting...");
     
     // Emit status to frontend
     if let Err(e) = app.emit("scanner-status", "starting") {
-        eprintln!("Failed to emit event: {}", e);
         log_error(&format!("Failed to emit event (starting): {}", e));
     }
     
@@ -79,19 +77,15 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
         // Try to create scanner
         let mut scanner = match DropScanner::new() {
             Ok(s) => {
-                println!("Scanner attached to Diablo II");
                 log_info("Scanner attached to Diablo II");
                 if let Err(e) = app_handle.emit("scanner-status", "running") {
-                    eprintln!("Failed to emit event: {}", e);
                     log_error(&format!("Failed to emit event (running): {}", e));
                 }
                 s
             }
             Err(e) => {
-                eprintln!("Failed to attach to Diablo II: {}", e);
                 log_error(&format!("Failed to attach to Diablo II: {}", e));
                 if let Err(e) = app_handle.emit("scanner-status", "error") {
-                    eprintln!("Failed to emit event: {}", e);
                     log_error(&format!("Failed to emit event (error): {}", e));
                 }
                 is_scanning.store(false, Ordering::SeqCst);
@@ -107,18 +101,14 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
             
             // Detect entering a new game
             if ingame && !was_ingame {
-                println!("Entered game, clearing item cache");
                 log_info("Entered game, clearing item cache");
                 scanner.clear_cache();
                 if let Err(e) = app_handle.emit("game-status", "ingame") {
-                    eprintln!("Failed to emit event: {}", e);
                     log_error(&format!("Failed to emit event (ingame): {}", e));
                 }
             } else if !ingame && was_ingame {
-                println!("Left game");
                 log_info("Left game");
                 if let Err(e) = app_handle.emit("game-status", "menu") {
-                    eprintln!("Failed to emit event: {}", e);
                     log_error(&format!("Failed to emit event (menu): {}", e));
                 }
             }
@@ -128,12 +118,10 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
             if ingame {
                 let items = scanner.tick();
                 for item in items {
-                    println!("Found item: {} ({})", item.name, item.quality);
                     log_info(&format!("Found item: {} ({})", item.name, item.quality));
                     
                     // Emit item-drop event to frontend
                     if let Err(e) = app_handle.emit("item-drop", &item) {
-                        eprintln!("Failed to emit item-drop event: {}", e);
                         log_error(&format!("Failed to emit item-drop event: {}", e));
                     }
                 }
@@ -143,10 +131,8 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
             thread::sleep(Duration::from_millis(200));
         }
         
-        println!("Scanner thread stopped");
         log_info("Scanner thread stopped");
         if let Err(e) = app_handle.emit("scanner-status", "stopped") {
-            eprintln!("Failed to emit event: {}", e);
             log_error(&format!("Failed to emit event (stopped): {}", e));
         }
     });
@@ -162,11 +148,9 @@ fn stop_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
     
     // Signal the scanner to stop
     state.is_scanning.store(false, Ordering::SeqCst);
-    println!("Scanner stop requested");
     log_info("Scanner stop requested");
     
     if let Err(e) = app.emit("scanner-status", "stopping") {
-        eprintln!("Failed to emit event: {}", e);
         log_error(&format!("Failed to emit event (stopping): {}", e));
     }
     

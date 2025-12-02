@@ -47,10 +47,6 @@ impl DropScanner {
         let ctx = D2Context::new()?;
         let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common)?;
         
-        println!("DropScanner initialized:");
-        println!("  D2Client: 0x{:08X}", ctx.d2_client);
-        println!("  D2Common: 0x{:08X}", ctx.d2_common);
-        println!("  StringBuffer: 0x{:08X}", injector.string_buffer.address);
         log_info(&format!(
             "DropScanner initialized: D2Client=0x{:08X}, D2Common=0x{:08X}, StringBuffer=0x{:08X}",
             ctx.d2_client, ctx.d2_common, injector.string_buffer.address
@@ -121,7 +117,6 @@ impl DropScanner {
                 "Notifier debug: ptr1=0x{:08X}, ptr2=0x{:08X}, ptr3=0x{:08X}, p_paths=0x{:08X}, i_paths={}",
                 ptr1, ptr2, ptr3, p_paths, i_paths
             );
-            println!("{}", msg);
             log_info(&msg);
             self.debug_logged_paths = true;
         }
@@ -152,7 +147,6 @@ impl DropScanner {
                             "Notifier debug: failed to read UnitAny at 0x{:08X}: {}",
                             p_unit, e
                         );
-                        eprintln!("{}", msg);
                         log_error(&msg);
                         break;
                     }
@@ -211,7 +205,6 @@ impl DropScanner {
                         "Notifier debug: empty item name after injection for unit {} (class {}), raw='{}'",
                         unit.unit_id, unit.class, raw_name
                     );
-                    println!("{}", msg);
                     log_info(&msg);
                 }
             }
@@ -220,7 +213,6 @@ impl DropScanner {
                     "Notifier debug: get_item_name failed for unit {} (class {}): {}",
                     unit.unit_id, unit.class, e
                 );
-                println!("{}", msg);
                 log_error(&msg);
             }
         }
@@ -241,7 +233,6 @@ impl DropScanner {
                     "Notifier debug: get_item_stats failed for unit {} (class {}): {}",
                     unit.unit_id, unit.class, e
                 );
-                println!("{}", msg);
                 log_error(&msg);
             }
         }

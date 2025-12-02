@@ -26,3 +26,12 @@
   - по Tauri (`tauri-apps/tauri`, Rust backend, либо `docs.rs/tauri/2.9.3`);
   - по Svelte (включая Svelte + TypeScript);
   - по сопутствующим инструментам (Tailwind, Vite и т.п., если нужна точная актуальная API-документация).
+
+### 3. Логирование в Rust-бэкенде (`src-tauri/src`)
+
+- **Не использовать прямые `println!` / `eprintln!` в продакшн-коде бэкенда.**
+  - Вместо этого вызывать функции логгера: `logger::info(...)` и `logger::error(...)`.
+  - Логгер сам дублирует сообщения в:
+    - stdout/stderr (для dev-режима);
+    - файл `d2mxlutils.log` рядом с exe.
+- Исключение: сам модуль `logger.rs` может использовать `println!/eprintln!` для реализации зеркалирования.

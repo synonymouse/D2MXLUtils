@@ -190,6 +190,7 @@ src-tauri/src/
   - старт/стоп сканера и статусы игры;
   - адреса модулей D2Client/D2Common и результаты инъекций;
   - ошибки чтения структур и вызова инъектированных функций.
+- Логгер зеркалирует сообщения в stdout/stderr, поэтому в backend-коде используется единый слой `log_info`/`log_error` вместо прямых `println!`/`eprintln!`; это зафиксировано в `CLAUDE.md`.
 - С помощью логов зафиксирована проблема `Access is denied (0x80070005)` при `OpenProcess` в релизной сборке при запуске exe напрямую; поведение задокументировано отдельно в `docs/d2mxlutils-elevation-issue.md`.
 - В том же цикле работы реализован и протестирован фикс:
   - добавлен кастомный Windows‑манифест через `tauri_build::WindowsAttributes` с `requestedExecutionLevel="requireAdministrator"` и зависимостью от Common Controls v6 (`build.rs`);
