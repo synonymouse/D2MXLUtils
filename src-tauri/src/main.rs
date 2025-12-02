@@ -26,9 +26,11 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{BOOL, HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow, SetWindowLongW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect,
+    MoveWindow, SetWindowLongW, SetWindowPos,
+    ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
+    WS_EX_TRANSPARENT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::Security::{
