@@ -143,6 +143,10 @@ Refакторим `D2Stats` в `D2MXLUtils` для игры Diablo 2 LoD с мо
   - `main.rs` — старт/стоп сканера, статусы игры, ошибки эмита событий.
   - `notifier.rs` — инициализация `DropScanner`, ошибки чтения структур, вызовы инъекционных функций.
 - На основе логов зафиксирована и описана проблема прав доступа (`ACCESS_DENIED` при `OpenProcess`) при некоторых сценариях запуска релизного exe — см. `docs/d2mxlutils-elevation-issue.md`.
+- Реализован финальный фикс прав доступа:
+  - кастомный Windows‑манифест через `tauri_build::WindowsAttributes::app_manifest()` c `requestedExecutionLevel="requireAdministrator"` и зависимостью от Common Controls v6 (`build.rs`);
+  - включение `SeDebugPrivilege` для текущего процесса перед первым `OpenProcess` (`enable_debug_privilege()` в `main.rs`), чтобы поведение соответствовало оригинальному AutoIt‑скрипту;
+  - обработка кейса UAC‑elevation и WebView2 через установку `WEBVIEW2_USER_DATA_FOLDER` на путь LocalAppData несмещённого пользователя (`setup_webview2_for_elevation()` в `main.rs`).
 
 ## 9. Svelte + Tailwind UI
 

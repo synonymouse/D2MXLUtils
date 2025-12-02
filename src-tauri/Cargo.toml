@@ -20,6 +20,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Memory",
     "Win32_UI_WindowsAndMessaging",
     "Win32_System_ProcessStatus",
-    "Win32_System_LibraryLoader"
+    "Win32_System_LibraryLoader",
+    # Features for elevated process handling (WEBVIEW2_USER_DATA_FOLDER fix)
+    "Win32_UI_Shell",
+    "Win32_System_Com"
 ] }
 

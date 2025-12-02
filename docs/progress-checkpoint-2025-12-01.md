@@ -191,4 +191,8 @@ src-tauri/src/
   - адреса модулей D2Client/D2Common и результаты инъекций;
   - ошибки чтения структур и вызова инъектированных функций.
 - С помощью логов зафиксирована проблема `Access is denied (0x80070005)` при `OpenProcess` в релизной сборке при запуске exe напрямую; поведение задокументировано отдельно в `docs/d2mxlutils-elevation-issue.md`.
+- В том же цикле работы реализован и протестирован фикс:
+  - добавлен кастомный Windows‑манифест через `tauri_build::WindowsAttributes` с `requestedExecutionLevel="requireAdministrator"` и зависимостью от Common Controls v6 (`build.rs`);
+  - в `main.rs` перед инициализацией Tauri включается `SeDebugPrivilege` для текущего процесса (`enable_debug_privilege()`), что устраняет `ACCESS_DENIED` при `OpenProcess` как при dev‑запуске, так и для релизного exe, запущенного напрямую из Explorer;
+  - добавлен безопасный хук для UAC‑elevated сценариев с WebView2 — `setup_webview2_for_elevation()` настраивает `WEBVIEW2_USER_DATA_FOLDER` при наличии linked‑токена.
 

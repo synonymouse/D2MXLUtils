@@ -19,17 +19,29 @@ use crate::logger::{error as log_error, info as log_info};
 
 use notifier::DropScanner;
 
-// Windows-only imports for overlay window sync
+// Windows-only imports for process / overlay / privileges
 #[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{BOOL, HWND, RECT};
+use windows::Win32::Foundation::{BOOL, HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow, SetWindowLongW,
     SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::Security::{
+    AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevationType,
+    TokenLinkedToken, LUID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION_TYPE,
+    TOKEN_LINKED_TOKEN, TOKEN_PRIVILEGES, TOKEN_QUERY, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
+};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::CoTaskMemFree;
 #[cfg(target_os = "windows")]
 use std::ffi::OsStr;
 #[cfg(target_os = "windows")]
@@ -267,7 +279,193 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Enable SeDebugPrivilege on the current process token, if possible.
+///
+/// This matches what many memory tools (including the original AutoIt-based D2Stats)
+/// do before calling OpenProcess on game processes. Without this privilege, some
+/// Windows configurations may return ACCESS_DENIED even for the same user.
+#[cfg(target_os = "windows")]
+fn enable_debug_privilege() {
+    use std::mem::size_of;
+    use windows::Win32::Foundation::{CloseHandle, LUID};
+
+    unsafe {
+        let mut token_handle = HANDLE::default();
+        // We need both QUERY and ADJUST_PRIVILEGES to toggle SeDebugPrivilege.
+        let desired_access = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
+        if let Err(e) = OpenProcessToken(GetCurrentProcess(), desired_access, &mut token_handle) {
+            log_info(&format!(
+                "Failed to open process token for SeDebugPrivilege: {}",
+                e
+            ));
+            return;
+        }
+
+        // Resolve the LUID for SeDebugPrivilege.
+        let mut luid = LUID::default();
+        if let Err(e) = LookupPrivilegeValueW(None, SE_DEBUG_NAME, &mut luid) {
+            log_info(&format!(
+                "LookupPrivilegeValueW(SeDebugPrivilege) failed: {}",
+                e
+            ));
+            let _ = CloseHandle(token_handle);
+            return;
+        }
+
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        // Enable SeDebugPrivilege on this token.
+        let result = AdjustTokenPrivileges(
+            token_handle,
+            BOOL(0),
+            Some(&tp as *const TOKEN_PRIVILEGES),
+            size_of::<TOKEN_PRIVILEGES>() as u32,
+            None,
+            None,
+        );
+
+        let _ = CloseHandle(token_handle);
+
+        match result {
+            Ok(_) => {
+                log_info("SeDebugPrivilege enabled (or already enabled)");
+            }
+            Err(e) => {
+                log_info(&format!(
+                    "AdjustTokenPrivileges for SeDebugPrivilege failed: {}",
+                    e
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enable_debug_privilege() {
+    // No-op on non-Windows platforms.
+}
+
+/// Configure WebView2 user data folder for elevated processes.
+///
+/// When running with administrator privileges (elevated), WebView2 may fail
+/// to access the user's LocalAppData because the elevated process runs under
+/// a different user context. This function detects elevation and sets
+/// WEBVIEW2_USER_DATA_FOLDER to the non-elevated user's LocalAppData path.
+#[cfg(target_os = "windows")]
+fn setup_webview2_for_elevation() {
+    use std::mem::size_of;
+
+    unsafe {
+        // Get the current process token
+        let mut token_handle = HANDLE::default();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle).is_err() {
+            log_info("Failed to open process token, skipping elevation check");
+            return;
+        }
+
+        // Check elevation type
+        let mut elevation_type = TOKEN_ELEVATION_TYPE::default();
+        let mut return_length = 0u32;
+
+        let result = GetTokenInformation(
+            token_handle,
+            TokenElevationType,
+            Some(&mut elevation_type as *mut _ as *mut _),
+            size_of::<TOKEN_ELEVATION_TYPE>() as u32,
+            &mut return_length,
+        );
+
+        if result.is_err() {
+            log_info("Failed to get token elevation type");
+            let _ = windows::Win32::Foundation::CloseHandle(token_handle);
+            return;
+        }
+
+        // TokenElevationTypeFull (2) means the process is elevated via UAC
+        // We need to get the linked token (non-elevated user token) to find correct AppData
+        if elevation_type.0 != 2 {
+            // Not elevated via UAC, no need to adjust WebView2 path
+            let _ = windows::Win32::Foundation::CloseHandle(token_handle);
+            log_info("Process is not UAC-elevated, using default WebView2 data folder");
+            return;
+        }
+
+        log_info("Process is UAC-elevated, configuring WebView2 data folder for linked user");
+
+        // Get the linked token (the non-elevated user token)
+        let mut linked_token = TOKEN_LINKED_TOKEN::default();
+        let mut return_length = 0u32;
+
+        let result = GetTokenInformation(
+            token_handle,
+            TokenLinkedToken,
+            Some(&mut linked_token as *mut _ as *mut _),
+            size_of::<TOKEN_LINKED_TOKEN>() as u32,
+            &mut return_length,
+        );
+
+        let _ = windows::Win32::Foundation::CloseHandle(token_handle);
+
+        if result.is_err() {
+            log_info("Failed to get linked token, using default WebView2 data folder");
+            return;
+        }
+
+        // Get LocalAppData path using the linked (non-elevated) token
+        let path_ptr = SHGetKnownFolderPath(
+            &FOLDERID_LocalAppData,
+            KF_FLAG_DEFAULT,
+            linked_token.LinkedToken,
+        );
+
+        let _ = windows::Win32::Foundation::CloseHandle(linked_token.LinkedToken);
+
+        match path_ptr {
+            Ok(ptr) => {
+                // Convert PWSTR to Rust String
+                let path_str = ptr.to_string().unwrap_or_default();
+                CoTaskMemFree(Some(ptr.as_ptr() as *const _));
+
+                if !path_str.is_empty() {
+                    // Construct WebView2 data folder path
+                    let webview2_path = format!("{}\\D2MXLUtils\\WebView2", path_str);
+
+                    log_info(&format!(
+                        "Setting WEBVIEW2_USER_DATA_FOLDER to: {}",
+                        webview2_path
+                    ));
+
+                    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview2_path);
+                }
+            }
+            Err(e) => {
+                log_info(&format!(
+                    "Failed to get LocalAppData path for linked user: {:?}",
+                    e
+                ));
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn setup_webview2_for_elevation() {
+    // No-op on non-Windows platforms
+}
+
 fn main() {
+    // Enable SeDebugPrivilege so OpenProcess has the same behavior as legacy tools.
+    enable_debug_privilege();
+
+    // Configure WebView2 data folder for elevated processes BEFORE Tauri init
+    setup_webview2_for_elevation();
+
     tauri::Builder::default()
         .setup(|app| {
             app.manage(AppState {
