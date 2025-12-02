@@ -134,9 +134,8 @@ pub struct D2Injector {
     pub string_buffer: RemoteAlloc,
     /// Allocated buffer for parameters
     pub params_buffer: RemoteAlloc,
-    
+
     /// Addresses of injected functions
-    pub inject_print: usize,
     pub inject_get_string: usize,
     pub inject_get_item_name: usize,
     pub inject_get_item_stat: usize,
@@ -170,7 +169,6 @@ impl D2Injector {
         };
 
         let inject_base = d2_client + d2client::INJECT_BASE;
-        let inject_print = inject_base + d2client::inject::PRINT;
         let inject_get_string = inject_base + d2client::inject::GET_STRING;
         let inject_get_item_name = inject_base + d2client::inject::GET_ITEM_NAME;
         let inject_get_item_stat = inject_base + d2client::inject::GET_ITEM_STAT;
@@ -179,7 +177,6 @@ impl D2Injector {
         let injector = Self {
             string_buffer,
             params_buffer,
-            inject_print,
             inject_get_string,
             inject_get_item_name,
             inject_get_item_stat,
@@ -202,21 +199,6 @@ impl D2Injector {
         let inject_base = d2_client + d2client::INJECT_BASE;
         let string_addr = self.string_buffer.address as u32;
         let _params_addr = self.params_buffer.address as u32;
-
-        // PrintString injection
-        // D2Client.dll+CDE01 - 53                    - push ebx
-        // D2Client.dll+CDE01 - 68 *                  - push D2Client.dll+CDE20 (string addr)
-        // D2Client.dll+CDE06 - 31 C0                 - xor eax,eax
-        // D2Client.dll+CDE08 - E8 *                  - call D2Client.dll+7D850 (print func)
-        // D2Client.dll+CDE0D - C3                    - ret
-        let print_offset = (d2_client + d2client::func::PRINT_STRING) as i32
-            - (inject_base + d2client::inject::PRINT + 0x0D) as i32;
-        let mut print_code: Vec<u8> = vec![0x53, 0x68];
-        print_code.extend_from_slice(&swap_endian(string_addr));
-        print_code.extend_from_slice(&[0x31, 0xC0, 0xE8]);
-        print_code.extend_from_slice(&(print_offset as u32).to_le_bytes());
-        print_code.push(0xC3);
-        process.write_buffer(self.inject_print, &print_code)?;
 
         // GetString injection (D2Lang_GetStringById)
         // D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx
@@ -350,25 +332,6 @@ impl D2Injector {
 
         // Read result from string buffer
         process.read_memory::<u32>(self.string_buffer.address)
-    }
-
-    /// Print a string to the game chat
-    pub fn print_string(
-        &self,
-        process: &ProcessHandle,
-        text: &str,
-        color: u32,
-    ) -> Result<(), String> {
-        // Convert string to UTF-16LE and write to buffer
-        let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
-        let bytes: Vec<u8> = wide.iter().flat_map(|&c| c.to_le_bytes()).collect();
-        
-        process.write_buffer(self.string_buffer.address, &bytes)?;
-
-        // Call PrintString with color in EBX
-        remote_thread(process, self.inject_print, color as usize)?;
-
-        Ok(())
     }
 }
 

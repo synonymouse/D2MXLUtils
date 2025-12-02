@@ -75,7 +75,6 @@ pub struct D2Injector {
 - `get_item_name(pUnit)` — получить имя предмета
 - `get_item_stats(pUnit)` — получить статы предмета
 - `get_unit_stat(pUnit, statId)` — получить значение стата
-- `print_string(text, color)` — вывод текста в чат игры
 
 ### 6. Модуль `notifier.rs` (п.6 плана) — ✅ СЕГОДНЯ
 Реализован сканер предметов на земле:
