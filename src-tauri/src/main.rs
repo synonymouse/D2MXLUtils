@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 use crate::logger::{error as log_error, info as log_info};
 
@@ -88,6 +88,15 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
                 if let Err(e) = app_handle.emit("scanner-status", "error") {
                     log_error(&format!("Failed to emit event (error): {}", e));
                 }
+                // Ensure overlay is hidden if attachment failed
+                if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                    if let Err(e) = overlay.hide() {
+                        log_error(&format!(
+                            "Failed to hide overlay window after scanner attach error: {}",
+                            e
+                        ));
+                    }
+                }
                 is_scanning.store(false, Ordering::SeqCst);
                 return;
             }
@@ -106,10 +115,28 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
                 if let Err(e) = app_handle.emit("game-status", "ingame") {
                     log_error(&format!("Failed to emit event (ingame): {}", e));
                 }
+                // Show overlay when entering a game
+                if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                    if let Err(e) = overlay.show() {
+                        log_error(&format!(
+                            "Failed to show overlay window when entering game: {}",
+                            e
+                        ));
+                    }
+                }
             } else if !ingame && was_ingame {
                 log_info("Left game");
                 if let Err(e) = app_handle.emit("game-status", "menu") {
                     log_error(&format!("Failed to emit event (menu): {}", e));
+                }
+                 // Hide overlay when leaving a game
+                if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                    if let Err(e) = overlay.hide() {
+                        log_error(&format!(
+                            "Failed to hide overlay window when leaving game: {}",
+                            e
+                        ));
+                    }
                 }
             }
             was_ingame = ingame;
@@ -134,6 +161,15 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
         log_info("Scanner thread stopped");
         if let Err(e) = app_handle.emit("scanner-status", "stopped") {
             log_error(&format!("Failed to emit event (stopped): {}", e));
+        }
+        // Ensure overlay is hidden when scanner stops for any reason
+        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+            if let Err(e) = overlay.hide() {
+                log_error(&format!(
+                    "Failed to hide overlay window when scanner stopped: {}",
+                    e
+                ));
+            }
         }
     });
     
@@ -452,9 +488,36 @@ fn main() {
 
     tauri::Builder::default()
         .setup(|app| {
-            app.manage(AppState {
+            // Shared scanner state
+            let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
-            });
+            };
+            let is_scanning = state.is_scanning.clone();
+            app.manage(state);
+
+            // When the main window is closed, stop the scanner and close the overlay window
+            let app_handle = app.handle();
+            if let Some(main_window) = app.get_webview_window("main") {
+                let app_handle_clone = app_handle.clone();
+                let is_scanning_clone = is_scanning.clone();
+                main_window.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { .. } = event {
+                        log_info("Main window close requested, stopping scanner and closing overlay");
+                        // Stop scanner loop
+                        is_scanning_clone.store(false, Ordering::SeqCst);
+                        // Close overlay window if it exists
+                        if let Some(overlay) = app_handle_clone.get_webview_window("overlay") {
+                            if let Err(e) = overlay.close() {
+                                log_error(&format!(
+                                    "Failed to close overlay window on main close: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
