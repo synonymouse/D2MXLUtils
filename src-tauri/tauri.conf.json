@@ -14,11 +14,25 @@
     },
     "windows": [
       {
+        "label": "main",
         "title": "D2MXLUtils",
         "width": 1024,
         "height": 640,
         "resizable": true,
         "fullscreen": false
+      },
+      {
+        "label": "overlay",
+        "title": "D2MXLUtils Overlay",
+        "width": 800,
+        "height": 600,
+        "resizable": false,
+        "fullscreen": false,
+        "decorations": false,
+        "transparent": true,
+        "backgroundColor": "#00000000",
+        "alwaysOnTop": true,
+        "visible": true
       }
     ]
   },

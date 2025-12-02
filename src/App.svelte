@@ -1,6 +1,7 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
 
   interface ItemDrop {
@@ -18,6 +19,9 @@
   let message = "";
   let items: ItemDrop[] = [];
   let logs: string[] = [];
+
+  // True when running in the dedicated overlay window (label = "overlay")
+  let isOverlay = false;
 
   function addLog(text: string) {
     const time = new Date().toLocaleTimeString();
@@ -59,31 +63,89 @@
 
   onMount(() => {
     const unlisteners: Array<() => void> = [];
+    let syncTimer: number | null = null;
 
+    // Detect if this webview is the overlay window
+    const current = getCurrentWebviewWindow();
+    isOverlay = current.label === 'overlay';
+
+    // Listen for backend events (both main and overlay listen to item drops)
     listen<string>('scanner-status', (event) => {
       scannerStatus = event.payload;
-      addLog(`Scanner status: ${event.payload}`);
+      if (!isOverlay) {
+        addLog(`Scanner status: ${event.payload}`);
+      }
     }).then(u => unlisteners.push(u));
 
     listen<string>('game-status', (event) => {
       gameStatus = event.payload;
-      addLog(`Game status: ${event.payload}`);
+      if (!isOverlay) {
+        addLog(`Game status: ${event.payload}`);
+      }
     }).then(u => unlisteners.push(u));
 
     listen<ItemDrop>('item-drop', (event) => {
       const item = event.payload;
       items = [item, ...items].slice(0, 100);
-      addLog(`Item: ${item.name} (${item.quality})`);
+      if (!isOverlay) {
+        addLog(`Item: ${item.name} (${item.quality})`);
+      }
     }).then(u => unlisteners.push(u));
 
-    addLog("App initialized, listening for events");
+    if (isOverlay) {
+      // Periodically sync overlay window with Diablo II position/size
+      syncTimer = window.setInterval(() => {
+        invoke('sync_overlay_with_game')
+          .catch(() => {
+            // Silent: game might not be running yet
+          });
+      }, 250);
+    } else {
+      addLog("App initialized, listening for events");
+    }
 
     return () => {
       unlisteners.forEach(u => u());
+      if (syncTimer !== null) {
+        clearInterval(syncTimer);
+      }
     };
   });
 </script>
 
+{#if isOverlay}
+<main style="position: fixed; inset: 0; background: transparent; color: #e2e8f0; font-family: monospace; pointer-events: none;">
+  <div style="position: absolute; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end;">
+    {#each items as item}
+      <div
+        style="
+          pointer-events: auto;
+          padding: 8px 12px;
+          border-radius: 8px;
+          background: rgba(15,23,42,0.8);
+          border: 1px solid rgba(148, 163, 184, 0.6);
+          max-width: 320px;
+          box-shadow: 0 10px 40px rgba(0,0,0,0.7);
+        "
+      >
+        <div style="font-size: 13px; font-weight: 600; {getQualityColor(item.quality)}">
+          {item.name}
+        </div>
+        <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">
+          {item.quality}
+          {#if item.is_ethereal}<span style="color: #22d3ee; margin-left: 4px;">ETH</span>{/if}
+          {#if !item.is_identified}<span style="color: #9ca3af; margin-left: 4px;">[UNID]</span>{/if}
+        </div>
+        {#if item.stats}
+          <div style="font-size: 11px; color: #6b7280; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            {item.stats.substring(0, 80)}{item.stats.length > 80 ? '...' : ''}
+          </div>
+        {/if}
+      </div>
+    {/each}
+  </div>
+</main>
+{:else}
 <main style="min-height: 100vh; background: #0f172a; color: #e2e8f0; padding: 16px; font-family: monospace;">
   <!-- Header -->
   <div style="max-width: 900px; margin: 0 auto 24px auto;">
@@ -194,3 +256,4 @@
     </div>
   {/if}
 </main>
+{/if}

@@ -23,6 +23,6 @@
 ### 2. Использование MCP `context7` для документации библиотек
 
 - **Использовать MCP `context7` при возникновение проблем и спорных ситуациях с внешними API и фреймворками**, в частности:
-  - по Tauri (`tauri-apps/tauri`, Rust backend);
+  - по Tauri (`tauri-apps/tauri`, Rust backend, либо `docs.rs/tauri/2.9.3`);
   - по Svelte (включая Svelte + TypeScript);
   - по сопутствующим инструментам (Tailwind, Vite и т.п., если нужна точная актуальная API-документация).

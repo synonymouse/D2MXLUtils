@@ -9,6 +9,8 @@ use crate::d2types::{ItemData, ScannedItem, UnitAny};
 #[cfg(target_os = "windows")]
 use crate::injection::D2Injector;
 #[cfg(target_os = "windows")]
+use crate::logger::{error as log_error, info as log_info};
+#[cfg(target_os = "windows")]
 use crate::offsets::{d2client, paths, unit_type};
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
@@ -49,6 +51,10 @@ impl DropScanner {
         println!("  D2Client: 0x{:08X}", ctx.d2_client);
         println!("  D2Common: 0x{:08X}", ctx.d2_common);
         println!("  StringBuffer: 0x{:08X}", injector.string_buffer.address);
+        log_info(&format!(
+            "DropScanner initialized: D2Client=0x{:08X}, D2Common=0x{:08X}, StringBuffer=0x{:08X}",
+            ctx.d2_client, ctx.d2_common, injector.string_buffer.address
+        ));
         
         Ok(Self {
             ctx,
@@ -111,10 +117,12 @@ impl DropScanner {
 
         // Log pointer chain once to help debug cases when no items are detected.
         if !self.debug_logged_paths {
-            println!(
+            let msg = format!(
                 "Notifier debug: ptr1=0x{:08X}, ptr2=0x{:08X}, ptr3=0x{:08X}, p_paths=0x{:08X}, i_paths={}",
                 ptr1, ptr2, ptr3, p_paths, i_paths
             );
+            println!("{}", msg);
+            log_info(&msg);
             self.debug_logged_paths = true;
         }
         
@@ -140,7 +148,12 @@ impl DropScanner {
                 let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
                     Ok(u) => u,
                     Err(e) => {
-                        eprintln!("Notifier debug: failed to read UnitAny at 0x{:08X}: {}", p_unit, e);
+                        let msg = format!(
+                            "Notifier debug: failed to read UnitAny at 0x{:08X}: {}",
+                            p_unit, e
+                        );
+                        eprintln!("{}", msg);
+                        log_error(&msg);
                         break;
                     }
                 };
@@ -194,21 +207,21 @@ impl DropScanner {
                 } else if !cleaned.trim().is_empty() {
                     scanned.name = Some(cleaned.trim().to_string());
                 } else {
-                    println!(
+                    let msg = format!(
                         "Notifier debug: empty item name after injection for unit {} (class {}), raw='{}'",
-                        unit.unit_id,
-                        unit.class,
-                        raw_name
+                        unit.unit_id, unit.class, raw_name
                     );
+                    println!("{}", msg);
+                    log_info(&msg);
                 }
             }
             Err(e) => {
-                println!(
+                let msg = format!(
                     "Notifier debug: get_item_name failed for unit {} (class {}): {}",
-                    unit.unit_id,
-                    unit.class,
-                    e
+                    unit.unit_id, unit.class, e
                 );
+                println!("{}", msg);
+                log_error(&msg);
             }
         }
 
@@ -224,12 +237,12 @@ impl DropScanner {
                 }
             }
             Err(e) => {
-                println!(
+                let msg = format!(
                     "Notifier debug: get_item_stats failed for unit {} (class {}): {}",
-                    unit.unit_id,
-                    unit.class,
-                    e
+                    unit.unit_id, unit.class, e
                 );
+                println!("{}", msg);
+                log_error(&msg);
             }
         }
         
