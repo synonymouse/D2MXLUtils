@@ -77,7 +77,7 @@ impl DropScanner {
     /// Scan for ground items and return new items found
     pub fn tick(&mut self) -> Vec<ItemDropEvent> {
         let mut events = Vec::new();
-        
+
         if !self.is_ingame() {
             return events;
         }
@@ -135,8 +135,8 @@ impl DropScanner {
             
             // Iterate through units in this room
             while p_unit != 0 {
-                if let Some(event) = self.process_unit(p_unit) {
-                    events.push(event);
+                if let Some(scanned) = self.scan_unit(p_unit) {
+                    events.push(Self::to_event(scanned));
                 }
 
                 // Move to next unit (use struct layout for safety instead of hardcoded offset)
@@ -158,8 +158,8 @@ impl DropScanner {
         events
     }
     
-    /// Process a single unit, returning an event if it's a new item
-    fn process_unit(&mut self, p_unit: u32) -> Option<ItemDropEvent> {
+    /// Process a single unit, returning a fully scanned item if it's a new item.
+    fn scan_unit(&mut self, p_unit: u32) -> Option<ScannedItem> {
         // Read UnitAny structure
         let unit: UnitAny = self.ctx.process.read_memory(p_unit as usize).ok()?;
         
@@ -239,9 +239,13 @@ impl DropScanner {
         
         // Mark as seen
         self.seen_items.insert(unit.unit_id);
-        
-        // Create event
-        Some(ItemDropEvent {
+
+        Some(scanned)
+    }
+
+    /// Convert a scanned item into an event payload for the frontend.
+    fn to_event(scanned: ScannedItem) -> ItemDropEvent {
+        ItemDropEvent {
             unit_id: scanned.unit_id,
             class: scanned.class,
             quality: scanned.quality_name().to_string(),
@@ -252,7 +256,7 @@ impl DropScanner {
             stats: scanned.stats.unwrap_or_default(),
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
-        })
+        }
     }
 }
 

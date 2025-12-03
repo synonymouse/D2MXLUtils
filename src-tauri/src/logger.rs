@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use chrono::Local;
+
 /// Simple file logger used by the backend.
 ///
 /// Writes log lines to `d2mxlutils.log` next to the executable.
@@ -25,12 +27,16 @@ fn get_log_path() -> PathBuf {
 fn write_line(prefix: &str, msg: &str) {
     let path = get_log_path();
 
+    // Prepend a simple timestamp to every log line.
+    let now = Local::now();
+    let ts = now.format("%Y-%m-%d %H:%M:%S");
+
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
     {
-        let _ = writeln!(file, "{}{}", prefix, msg);
+        let _ = writeln!(file, "[{}] {}{}", ts, prefix, msg);
     }
 }
 
@@ -45,6 +51,4 @@ pub fn error(msg: &str) {
     eprintln!("{}", msg);
     write_line("[ERROR] ", msg);
 }
-
-
 
