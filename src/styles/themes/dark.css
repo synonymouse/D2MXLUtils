@@ -1,0 +1,69 @@
+/* =============================================
+   Dark Theme - Diablo inspired
+   Deep blacks, crimson & gold accents
+   ============================================= */
+
+[data-theme="dark"] {
+  /* Backgrounds */
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a24;
+  --bg-elevated: #22222e;
+  --bg-overlay: rgba(10, 10, 15, 0.92);
+  
+  /* Text colors */
+  --text-primary: #e8e6e3;
+  --text-secondary: #a09d98;
+  --text-muted: #6b6965;
+  --text-disabled: #4a4845;
+  
+  /* Borders */
+  --border-primary: #2a2a36;
+  --border-secondary: #3a3a48;
+  --border-hover: #4a4a5a;
+  
+  /* Accents - Diablo gold/crimson */
+  --accent-primary: #c7a84c;      /* Gold */
+  --accent-primary-hover: #dbb94f;
+  --accent-primary-muted: rgba(199, 168, 76, 0.2);
+  
+  --accent-secondary: #8b1a1a;    /* Crimson */
+  --accent-secondary-hover: #a62020;
+  --accent-secondary-muted: rgba(139, 26, 26, 0.2);
+  
+  /* Status colors */
+  --status-success: #3d8c40;
+  --status-success-text: #5fc463;
+  --status-warning: #b8860b;
+  --status-warning-text: #daa520;
+  --status-error: #8b1a1a;
+  --status-error-text: #dc4444;
+  --status-info: #2d5aa0;
+  --status-info-text: #5b8fdc;
+  
+  /* Button colors */
+  --btn-primary-bg: var(--accent-primary);
+  --btn-primary-text: #0a0a0f;
+  --btn-primary-hover: var(--accent-primary-hover);
+  
+  --btn-secondary-bg: var(--bg-tertiary);
+  --btn-secondary-text: var(--text-primary);
+  --btn-secondary-border: var(--border-secondary);
+  --btn-secondary-hover: var(--bg-elevated);
+  
+  --btn-danger-bg: var(--accent-secondary);
+  --btn-danger-text: #ffffff;
+  --btn-danger-hover: var(--accent-secondary-hover);
+  
+  /* Input colors */
+  --input-bg: var(--bg-secondary);
+  --input-border: var(--border-primary);
+  --input-border-focus: var(--accent-primary);
+  --input-placeholder: var(--text-muted);
+  
+  /* Panel colors */
+  --panel-bg: var(--bg-secondary);
+  --panel-border: var(--border-primary);
+  --panel-header-bg: var(--bg-tertiary);
+}
+

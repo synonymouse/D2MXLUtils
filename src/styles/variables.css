@@ -1,0 +1,60 @@
+/* =============================================
+   D2MXLUtils Design Tokens
+   ============================================= */
+
+:root {
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  --font-sans: 'Geist', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  
+  /* Font sizes */
+  --text-xs: 0.75rem;    /* 12px */
+  --text-sm: 0.8125rem;  /* 13px */
+  --text-base: 0.875rem; /* 14px */
+  --text-lg: 1rem;       /* 16px */
+  --text-xl: 1.25rem;    /* 20px */
+  --text-2xl: 1.5rem;    /* 24px */
+  
+  /* Spacing */
+  --space-1: 0.25rem;    /* 4px */
+  --space-2: 0.5rem;     /* 8px */
+  --space-3: 0.75rem;    /* 12px */
+  --space-4: 1rem;       /* 16px */
+  --space-5: 1.5rem;     /* 24px */
+  --space-6: 2rem;       /* 32px */
+  
+  /* Border radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  
+  /* Transitions */
+  --transition-fast: 100ms ease;
+  --transition-base: 200ms ease;
+  --transition-slow: 300ms ease;
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 10px 40px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 20px;
+
+  /* Item quality colors (Diablo 2 palette) */
+  --quality-unique: #c7b377;    /* Gold */
+  --quality-set: #00ff00;       /* Bright green */
+  --quality-rare: #ffff00;      /* Yellow */
+  --quality-magic: #6969ff;     /* Blue */
+  --quality-crafted: #ffa500;   /* Orange */
+  --quality-superior: #888888;  /* Gray */
+  --quality-normal: #ffffff;    /* White */
+  --quality-ethereal: #7cb1c9;  /* Light blue */
+  
+  /* Stat colors */
+  --stat-fire: #ff4444;
+  --stat-cold: #6699ff;
+  --stat-lightning: #ffff44;
+  --stat-poison: #44ff44;
+  --stat-physical: #ffffff;
+  --stat-magic: #b366ff;
+}
+

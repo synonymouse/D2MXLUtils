@@ -1,6 +1,2 @@
-@import "tailwindcss";
-
-body {
-  margin: 0;
-  background: transparent;
-}
+/* Main application styles */
+@import './styles/index.css';

@@ -137,7 +137,7 @@ pub struct FilterConfig // Конфиг с массивом правил
 - [x] Скрыть из Alt+Tab (WS_EX_TOOLWINDOW)
 - [x] Периодическая синхронизация позиции/размера с окном Diablo II по HWND (FindWindowW + GetWindowRect + MoveWindow/SetWindowPos)
 - [x] Режим overlay в Svelte (`App.svelte`): отдельный layout для окна `overlay`, прозрачный фон, стек уведомлений по drop’ам
-- [ ] Исследовать и при необходимости донастроить режим отображения для максимально бесшовного borderless fullscreen (ограничения эксклюзивного fullscreen зафиксированы в `docs/overlay-fullscreen-notes.md`)
+- [x] Исследовать и при необходимости донастроить режим отображения для максимально бесшовного borderless fullscreen (ограничения эксклюзивного fullscreen зафиксированы в `docs/overlay-fullscreen-notes.md`)
 
 ### 9. Svelte UI (п.9 плана)
 - [ ] Компоненты NotificationList, NotificationItem

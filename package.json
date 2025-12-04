@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "private": true,
-  "description": "D2MXLUtils Drop Notifier overlay (Tauri + Rust + Svelte + Tailwind)",
+  "description": "D2MXLUtils Drop Notifier overlay (Tauri + Rust + Svelte)",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -16,9 +16,7 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6.2.1",
-    "@tailwindcss/vite": "^4.1.17",
     "@tauri-apps/cli": "^2.9.4",
-    "tailwindcss": "^4.1.17",
     "typescript": "^5.9.3",
     "vite": "^7.2.4"
   },

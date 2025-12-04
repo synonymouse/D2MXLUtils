@@ -1,0 +1,68 @@
+/* =============================================
+   Light Theme - Parchment / ancient tome aesthetic
+   ============================================= */
+
+[data-theme="light"] {
+  /* Backgrounds */
+  --bg-primary: #f5f0e6;
+  --bg-secondary: #ebe5d8;
+  --bg-tertiary: #e0d8c8;
+  --bg-elevated: #ffffff;
+  --bg-overlay: rgba(245, 240, 230, 0.95);
+  
+  /* Text colors */
+  --text-primary: #1a1815;
+  --text-secondary: #4a4640;
+  --text-muted: #7a7570;
+  --text-disabled: #aaa5a0;
+  
+  /* Borders */
+  --border-primary: #d0c8b8;
+  --border-secondary: #c0b8a8;
+  --border-hover: #a09888;
+  
+  /* Accents */
+  --accent-primary: #8b6914;
+  --accent-primary-hover: #a07a18;
+  --accent-primary-muted: rgba(139, 105, 20, 0.15);
+  
+  --accent-secondary: #6b1010;
+  --accent-secondary-hover: #801414;
+  --accent-secondary-muted: rgba(107, 16, 16, 0.15);
+  
+  /* Status colors */
+  --status-success: #2d6b30;
+  --status-success-text: #2d6b30;
+  --status-warning: #8b6914;
+  --status-warning-text: #8b6914;
+  --status-error: #8b1a1a;
+  --status-error-text: #8b1a1a;
+  --status-info: #1a4a8b;
+  --status-info-text: #1a4a8b;
+  
+  /* Button colors */
+  --btn-primary-bg: var(--accent-primary);
+  --btn-primary-text: #ffffff;
+  --btn-primary-hover: var(--accent-primary-hover);
+  
+  --btn-secondary-bg: var(--bg-elevated);
+  --btn-secondary-text: var(--text-primary);
+  --btn-secondary-border: var(--border-secondary);
+  --btn-secondary-hover: var(--bg-tertiary);
+  
+  --btn-danger-bg: var(--accent-secondary);
+  --btn-danger-text: #ffffff;
+  --btn-danger-hover: var(--accent-secondary-hover);
+  
+  /* Input colors */
+  --input-bg: var(--bg-elevated);
+  --input-border: var(--border-primary);
+  --input-border-focus: var(--accent-primary);
+  --input-placeholder: var(--text-muted);
+  
+  /* Panel colors */
+  --panel-bg: var(--bg-elevated);
+  --panel-border: var(--border-primary);
+  --panel-header-bg: var(--bg-tertiary);
+}
+

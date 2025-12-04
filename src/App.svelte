@@ -3,6 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
+  import { Button, NotificationStack } from './components';
 
   interface ItemDrop {
     unit_id: number;
@@ -14,14 +15,14 @@
     is_identified: boolean;
   }
 
-  let scannerStatus = "stopped";
-  let gameStatus = "unknown";
-  let message = "";
-  let items: ItemDrop[] = [];
-  let logs: string[] = [];
+  let scannerStatus = $state("stopped");
+  let gameStatus = $state("unknown");
+  let message = $state("");
+  let items = $state<ItemDrop[]>([]);
+  let logs = $state<string[]>([]);
 
   // True when running in the dedicated overlay window (label = "overlay")
-  let isOverlay = false;
+  let isOverlay = $state(false);
 
   function addLog(text: string) {
     const time = new Date().toLocaleTimeString();
@@ -48,17 +49,17 @@
     addLog("Cleared item list");
   }
 
-  function getQualityColor(quality: string): string {
-    switch (quality) {
-      case 'Unique': return 'color: #fbbf24; border-color: #f59e0b;';
-      case 'Set': return 'color: #4ade80; border-color: #22c55e;';
-      case 'Rare': return 'color: #facc15; border-color: #eab308;';
-      case 'Magic': return 'color: #60a5fa; border-color: #3b82f6;';
-      case 'Crafted': return 'color: #fb923c; border-color: #f97316;';
-      case 'Superior': return 'color: #cbd5e1; border-color: #94a3b8;';
-      case 'Normal': return 'color: #94a3b8; border-color: #64748b;';
-      default: return 'color: #64748b; border-color: #475569;';
-    }
+  function getQualityColor(quality: string): { color: string; border: string } {
+    const colors: Record<string, { color: string; border: string }> = {
+      'Unique': { color: 'var(--quality-unique)', border: 'var(--quality-unique)' },
+      'Set': { color: 'var(--quality-set)', border: 'var(--quality-set)' },
+      'Rare': { color: 'var(--quality-rare)', border: 'var(--quality-rare)' },
+      'Magic': { color: 'var(--quality-magic)', border: 'var(--quality-magic)' },
+      'Crafted': { color: 'var(--quality-crafted)', border: 'var(--quality-crafted)' },
+      'Superior': { color: 'var(--quality-superior)', border: 'var(--quality-superior)' },
+      'Normal': { color: 'var(--quality-normal)', border: 'var(--quality-normal)' }
+    };
+    return colors[quality] ?? { color: 'var(--text-muted)', border: 'var(--border-primary)' };
   }
 
   onMount(() => {
@@ -114,146 +115,268 @@
 </script>
 
 {#if isOverlay}
-<main style="position: fixed; inset: 0; background: transparent; color: #e2e8f0; font-family: monospace; pointer-events: none;">
-  <div style="position: absolute; bottom: 24px; right: 24px; display: flex; flex-direction: column; gap: 8px; align-items: flex-end;">
-    {#each items as item}
-      <div
-        style="
-          pointer-events: auto;
-          padding: 8px 12px;
-          border-radius: 8px;
-          background: rgba(15,23,42,0.8);
-          border: 1px solid rgba(148, 163, 184, 0.6);
-          max-width: 320px;
-          box-shadow: 0 10px 40px rgba(0,0,0,0.7);
-        "
-      >
-        <div style="font-size: 13px; font-weight: 600; {getQualityColor(item.quality)}">
-          {item.name}
-        </div>
-        <div style="font-size: 11px; color: #9ca3af; margin-top: 2px;">
-          {item.quality}
-          {#if item.is_ethereal}<span style="color: #22d3ee; margin-left: 4px;">ETH</span>{/if}
-          {#if !item.is_identified}<span style="color: #9ca3af; margin-left: 4px;">[UNID]</span>{/if}
-        </div>
-        {#if item.stats}
-          <div style="font-size: 11px; color: #6b7280; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-            {item.stats.substring(0, 80)}{item.stats.length > 80 ? '...' : ''}
-          </div>
-        {/if}
-      </div>
-    {/each}
-  </div>
-</main>
+  <main class="overlay">
+    <NotificationStack {items} position="bottom-right" maxVisible={10} />
+  </main>
 {:else}
-<main style="min-height: 100vh; background: #0f172a; color: #e2e8f0; padding: 16px; font-family: monospace;">
-  <!-- Header -->
-  <div style="max-width: 900px; margin: 0 auto 24px auto;">
-    <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(30, 41, 59, 0.8); border-radius: 12px; border: 1px solid #334155; padding: 16px;">
-      <div>
-        <h1 style="font-size: 20px; font-weight: bold; margin: 0;">
-          D2MXLUtils <span style="color: #34d399;">Drop Notifier</span>
+  <main class="main-window">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-brand">
+        <h1 class="header-title">
+          D2MXLUtils <span class="text-accent">Drop Notifier</span>
         </h1>
-        <p style="font-size: 12px; color: #64748b; margin: 4px 0 0 0;">MedianXL Item Scanner</p>
+        <p class="header-subtitle">MedianXL Item Scanner</p>
       </div>
       
-      <div style="display: flex; align-items: center; gap: 16px;">
-        <!-- Status -->
-        <div style="text-align: right; font-size: 14px;">
-          <div>
-            <span style="color: #64748b;">Scanner:</span>
-            <span style="color: {scannerStatus === 'running' ? '#34d399' : scannerStatus === 'error' ? '#f87171' : '#64748b'};">
+      <div class="header-controls">
+        <div class="status-panel">
+          <div class="status-row">
+            <span class="status-label">Scanner:</span>
+            <span class="status-value" class:success={scannerStatus === 'running'} class:error={scannerStatus === 'error'}>
               {scannerStatus.toUpperCase()}
             </span>
           </div>
-          <div style="margin-top: 4px;">
-            <span style="color: #64748b;">Game:</span>
-            <span style="color: {gameStatus === 'ingame' ? '#34d399' : '#64748b'};">
+          <div class="status-row">
+            <span class="status-label">Game:</span>
+            <span class="status-value" class:success={gameStatus === 'ingame'}>
               {gameStatus === 'ingame' ? 'IN GAME' : gameStatus === 'menu' ? 'MENU' : 'UNKNOWN'}
             </span>
           </div>
         </div>
         
-        <!-- Button -->
-        <button
-          style="padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; border: none; cursor: pointer; background: {scannerStatus === 'running' || scannerStatus === 'starting' ? '#dc2626' : '#059669'}; color: white;"
-          on:click={toggleScanner}
+        <Button 
+          variant={scannerStatus === 'running' || scannerStatus === 'starting' ? 'danger' : 'primary'}
+          onclick={toggleScanner}
         >
           {scannerStatus === 'running' || scannerStatus === 'starting' ? 'Stop' : 'Start'}
-        </button>
+        </Button>
       </div>
-    </div>
-  </div>
+    </header>
 
-  <!-- Content grid -->
-  <div style="max-width: 900px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-    <!-- Items list -->
-    <div style="background: rgba(30, 41, 59, 0.8); border-radius: 12px; border: 1px solid #334155; overflow: hidden;">
-      <div style="display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #334155; background: rgba(30, 41, 59, 0.5);">
-        <h2 style="font-size: 14px; font-weight: 600; color: #cbd5e1; margin: 0;">Found Items ({items.length})</h2>
-        <button 
-          style="font-size: 12px; padding: 4px 8px; border-radius: 4px; background: #334155; color: #94a3b8; border: none; cursor: pointer;"
-          on:click={clearItems}
-        >
-          Clear
-        </button>
-      </div>
-      
-      <div style="max-height: 400px; overflow-y: auto;">
-        {#if items.length === 0}
-          <div style="padding: 32px; text-align: center; color: #475569;">
-            <p>No items found yet</p>
-            <p style="font-size: 12px; margin-top: 4px;">Items will appear here when detected in game</p>
-          </div>
-        {:else}
-          {#each items as item}
-            <div style="padding: 12px; border-bottom: 1px solid rgba(51, 65, 85, 0.5); border-left: 2px solid; {getQualityColor(item.quality)}">
-              <div style="font-weight: 500;">{item.name}</div>
-              <div style="font-size: 12px; color: #64748b; margin-top: 2px;">
-                {item.quality}
-                {#if item.is_ethereal}<span style="color: #22d3ee; margin-left: 4px;">ETH</span>{/if}
-                {#if !item.is_identified}<span style="color: #64748b; margin-left: 4px;">[UNID]</span>{/if}
-              </div>
-              {#if item.stats}
-                <div style="font-size: 11px; color: #475569; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
-                  {item.stats.substring(0, 60)}{item.stats.length > 60 ? '...' : ''}
+    <!-- Content grid -->
+    <div class="content-grid">
+      <!-- Items list -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Found Items ({items.length})</h2>
+          <Button variant="ghost" size="sm" onclick={clearItems}>Clear</Button>
+        </div>
+        
+        <div class="items-list">
+          {#if items.length === 0}
+            <div class="empty-state">
+              <p>No items found yet</p>
+              <p class="text-muted">Items will appear here when detected in game</p>
+            </div>
+          {:else}
+            {#each items as item (item.unit_id)}
+              {@const qc = getQualityColor(item.quality)}
+              <div class="item-row" style:border-left-color={qc.border}>
+                <div class="item-name" style:color={qc.color}>{item.name}</div>
+                <div class="item-meta">
+                  {item.quality}
+                  {#if item.is_ethereal}<span class="ethereal">ETH</span>{/if}
+                  {#if !item.is_identified}<span class="unid">[UNID]</span>{/if}
                 </div>
-              {/if}
+                {#if item.stats}
+                  <div class="item-stats">
+                    {item.stats.length > 60 ? item.stats.substring(0, 60) + '...' : item.stats}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+          {/if}
+        </div>
+      </section>
+
+      <!-- Logs -->
+      <section class="panel">
+        <div class="panel-header">
+          <h2 class="panel-title">Activity Log</h2>
+        </div>
+        
+        <div class="logs-list font-mono">
+          {#if logs.length === 0}
+            <div class="empty-state">
+              <p>No activity yet</p>
             </div>
-          {/each}
-        {/if}
-      </div>
+          {:else}
+            {#each logs as log}
+              <div class="log-entry">{log}</div>
+            {/each}
+          {/if}
+        </div>
+      </section>
     </div>
 
-    <!-- Logs -->
-    <div style="background: rgba(30, 41, 59, 0.8); border-radius: 12px; border: 1px solid #334155; overflow: hidden;">
-      <div style="padding: 12px 16px; border-bottom: 1px solid #334155; background: rgba(30, 41, 59, 0.5);">
-        <h2 style="font-size: 14px; font-weight: 600; color: #cbd5e1; margin: 0;">Activity Log</h2>
-      </div>
-      
-      <div style="max-height: 400px; overflow-y: auto; padding: 8px; font-size: 12px;">
-        {#if logs.length === 0}
-          <div style="padding: 16px; text-align: center; color: #475569;">
-            No activity yet
-          </div>
-        {:else}
-          {#each logs as log}
-            <div style="padding: 4px 8px; color: #64748b;">
-              {log}
-            </div>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  </div>
-
-  <!-- Message -->
-  {#if message}
-    <div style="max-width: 900px; margin: 16px auto 0 auto;">
-      <div style="font-size: 12px; color: #475569; background: rgba(30, 41, 59, 0.5); border-radius: 4px; padding: 8px 12px; border: 1px solid #334155;">
+    <!-- Message -->
+    {#if message}
+      <div class="message-bar">
         {message}
       </div>
-    </div>
-  {/if}
-</main>
+    {/if}
+  </main>
 {/if}
+
+<style>
+  /* Overlay mode */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  /* Main window */
+  .main-window {
+    min-height: 100vh;
+    padding: var(--space-4);
+    font-family: var(--font-mono);
+  }
+
+  /* Header */
+  .header {
+    max-width: 900px;
+    margin: 0 auto var(--space-5) auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-4);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+  }
+
+  .header-title {
+    font-size: var(--text-xl);
+    font-weight: 700;
+    margin: 0;
+  }
+
+  .header-subtitle {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    margin: var(--space-1) 0 0 0;
+  }
+
+  .header-controls {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  .status-panel {
+    text-align: right;
+    font-size: var(--text-sm);
+  }
+
+  .status-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+
+  .status-row + .status-row {
+    margin-top: var(--space-1);
+  }
+
+  .status-label {
+    color: var(--text-muted);
+  }
+
+  .status-value {
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .status-value.success {
+    color: var(--status-success-text);
+  }
+
+  .status-value.error {
+    color: var(--status-error-text);
+  }
+
+  /* Content grid */
+  .content-grid {
+    max-width: 900px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-4);
+  }
+
+  /* Lists */
+  .items-list,
+  .logs-list {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+
+  .empty-state {
+    padding: var(--space-6);
+    text-align: center;
+    color: var(--text-muted);
+  }
+
+  .empty-state p + p {
+    font-size: var(--text-xs);
+    margin-top: var(--space-1);
+  }
+
+  /* Item rows */
+  .item-row {
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--border-primary);
+    border-left: 3px solid var(--border-primary);
+  }
+
+  .item-name {
+    font-weight: 500;
+  }
+
+  .item-meta {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    margin-top: var(--space-1);
+    display: flex;
+    gap: var(--space-2);
+  }
+
+  .ethereal {
+    color: var(--quality-ethereal);
+  }
+
+  .unid {
+    color: var(--text-muted);
+  }
+
+  .item-stats {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    margin-top: var(--space-1);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Log entries */
+  .log-entry {
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  /* Message bar */
+  .message-bar {
+    max-width: 900px;
+    margin: var(--space-4) auto 0 auto;
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+  }
+</style>

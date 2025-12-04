@@ -1,0 +1,35 @@
+/* =============================================
+   D2MXLUtils - Main CSS Entry Point
+   ============================================= */
+
+/* Design tokens and CSS variables */
+@import './variables.css';
+
+/* Theme definitions */
+@import './themes/dark.css';
+@import './themes/light.css';
+
+/* Base reset */
+@import './reset.css';
+
+/* Component styles */
+@import './components.css';
+
+/* =============================================
+   Application-specific styles
+   ============================================= */
+
+/* Main app container */
+#app {
+  min-height: 100vh;
+}
+
+/* Overlay window - transparent background */
+.overlay-mode {
+  background: transparent !important;
+}
+
+.overlay-mode body {
+  background: transparent;
+}
+
