@@ -1,8 +1,10 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
   import { Tabs } from '../components';
+  import { windowState, type WindowState } from '../stores';
   import { GeneralTab, LootFilterTab, NotificationsTab } from './index';
 
   // Scanner and game status from backend
@@ -36,8 +38,57 @@
     }
   }
 
+  /** Save current window position and size */
+  async function saveWindowState() {
+    try {
+      const window = getCurrentWebviewWindow();
+      const factor = await window.scaleFactor();
+      const position = await window.outerPosition();
+      const size = await window.outerSize();
+      const maximized = await window.isMaximized();
+
+      const state: WindowState = {
+        x: Math.round(position.x / factor),
+        y: Math.round(position.y / factor),
+        width: Math.round(size.width / factor),
+        height: Math.round(size.height / factor),
+        maximized,
+      };
+
+      await windowState.save('main', state);
+    } catch (error) {
+      console.error('[MainWindow] Failed to save window state:', error);
+    }
+  }
+
+  /** Restore window position and size from saved state */
+  async function restoreWindowState() {
+    try {
+      const state = await windowState.load('main');
+      if (!state) return;
+
+      const window = getCurrentWebviewWindow();
+
+      // Restore position and size
+      await window.setPosition({ type: 'Logical', x: state.x, y: state.y });
+      await window.setSize({ type: 'Logical', width: state.width, height: state.height });
+
+      // Restore maximized state
+      if (state.maximized) {
+        await window.maximize();
+      }
+
+      console.log('[MainWindow] Restored window state:', state);
+    } catch (error) {
+      console.error('[MainWindow] Failed to restore window state:', error);
+    }
+  }
+
   onMount(() => {
     const unlisteners: Array<() => void> = [];
+
+    // Restore window state
+    restoreWindowState();
 
     // Listen for scanner status
     listen<string>('scanner-status', (event) => {
@@ -56,7 +107,24 @@
       }
     });
 
+    // Save window state on close
+    const window = getCurrentWebviewWindow();
+    window.onCloseRequested(async () => {
+      await saveWindowState();
+    }).then(u => unlisteners.push(u));
+
+    // Also save window state periodically when moved/resized
+    let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+    const debouncedSave = () => {
+      if (saveTimeout) clearTimeout(saveTimeout);
+      saveTimeout = setTimeout(saveWindowState, 1000);
+    };
+
+    window.onMoved(debouncedSave).then(u => unlisteners.push(u));
+    window.onResized(debouncedSave).then(u => unlisteners.push(u));
+
     return () => {
+      if (saveTimeout) clearTimeout(saveTimeout);
       unlisteners.forEach(u => u());
     };
   });
@@ -67,7 +135,7 @@
   <header class="header">
     <div class="brand">
       <h1 class="title">D2MXL<span class="accent">Utils</span></h1>
-      <span class="version">v0.1.0</span>
+      <span class="version">v1.2.0</span>
     </div>
     
     <div class="status-bar">
@@ -207,4 +275,3 @@
     color: var(--text-muted);
   }
 </style>
-

@@ -48,13 +48,13 @@
 
 <style>
   :global(body) {
-    background: transparent !important;
+    background: var(--bg-overlay) !important;
   }
   
   .overlay {
     position: fixed;
     inset: 0;
-    background: transparent;
+    background: var(--bg-overlay);
     pointer-events: none;
   }
 </style>

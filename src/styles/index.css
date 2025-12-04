@@ -28,7 +28,7 @@ html:not(.overlay-mode) #app {
 html.overlay-mode,
 html.overlay-mode body,
 html.overlay-mode #app {
-  background: transparent !important;
+  background: var(--bg-overlay) !important;
   min-height: 100vh;
 }
 

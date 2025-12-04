@@ -32,7 +32,7 @@ html:not(.overlay-mode) body {
 
 html.overlay-mode,
 html.overlay-mode body {
-  background: transparent !important;
+  background: var(--bg-overlay) !important;
 }
 
 img, picture, video, canvas, svg {

@@ -7,6 +7,7 @@ mod notifier;
 mod offsets;
 mod process;
 mod rules;
+mod settings;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -547,6 +548,7 @@ fn main() {
     setup_webview2_for_elevation();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             // Shared scanner state
             let state = AppState {
@@ -592,7 +594,11 @@ fn main() {
             start_scanner,
             stop_scanner,
             get_scanner_status,
-            sync_overlay_with_game
+            sync_overlay_with_game,
+            settings::load_settings,
+            settings::save_settings,
+            settings::get_window_state,
+            settings::save_window_state
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
