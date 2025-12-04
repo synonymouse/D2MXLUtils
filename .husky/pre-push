@@ -1,0 +1,34 @@
+#!/usr/bin/env sh
+. "$(dirname "$0")/_/husky.sh"
+
+set -e
+
+# Only enforce on main branch (change if you want another branch)
+BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$BRANCH" != "master" ]; then
+  exit 0
+fi
+
+# Read version from package.json
+VERSION="$(node -p "require('./package.json').version")"
+TAG="v$VERSION"
+
+# Check that tag exists and points to HEAD
+if git rev-parse "$TAG" >/dev/null 2>&1; then
+  TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+  HEAD_COMMIT="$(git rev-parse HEAD)"
+
+  if [ "$TAG_COMMIT" = "$HEAD_COMMIT" ]; then
+    echo "✔ Found tag $TAG on HEAD, push allowed."
+    exit 0
+  fi
+fi
+
+echo "✖ Cannot push to main without tag $TAG pointing to HEAD."
+echo "  1) Bump version and sync:"
+echo "     pnpm version patch   # or: pnpm version minor / major"
+echo "  2) Push with tags:"
+echo "     git push --follow-tags"
+exit 1
+
+

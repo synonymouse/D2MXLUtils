@@ -1,0 +1,70 @@
+name: Release D2MXLUtils
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app
+        run: pnpm tauri build
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: D2MXLUtils ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      - name: Package Windows bundle
+        shell: pwsh
+        run: |
+          $bundlePath = "src-tauri/target/release/bundle"
+          if (!(Test-Path $bundlePath)) {
+            Write-Error "Bundle path '$bundlePath' not found. Check Tauri build output."
+          }
+          Compress-Archive -Path "$bundlePath\*" -DestinationPath "d2mxlutils-windows-bundle.zip" -Force
+
+      - name: Upload bundle as release asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: d2mxlutils-windows-bundle.zip
+          asset_name: d2mxlutils-windows-bundle.zip
+          asset_content_type: application/zip
+
+
