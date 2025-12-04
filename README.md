@@ -37,6 +37,25 @@ pnpm tauri build # build Tauri desktop app
 
 Tauri packaging/bundling is configured under `src-tauri`; refer to Tauri docs and project scripts when adding release builds.
 
+### Release
+
+To create a new release:
+
+```bash
+# Bump version (choose one):
+pnpm version patch   # 0.1.0 → 0.1.1 (bugfixes)
+pnpm version minor   # 0.1.0 → 0.2.0 (new features)
+pnpm version major   # 0.1.0 → 1.0.0 (breaking changes)
+
+# Push with tag:
+git push --follow-tags
+```
+
+This will:
+1. Update version in `package.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`
+2. Create a commit and git tag (e.g. `v0.2.0`)
+3. Trigger GitHub Actions pipeline that builds the app and creates a GitHub Release with downloadable binaries
+
 ### Project structure (short)
 
 - `src/` — Svelte application and styles

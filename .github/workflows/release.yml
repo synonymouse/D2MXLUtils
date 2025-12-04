@@ -5,6 +5,9 @@ on:
     tags:
       - "v*.*.*"
 
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     runs-on: windows-latest
@@ -35,17 +38,6 @@ jobs:
       - name: Build Tauri app
         run: pnpm tauri build
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: D2MXLUtils ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-
       - name: Package Windows bundle
         shell: pwsh
         run: |
@@ -55,14 +47,10 @@ jobs:
           }
           Compress-Archive -Path "$bundlePath\*" -DestinationPath "d2mxlutils-windows-bundle.zip" -Force
 
-      - name: Upload bundle as release asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: d2mxlutils-windows-bundle.zip
-          asset_name: d2mxlutils-windows-bundle.zip
-          asset_content_type: application/zip
-
-
+          name: D2MXLUtils ${{ github.ref_name }}
+          files: d2mxlutils-windows-bundle.zip
+          draft: false
+          prerelease: false

@@ -257,6 +257,9 @@ fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
     }
 }
 
+/// Track if overlay was visible in the previous sync call
+static OVERLAY_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 #[cfg(target_os = "windows")]
 fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     // Find Diablo II top-level window by class name
@@ -297,6 +300,7 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
         if fg.0 != hwnd_game.0 {
             let _ = ShowWindow(hwnd_overlay, SW_HIDE);
             let _ = overlay_window.hide();
+            OVERLAY_WAS_VISIBLE.store(false, Ordering::SeqCst);
             return Ok(());
         }
     }
@@ -310,6 +314,9 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
 
+    // Check if overlay was hidden before (transition from hidden -> visible)
+    let was_visible = OVERLAY_WAS_VISIBLE.swap(true, Ordering::SeqCst);
+
     // Apply extended styles: layered + transparent (click-through) + toolwindow (hide from Alt+Tab)
     unsafe {
         let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
@@ -320,10 +327,23 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
 
         SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex_style);
 
-        // Move and resize overlay to match game window and ensure it is top-most over the game
-        if let Err(e) = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1)) {
-            return Err(format!("MoveWindow failed: {}", e));
+        // Workaround for WebView2 transparency bug on Windows:
+        // WebView2 doesn't apply transparency until the window is resized.
+        // When transitioning from hidden to visible, resize by 1 pixel then back.
+        if !was_visible {
+            // First resize to different size
+            let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width + 1, height + 1, BOOL(1));
+            let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
+            let _ = overlay_window.show();
+            // Then resize to correct size
+            let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1));
+        } else {
+            // Normal case: just move/resize to match game window
+            let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1));
+            let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
+            let _ = overlay_window.show();
         }
+
         // Reassert top-most z-order without stealing focus
         let _ = SetWindowPos(
             hwnd_overlay,
@@ -334,8 +354,6 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
             0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
-        let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
-        let _ = overlay_window.show();
     }
 
     Ok(())
