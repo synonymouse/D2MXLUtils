@@ -25,6 +25,8 @@ windows = { version = "0.58", features = [
     "Win32_System_LibraryLoader",
     # Features for elevated process handling (WEBVIEW2_USER_DATA_FOLDER fix)
     "Win32_UI_Shell",
-    "Win32_System_Com"
+    "Win32_System_Com",
+    # Features for global hotkeys
+    "Win32_UI_Input_KeyboardAndMouse"
 ] }
 

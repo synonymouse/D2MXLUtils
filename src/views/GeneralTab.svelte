@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { Toggle } from '../components';
-  import { settingsStore } from '../stores';
+  import { Toggle, HotkeyInput } from '../components';
+  import { settingsStore, type HotkeyConfig } from '../stores';
 
   // Derived state from settings store
   let soundEnabled = $derived(settingsStore.settings.soundEnabled);
   let currentTheme = $derived(settingsStore.settings.theme);
+  let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
 
   function handleSoundToggle(checked: boolean) {
     settingsStore.setSoundEnabled(checked);
@@ -12,6 +13,10 @@
 
   function handleThemeToggle(checked: boolean) {
     settingsStore.setTheme(checked ? 'dark' : 'light');
+  }
+
+  function handleHotkeyChange(hotkey: HotkeyConfig) {
+    settingsStore.setToggleWindowHotkey(hotkey);
   }
 </script>
 
@@ -25,6 +30,18 @@
         <span class="setting-hint">Use dark color scheme</span>
       </div>
       <Toggle checked={currentTheme === 'dark'} onchange={handleThemeToggle} />
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <h2 class="section-title">Hotkeys</h2>
+    
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Toggle window</span>
+        <span class="setting-hint">Show/hide main window over game</span>
+      </div>
+      <HotkeyInput value={toggleWindowHotkey} onchange={handleHotkeyChange} />
     </div>
   </div>
 

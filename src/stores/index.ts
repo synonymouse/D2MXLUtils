@@ -1,2 +1,2 @@
-export { settingsStore, windowState, type AppSettings, type WindowState } from './settings.svelte';
+export { settingsStore, windowState, type AppSettings, type WindowState, type HotkeyConfig } from './settings.svelte';
 

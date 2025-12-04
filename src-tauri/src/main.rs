@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod d2types;
+mod hotkeys;
 mod injection;
 mod logger;
 mod notifier;
@@ -16,6 +17,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
+use crate::hotkeys::HotkeyState;
 use crate::logger::{error as log_error, info as log_info};
 
 use notifier::DropScanner;
@@ -559,6 +561,28 @@ fn main() {
             let should_auto_scan = state.should_auto_scan.clone();
             app.manage(state);
 
+            // Initialize hotkey state
+            let hotkey_state = HotkeyState::new();
+            
+            // Load settings and start hotkey listener
+            let app_handle_for_hotkeys = app.handle().clone();
+            match settings::load_settings(app.handle().clone()) {
+                Ok(loaded_settings) => {
+                    log_info(&format!(
+                        "Starting hotkey listener with: {}",
+                        loaded_settings.toggle_window_hotkey.display
+                    ));
+                    hotkey_state.start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
+                }
+                Err(e) => {
+                    log_error(&format!("Failed to load settings for hotkeys: {}", e));
+                    // Start with default hotkey
+                    hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
+                }
+            }
+            
+            app.manage(hotkey_state);
+
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
             spawn_auto_scanner(is_scanning.clone(), should_auto_scan.clone(), app_handle);
@@ -598,7 +622,9 @@ fn main() {
             settings::load_settings,
             settings::save_settings,
             settings::get_window_state,
-            settings::save_window_state
+            settings::save_window_state,
+            hotkeys::update_hotkey,
+            hotkeys::get_hotkey
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

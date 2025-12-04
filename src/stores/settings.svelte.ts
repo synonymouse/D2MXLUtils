@@ -7,6 +7,16 @@
 
 import { invoke } from '@tauri-apps/api/core';
 
+/** Hotkey configuration interface */
+export interface HotkeyConfig {
+  /** Virtual key code (e.g., 0x4B for 'K') */
+  keyCode: number;
+  /** Modifier flags (Ctrl, Shift, Alt, Win) */
+  modifiers: number;
+  /** Human-readable representation (e.g., "Ctrl+K") */
+  display: string;
+}
+
 /** Application settings interface */
 export interface AppSettings {
   /** UI theme: "dark" or "light" */
@@ -29,6 +39,8 @@ export interface AppSettings {
   notificationX: number;
   /** Notification position Y offset from edge (percentage 0-100) */
   notificationY: number;
+  /** Hotkey configuration for toggling main window */
+  toggleWindowHotkey: HotkeyConfig;
 }
 
 /** Window state interface */
@@ -39,6 +51,13 @@ export interface WindowState {
   height: number;
   maximized: boolean;
 }
+
+/** Default hotkey (Ctrl+K) */
+const DEFAULT_HOTKEY: HotkeyConfig = {
+  keyCode: 0x4B,     // 'K' key
+  modifiers: 0x0002, // MOD_CONTROL
+  display: 'Ctrl+K',
+};
 
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
@@ -52,6 +71,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   notificationOpacity: 0.9,
   notificationX: 2.0,
   notificationY: 50.0,
+  toggleWindowHotkey: DEFAULT_HOTKEY,
 };
 
 /** Settings store singleton */
@@ -174,6 +194,23 @@ class SettingsStore {
   /** Set sound enabled state */
   setSoundEnabled(enabled: boolean): void {
     this.set('soundEnabled', enabled);
+  }
+
+  /** Get toggle window hotkey */
+  get toggleWindowHotkey(): HotkeyConfig {
+    return this._settings.toggleWindowHotkey;
+  }
+
+  /** Set toggle window hotkey */
+  async setToggleWindowHotkey(hotkey: HotkeyConfig): Promise<void> {
+    this.set('toggleWindowHotkey', hotkey);
+    // Also update the backend hotkey listener
+    try {
+      await invoke('update_hotkey', { hotkey });
+      console.log('[Settings] Hotkey updated:', hotkey.display);
+    } catch (error) {
+      console.error('[Settings] Failed to update hotkey:', error);
+    }
   }
 }
 

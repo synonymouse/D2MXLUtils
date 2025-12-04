@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 use tauri_plugin_store::StoreExt;
 
+use crate::hotkeys::HotkeyConfig;
 use crate::logger::{error as log_error, info as log_info};
 
 const SETTINGS_FILE: &str = "settings.json";
@@ -54,6 +55,10 @@ pub struct AppSettings {
     /// Notification position Y offset from edge (percentage 0-100)
     #[serde(default = "default_notification_y")]
     pub notification_y: f32,
+
+    /// Hotkey configuration for toggling main window
+    #[serde(default)]
+    pub toggle_window_hotkey: HotkeyConfig,
 }
 
 /// Window state for persistence
@@ -117,6 +122,7 @@ impl Default for AppSettings {
             notification_opacity: default_notification_opacity(),
             notification_x: default_notification_x(),
             notification_y: default_notification_y(),
+            toggle_window_hotkey: HotkeyConfig::default(),
         }
     }
 }
