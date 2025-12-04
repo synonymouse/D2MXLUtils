@@ -52,27 +52,41 @@ use std::os::windows::ffi::OsStrExt;
 /// Shared state for controlling the scanner
 struct AppState {
     is_scanning: Arc<AtomicBool>,
+    should_auto_scan: Arc<AtomicBool>,
 }
 
-#[tauri::command]
-fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
+/// Check if Diablo II window exists
+#[cfg(target_os = "windows")]
+fn is_diablo2_running() -> bool {
+    let class_wide: Vec<u16> = OsStr::new("Diablo II")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    let hwnd = unsafe { FindWindowW(PCWSTR(class_wide.as_ptr()), PCWSTR::null()) };
+    hwnd.is_ok() && !hwnd.unwrap().0.is_null()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_diablo2_running() -> bool {
+    false
+}
+
+/// Start the scanner (internal function used by auto-start and manual start)
+fn start_scanner_internal(is_scanning: Arc<AtomicBool>, app_handle: AppHandle) {
     // Check if already running
-    if state.is_scanning.load(Ordering::SeqCst) {
-        return "Scanner is already running".to_string();
+    if is_scanning.load(Ordering::SeqCst) {
+        return;
     }
     
     // Set scanning flag
-    state.is_scanning.store(true, Ordering::SeqCst);
+    is_scanning.store(true, Ordering::SeqCst);
     log_info("Scanner starting...");
     
     // Emit status to frontend
-    if let Err(e) = app.emit("scanner-status", "starting") {
+    if let Err(e) = app_handle.emit("scanner-status", "starting") {
         log_error(&format!("Failed to emit event (starting): {}", e));
     }
-    
-    // Clone what we need for the background thread
-    let is_scanning = state.is_scanning.clone();
-    let app_handle = app.clone();
     
     // Spawn background scanning thread
     thread::spawn(move || {
@@ -108,6 +122,12 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
         
         // Main scanning loop
         while is_scanning.load(Ordering::SeqCst) {
+            // Check if D2 is still running
+            if !is_diablo2_running() {
+                log_info("Diablo II closed, stopping scanner");
+                break;
+            }
+            
             let ingame = scanner.is_ingame();
             
             // Detect entering a new game
@@ -117,28 +137,10 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
                 if let Err(e) = app_handle.emit("game-status", "ingame") {
                     log_error(&format!("Failed to emit event (ingame): {}", e));
                 }
-                // Show overlay when entering a game
-                if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                    if let Err(e) = overlay.show() {
-                        log_error(&format!(
-                            "Failed to show overlay window when entering game: {}",
-                            e
-                        ));
-                    }
-                }
             } else if !ingame && was_ingame {
                 log_info("Left game");
                 if let Err(e) = app_handle.emit("game-status", "menu") {
                     log_error(&format!("Failed to emit event (menu): {}", e));
-                }
-                 // Hide overlay when leaving a game
-                if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                    if let Err(e) = overlay.hide() {
-                        log_error(&format!(
-                            "Failed to hide overlay window when leaving game: {}",
-                            e
-                        ));
-                    }
                 }
             }
             was_ingame = ingame;
@@ -160,11 +162,15 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
             thread::sleep(Duration::from_millis(200));
         }
         
+        is_scanning.store(false, Ordering::SeqCst);
         log_info("Scanner thread stopped");
         if let Err(e) = app_handle.emit("scanner-status", "stopped") {
             log_error(&format!("Failed to emit event (stopped): {}", e));
         }
-        // Ensure overlay is hidden when scanner stops for any reason
+        if let Err(e) = app_handle.emit("game-status", "unknown") {
+            log_error(&format!("Failed to emit event (unknown): {}", e));
+        }
+        // Ensure overlay is hidden when scanner stops
         if let Some(overlay) = app_handle.get_webview_window("overlay") {
             if let Err(e) = overlay.hide() {
                 log_error(&format!(
@@ -174,7 +180,39 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
             }
         }
     });
+}
+
+/// Spawn background thread that monitors for Diablo II and auto-starts scanner
+fn spawn_auto_scanner(
+    is_scanning: Arc<AtomicBool>,
+    should_auto_scan: Arc<AtomicBool>,
+    app_handle: AppHandle,
+) {
+    thread::spawn(move || {
+        log_info("Auto-scanner monitor started");
+        
+        while should_auto_scan.load(Ordering::SeqCst) {
+            // If not currently scanning, check if D2 is running
+            if !is_scanning.load(Ordering::SeqCst) && is_diablo2_running() {
+                log_info("Diablo II detected, auto-starting scanner");
+                start_scanner_internal(is_scanning.clone(), app_handle.clone());
+            }
+            
+            // Check every 2 seconds
+            thread::sleep(Duration::from_secs(2));
+        }
+        
+        log_info("Auto-scanner monitor stopped");
+    });
+}
+
+#[tauri::command]
+fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
+    if state.is_scanning.load(Ordering::SeqCst) {
+        return "Scanner is already running".to_string();
+    }
     
+    start_scanner_internal(state.is_scanning.clone(), app);
     "Scanner started".to_string()
 }
 
@@ -203,6 +241,7 @@ fn get_scanner_status(state: tauri::State<AppState>) -> bool {
 /// Sync the transparent overlay window with the Diablo II game window.
 ///
 /// - Positions and resizes the `overlay` window to match Diablo II bounds
+/// - Shows overlay only when Diablo II is the foreground window
 /// - Applies WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW styles
 #[tauri::command]
 fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
@@ -236,9 +275,8 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     }
 
     // Ensure Tauri overlay window exists (by label)
-    if app.get_webview_window("overlay").is_none() {
-        return Err("Overlay window with label 'overlay' not found".to_string());
-    }
+    let overlay_window = app.get_webview_window("overlay")
+        .ok_or("Overlay window with label 'overlay' not found")?;
 
     // Find overlay OS window by its title
     let title_wide: Vec<u16> = OsStr::new("D2MXLUtils Overlay")
@@ -258,6 +296,7 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
         let fg = GetForegroundWindow();
         if fg.0 != hwnd_game.0 {
             let _ = ShowWindow(hwnd_overlay, SW_HIDE);
+            let _ = overlay_window.hide();
             return Ok(());
         }
     }
@@ -296,6 +335,7 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
         );
         let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
+        let _ = overlay_window.show();
     }
 
     Ok(())
@@ -493,18 +533,26 @@ fn main() {
             // Shared scanner state
             let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
+                should_auto_scan: Arc::new(AtomicBool::new(true)),
             };
             let is_scanning = state.is_scanning.clone();
+            let should_auto_scan = state.should_auto_scan.clone();
             app.manage(state);
 
-            // When the main window is closed, stop the scanner and close the overlay window
-            let app_handle = app.handle();
+            // Spawn auto-scanner monitor
+            let app_handle = app.handle().clone();
+            spawn_auto_scanner(is_scanning.clone(), should_auto_scan.clone(), app_handle);
+
+            // When the main window is closed, stop everything and close the overlay window
             if let Some(main_window) = app.get_webview_window("main") {
-                let app_handle_clone = app_handle.clone();
                 let is_scanning_clone = is_scanning.clone();
+                let should_auto_scan_clone = should_auto_scan.clone();
+                let app_handle_clone = app.handle().clone();
                 main_window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
                         log_info("Main window close requested, stopping scanner and closing overlay");
+                        // Stop auto-scanner monitor
+                        should_auto_scan_clone.store(false, Ordering::SeqCst);
                         // Stop scanner loop
                         is_scanning_clone.store(false, Ordering::SeqCst);
                         // Close overlay window if it exists

@@ -20,16 +20,15 @@
    ============================================= */
 
 /* Main app container */
-#app {
+html:not(.overlay-mode) #app {
   min-height: 100vh;
 }
 
-/* Overlay window - transparent background */
-.overlay-mode {
+/* Overlay window - fully transparent */
+html.overlay-mode,
+html.overlay-mode body,
+html.overlay-mode #app {
   background: transparent !important;
-}
-
-.overlay-mode body {
-  background: transparent;
+  min-height: 100vh;
 }
 

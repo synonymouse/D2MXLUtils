@@ -22,8 +22,17 @@ body {
   line-height: 1.5;
   font-family: var(--font-sans);
   font-size: var(--text-base);
-  background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+/* Only apply background to main window, not overlay */
+html:not(.overlay-mode) body {
+  background: var(--bg-primary);
+}
+
+html.overlay-mode,
+html.overlay-mode body {
+  background: transparent !important;
 }
 
 img, picture, video, canvas, svg {

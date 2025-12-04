@@ -30,9 +30,9 @@
         "fullscreen": false,
         "decorations": false,
         "transparent": true,
-        "backgroundColor": "#00000000",
+        "skipTaskbar": true,
         "alwaysOnTop": true,
-        "visible": true
+        "visible": false
       }
     ]
   },
