@@ -30,27 +30,18 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: i686-pc-windows-msvc
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Tauri app
-        run: pnpm tauri build
-
-      - name: Package Windows bundle
-        shell: pwsh
-        run: |
-          $bundlePath = "src-tauri/target/release/bundle"
-          if (!(Test-Path $bundlePath)) {
-            Write-Error "Bundle path '$bundlePath' not found. Check Tauri build output."
-          }
-          Compress-Archive -Path "$bundlePath\*" -DestinationPath "d2mxlutils-windows-bundle.zip" -Force
+      - name: Build Tauri app (32-bit)
+        run: pnpm tauri build --target i686-pc-windows-msvc
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: D2MXLUtils ${{ github.ref_name }}
-          files: d2mxlutils-windows-bundle.zip
+          files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
           draft: false
           prerelease: false
