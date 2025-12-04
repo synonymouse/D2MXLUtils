@@ -1,6 +1,6 @@
 {
   "name": "d2mxlutils",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "type": "module",
   "private": true,
   "description": "D2MXLUtils Drop Notifier overlay (Tauri + Rust + Svelte)",
