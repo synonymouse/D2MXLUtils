@@ -9,6 +9,7 @@ const rootDir = path.resolve(__dirname, "..");
 
 const pkgPath = path.join(rootDir, "package.json");
 const cargoPath = path.join(rootDir, "src-tauri", "Cargo.toml");
+const cargoLockPath = path.join(rootDir, "src-tauri", "Cargo.lock");
 const tauriConfPath = path.join(rootDir, "src-tauri", "tauri.conf.json");
 
 /** Load package.json and take its version as the single source of truth */
@@ -32,6 +33,21 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   writeFileSync(cargoPath, next, "utf8");
 }
 
+/** Sync version in Cargo.lock (root package entry) */
+{
+  const content = readFileSync(cargoLockPath, "utf8");
+  const next = content.replace(
+    /(\[\[package\]\][\s\S]*?name = "d2mxlutils"[\s\S]*?version = ")(\d+\.\d+\.\d+)(")/,
+    `$1${version}$3`
+  );
+  if (content === next) {
+    console.warn(
+      "No version line replaced for d2mxlutils in Cargo.lock – check the file format."
+    );
+  }
+  writeFileSync(cargoLockPath, next, "utf8");
+}
+
 /** Sync version in tauri.conf.json (desktop bundle config) */
 {
   const content = readFileSync(tauriConfPath, "utf8");
@@ -47,8 +63,10 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
 
 // Stage synced files so that `pnpm version` includes them into its commit
 try {
-  execSync(`git add "${cargoPath}" "${tauriConfPath}"`, { stdio: "inherit" });
-  console.log("Staged Cargo.toml and tauri.conf.json for commit");
+  execSync(`git add "${cargoPath}" "${cargoLockPath}" "${tauriConfPath}"`, {
+    stdio: "inherit",
+  });
+  console.log("Staged Cargo.toml, Cargo.lock and tauri.conf.json for commit");
 } catch (err) {
   console.warn(
     "Failed to stage synced files automatically. Please run: git add src-tauri/Cargo.toml src-tauri/tauri.conf.json"
