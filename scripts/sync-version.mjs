@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { execSync } from "node:child_process";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,15 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   writeFileSync(tauriConfPath, next, "utf8");
 }
 
-console.log(`Synced version to ${version} in Cargo.toml and tauri.conf.json`);
+// Stage synced files so that `pnpm version` includes them into its commit
+try {
+  execSync(`git add "${cargoPath}" "${tauriConfPath}"`, { stdio: "inherit" });
+  console.log("Staged Cargo.toml and tauri.conf.json for commit");
+} catch (err) {
+  console.warn(
+    "Failed to stage synced files automatically. Please run: git add src-tauri/Cargo.toml src-tauri/tauri.conf.json"
+  );
+}
 
+console.log(`Synced version to ${version} in Cargo.toml and tauri.conf.json`);
 
