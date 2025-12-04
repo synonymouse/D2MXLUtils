@@ -587,7 +587,8 @@ fn main() {
             let app_handle = app.handle().clone();
             spawn_auto_scanner(is_scanning.clone(), should_auto_scan.clone(), app_handle);
 
-            // When the main window is closed, stop everything and close the overlay window
+            // When the main window is closed, stop everything, close the overlay window
+            // and terminate the application.
             if let Some(main_window) = app.get_webview_window("main") {
                 let is_scanning_clone = is_scanning.clone();
                 let should_auto_scan_clone = should_auto_scan.clone();
@@ -608,6 +609,8 @@ fn main() {
                                 ));
                             }
                         }
+
+                        app_handle_clone.exit(0);
                     }
                 });
             }

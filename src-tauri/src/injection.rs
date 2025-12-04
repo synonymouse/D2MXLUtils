@@ -13,8 +13,6 @@ use windows::Win32::System::Threading::{
 };
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
-#[cfg(target_os = "windows")]
-use std::sync::OnceLock;
 
 use crate::offsets::{d2client, d2common};
 use crate::process::ProcessHandle;
@@ -28,17 +26,16 @@ pub struct RemoteAlloc {
 }
 
 // NOTE: We intentionally do NOT free the remote memory in Drop.
-// Original D2Stats allocates its injection buffers once per Diablo II
-// process and keeps them alive for the entire lifetime of the game.
-// Releasing the buffers while the injected helper code still references
-// their addresses can lead to subtle bugs between scanner restarts.
+// The OS will reclaim the memory when the game process exits. We no longer
+// reuse the same buffers across different scanner instances or game
+// processes – each `D2Injector` allocates its own buffers – but we still
+// avoid calling VirtualFreeEx manually to keep the implementation simple
+// and robust across process restarts.
 #[cfg(target_os = "windows")]
 impl Drop for RemoteAlloc {
     fn drop(&mut self) {
-        // Important: we intentionally do NOT free the remote memory here.
-        // We allocate the injection buffers once per Diablo II process and
-        // reuse the same addresses across scanner restarts. The OS will
-        // reclaim the memory when the game process exits.
+        // Intentionally no-op: remote memory is released when the
+        // Diablo II process terminates.
     }
 }
 
@@ -66,34 +63,6 @@ impl RemoteAlloc {
             size,
         })
     }
-}
-
-// Global injection buffers that are allocated once per Diablo II
-// process and then reused across scanner restarts, mirroring the
-// original D2Stats behaviour.
-#[cfg(target_os = "windows")]
-static STRING_BUFFER_ADDR: OnceLock<usize> = OnceLock::new();
-#[cfg(target_os = "windows")]
-static PARAMS_BUFFER_ADDR: OnceLock<usize> = OnceLock::new();
-
-/// Helper: get or lazily allocate a remote buffer, returning its address.
-#[cfg(target_os = "windows")]
-fn get_or_init_addr(
-    cell: &OnceLock<usize>,
-    process: &ProcessHandle,
-    size: usize,
-) -> Result<usize, String> {
-    if let Some(addr) = cell.get() {
-        return Ok(*addr);
-    }
-
-    let alloc = RemoteAlloc::new(process, size)?;
-    let addr = alloc.address;
-
-    // Ignore error if another thread initialized first.
-    let _ = cell.set(addr);
-
-    Ok(*cell.get().unwrap_or(&addr))
 }
 
 /// Execute a function in the remote process via CreateRemoteThread
@@ -150,23 +119,12 @@ impl D2Injector {
         d2_client: usize,
         d2_common: usize,
     ) -> Result<Self, String> {
-        // Allocate (or reuse) global buffers in game memory.
-        // This ensures the injection shellcode always points to
-        // the same string/params buffers across scanner restarts.
-        let string_addr = get_or_init_addr(&STRING_BUFFER_ADDR, process, 0x1000)?;
-        let params_addr = get_or_init_addr(&PARAMS_BUFFER_ADDR, process, 0x100)?;
-
-        // Create local wrappers for convenience (Drop is a no-op).
-        let string_buffer = RemoteAlloc {
-            handle: process.handle,
-            address: string_addr,
-            size: 0x1000,
-        };
-        let params_buffer = RemoteAlloc {
-            handle: process.handle,
-            address: params_addr,
-            size: 0x100,
-        };
+        // Allocate fresh buffers in the game process for this injector.
+        // This avoids keeping stale addresses when the Diablo II process
+        // is closed and later restarted, which previously broke
+        // re-attachment of the scanner after the first game session.
+        let string_buffer = RemoteAlloc::new(process, 0x1000)?;
+        let params_buffer = RemoteAlloc::new(process, 0x100)?;
 
         let inject_base = d2_client + d2client::INJECT_BASE;
         let inject_get_string = inject_base + d2client::inject::GET_STRING;
