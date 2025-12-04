@@ -241,6 +241,26 @@ fn get_scanner_status(state: tauri::State<AppState>) -> bool {
     state.is_scanning.load(Ordering::SeqCst)
 }
 
+// ===== DSL Parser Commands =====
+
+/// Parse DSL text into FilterConfig JSON
+#[tauri::command]
+fn parse_filter_dsl(text: String) -> Result<rules::FilterConfig, Vec<rules::ParseError>> {
+    rules::parse_dsl(&text)
+}
+
+/// Convert FilterConfig to DSL text
+#[tauri::command]
+fn filter_to_dsl(config: rules::FilterConfig) -> String {
+    rules::to_dsl(&config)
+}
+
+/// Validate DSL text and return errors/warnings
+#[tauri::command]
+fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
+    rules::validate_dsl(&text)
+}
+
 /// Sync the transparent overlay window with the Diablo II game window.
 ///
 /// - Positions and resizes the `overlay` window to match Diablo II bounds
@@ -622,6 +642,9 @@ fn main() {
             stop_scanner,
             get_scanner_status,
             sync_overlay_with_game,
+            parse_filter_dsl,
+            filter_to_dsl,
+            validate_filter_dsl,
             settings::load_settings,
             settings::save_settings,
             settings::get_window_state,
