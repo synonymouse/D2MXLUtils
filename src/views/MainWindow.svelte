@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
-  import { Tabs } from '../components';
+  import { Tabs, ThemeToggle } from '../components';
   import { windowState, type WindowState } from '../stores';
   import { GeneralTab, LootFilterTab, NotificationsTab } from './index';
 
@@ -138,19 +138,16 @@
       <span class="version">v1.2.0</span>
     </div>
     
-    <div class="status-bar">
-      <div class="status-item">
-        <span class="status-label">Scanner</span>
-        <span class="status-value" style:color={getStatusColor(scannerStatus)}>
-          {scannerStatus.toUpperCase()}
-        </span>
-      </div>
-      <div class="status-divider"></div>
-      <div class="status-item">
-        <span class="status-label">Diablo II</span>
-        <span class="status-value" style:color={gameStatus === 'ingame' ? 'var(--status-success-text)' : 'var(--text-muted)'}>
-          {getGameStatusText()}
-        </span>
+    <div class="header-right">
+      <ThemeToggle />
+      
+      <div class="status-bar">
+        <div class="status-item">
+          <span class="status-label">Diablo II</span>
+          <span class="status-value" style:color={gameStatus === 'ingame' ? 'var(--status-success-text)' : 'var(--text-muted)'}>
+            {getGameStatusText()}
+          </span>
+        </div>
       </div>
     </div>
   </header>
@@ -220,40 +217,43 @@
     color: var(--text-muted);
   }
 
-  .status-bar {
+  .header-right {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-1) var(--space-3);
+  }
+
+  .status-bar {
+    display: flex;
+    align-items: center;
+    height: 36px;
+    padding: 0 var(--space-3);
     background: var(--bg-tertiary);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-md);
   }
 
   .status-item {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 2px;
+    gap: 1px;
+    justify-content: center;
   }
 
   .status-label {
-    font-size: 10px;
+    font-size: 9px;
     font-weight: 500;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    line-height: 1;
   }
 
   .status-value {
     font-family: var(--font-mono);
-    font-size: var(--text-sm);
+    font-size: 11px;
     font-weight: 600;
-  }
-
-  .status-divider {
-    width: 1px;
-    height: 28px;
-    background: var(--border-primary);
+    line-height: 1;
   }
 
   /* Content */

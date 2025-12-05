@@ -4,15 +4,10 @@
 
   // Derived state from settings store
   let soundEnabled = $derived(settingsStore.settings.soundEnabled);
-  let currentTheme = $derived(settingsStore.settings.theme);
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
 
   function handleSoundToggle(checked: boolean) {
     settingsStore.setSoundEnabled(checked);
-  }
-
-  function handleThemeToggle(checked: boolean) {
-    settingsStore.setTheme(checked ? 'dark' : 'light');
   }
 
   function handleHotkeyChange(hotkey: HotkeyConfig) {
@@ -21,18 +16,6 @@
 </script>
 
 <section class="tab-content">
-  <div class="settings-section">
-    <h2 class="section-title">Appearance</h2>
-    
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Dark theme</span>
-        <span class="setting-hint">Use dark color scheme</span>
-      </div>
-      <Toggle checked={currentTheme === 'dark'} onchange={handleThemeToggle} />
-    </div>
-  </div>
-
   <div class="settings-section">
     <h2 class="section-title">Hotkeys</h2>
     
