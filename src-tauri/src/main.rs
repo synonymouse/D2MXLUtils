@@ -7,6 +7,7 @@ mod logger;
 mod notifier;
 mod offsets;
 mod process;
+mod profiles;
 mod rules;
 mod settings;
 
@@ -650,7 +651,14 @@ fn main() {
             settings::get_window_state,
             settings::save_window_state,
             hotkeys::update_hotkey,
-            hotkeys::get_hotkey
+            hotkeys::get_hotkey,
+            profiles::list_profiles,
+            profiles::load_profile,
+            profiles::save_profile,
+            profiles::delete_profile,
+            profiles::rename_profile,
+            profiles::duplicate_profile,
+            profiles::create_profile
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

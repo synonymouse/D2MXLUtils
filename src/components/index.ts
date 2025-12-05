@@ -5,6 +5,7 @@ export { default as Toggle } from './Toggle.svelte';
 export { default as Tabs } from './Tabs.svelte';
 export { default as HotkeyInput } from './HotkeyInput.svelte';
 export { default as ThemeToggle } from './ThemeToggle.svelte';
+export { default as ProfileSelector } from './ProfileSelector.svelte';
 
 // Notification components
 export { default as Notification } from './Notification.svelte';

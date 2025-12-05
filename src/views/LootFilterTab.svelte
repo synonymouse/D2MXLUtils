@@ -1,8 +1,9 @@
 <script lang="ts">
   import { RulesEditor, type ValidationResult } from "../editor";
-  import { Button } from "../components";
+  import { Button, ProfileSelector } from "../components";
+  import { settingsStore } from "../stores";
 
-  // Default example filter
+  // Default example filter for new/empty profiles
   const DEFAULT_FILTER = `# D2MXLUtils Loot Filter
 # Lines starting with # are comments
 
@@ -27,10 +28,12 @@
 `;
 
   let dslText = $state(DEFAULT_FILTER);
+  let selectedProfile = $state(settingsStore.settings.activeProfile || "");
   let validationStatus = $state<"idle" | "valid" | "error">("idle");
   let errorCount = $state(0);
   let ruleCount = $state(0);
   let isSaving = $state(false);
+  let hasUnsavedChanges = $state(false);
 
   /**
    * Handle validation results from the editor's linter
@@ -51,6 +54,7 @@
   function handleChange(_newValue: string) {
     // Reset status when content changes (will be updated by linter after debounce)
     validationStatus = "idle";
+    hasUnsavedChanges = true;
   }
 
   /**
@@ -58,39 +62,60 @@
    */
   async function handleSave(newValue: string) {
     dslText = newValue;
-    await saveFilter();
+    // Trigger profile save via ProfileSelector
+    const profileSelector = document.querySelector('.profile-selector button[class*="primary"]') as HTMLButtonElement | null;
+    profileSelector?.click();
   }
 
   /**
-   * Save the filter
+   * Handle profile load from ProfileSelector
    */
-  async function saveFilter() {
-    isSaving = true;
-
-    try {
-      // Only save if validation passed
-      if (validationStatus === "valid") {
-        // TODO: Save to profile (Phase 7 - profiles support)
-        console.log("[LootFilterTab] Filter saved successfully");
-      } else if (validationStatus === "error") {
-        console.log("[LootFilterTab] Cannot save - filter has errors");
-      } else {
-        // Status is idle - validation hasn't run yet
-        console.log("[LootFilterTab] Waiting for validation...");
-      }
-    } finally {
-      isSaving = false;
+  function handleProfileLoad(name: string, dslSource: string) {
+    dslText = dslSource || DEFAULT_FILTER;
+    selectedProfile = name;
+    hasUnsavedChanges = false;
+    validationStatus = "idle";
+    
+    // Update settings with active profile
+    if (name) {
+      settingsStore.set('activeProfile', name);
     }
   }
 
   /**
-   * Reset to default filter
+   * Handle profile selection change
+   */
+  function handleProfileSelect(_profile: { name: string } | null) {
+    hasUnsavedChanges = false;
+  }
+
+  /**
+   * Get current DSL for saving
+   */
+  function getCurrentDsl(): string {
+    return dslText;
+  }
+
+  /**
+   * Handle save completion
+   */
+  function handleSaveComplete() {
+    hasUnsavedChanges = false;
+    console.log("[LootFilterTab] Profile saved successfully");
+  }
+
+  /**
+   * Reset to default filter (for current profile)
    */
   function resetToDefault() {
+    if (hasUnsavedChanges && !confirm("Discard unsaved changes?")) {
+      return;
+    }
     dslText = DEFAULT_FILTER;
     validationStatus = "idle";
     errorCount = 0;
     ruleCount = 0;
+    hasUnsavedChanges = true;
   }
 </script>
 
@@ -107,9 +132,20 @@
           —
         {/if}
       </span>
+      {#if hasUnsavedChanges}
+        <span class="unsaved-indicator" title="Unsaved changes">●</span>
+      {/if}
     </div>
 
     <div class="header-actions">
+      <ProfileSelector
+        bind:selectedProfile
+        onselect={handleProfileSelect}
+        onload={handleProfileLoad}
+        getCurrentDsl={getCurrentDsl}
+        onsave={handleSaveComplete}
+        canSave={validationStatus === "valid"}
+      />
       <Button
         variant="ghost"
         size="sm"
@@ -117,14 +153,6 @@
         disabled={isSaving}
       >
         Reset
-      </Button>
-      <Button
-        variant="primary"
-        size="sm"
-        onclick={saveFilter}
-        disabled={validationStatus !== "valid" || isSaving}
-      >
-        {isSaving ? "Saving..." : "Save"}
       </Button>
     </div>
   </header>
@@ -209,6 +237,8 @@
     justify-content: space-between;
     align-items: center;
     flex-shrink: 0;
+    flex-wrap: wrap;
+    gap: var(--space-2, 8px);
   }
 
   .header-left {
@@ -252,6 +282,17 @@
   .status-badge.error {
     background: color-mix(in srgb, var(--status-error-text) 18%, transparent);
     color: var(--status-error-text);
+  }
+
+  .unsaved-indicator {
+    color: var(--accent);
+    font-size: 12px;
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
   }
 
   .editor-container {
