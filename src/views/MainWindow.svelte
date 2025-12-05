@@ -180,8 +180,9 @@
   .main-window {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
+    height: 100vh;
     background: var(--bg-primary);
+    overflow: hidden;
   }
 
   /* Header */
@@ -258,8 +259,11 @@
   /* Content */
   .content {
     flex: 1;
+    min-height: 0; /* Important: allows flex child to shrink below content size */
     padding: var(--space-3) var(--space-4);
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   /* Footer */

@@ -72,6 +72,9 @@
       highlightActiveLine(),
       highlightActiveLineGutter(),
 
+      // Soft word wrap
+      EditorView.lineWrapping,
+
       lintGutter(),
 
       // Bracket handling

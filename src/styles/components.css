@@ -188,12 +188,16 @@
 .tabs {
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0; /* Important: allows flex child to shrink below content size */
+  overflow: hidden;
 }
 
 .tabs-list {
   display: flex;
   gap: var(--space-2);
   border-radius: var(--radius-lg);
+  flex-shrink: 0;
 }
 
 .tab {
@@ -219,6 +223,11 @@
 
 .tabs-content {
   padding: var(--space-3) 0;
+  flex: 1;
+  min-height: 0; /* Important: allows flex child to shrink below content size */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* Status indicator */
@@ -298,7 +307,9 @@
 
 /* Layout helpers for settings / placeholder sections */
 .tab-content {
-  min-height: 320px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .settings-section {

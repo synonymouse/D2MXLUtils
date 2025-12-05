@@ -21,7 +21,8 @@
 
 /* Main app container */
 html:not(.overlay-mode) #app {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* Overlay window - fully transparent */

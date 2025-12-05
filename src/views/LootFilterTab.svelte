@@ -198,9 +198,10 @@
   .loot-filter-tab {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1;
+    min-height: 0; /* Important: allows flex child to shrink below content size */
     gap: var(--space-3, 12px);
-    padding: var(--space-4, 16px);
+    overflow: hidden;
   }
 
   .tab-header {
@@ -237,23 +238,25 @@
     border-radius: var(--radius-full, 9999px);
     font-size: var(--text-xs, 12px);
     font-weight: 500;
-    background: var(--bg-tertiary, #12121a);
-    color: var(--text-tertiary, #888);
+    /* Neutral state */
+    background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+    color: var(--text-secondary);
   }
 
   .status-badge.valid {
-    background: rgba(0, 255, 0, 0.1);
-    color: var(--quality-set, #00ff00);
+    /* Use theme status colors for better contrast in light & dark themes */
+    background: color-mix(in srgb, var(--status-success-text) 16%, transparent);
+    color: var(--status-success-text);
   }
 
   .status-badge.error {
-    background: rgba(255, 68, 68, 0.1);
-    color: var(--stat-fire, #ff4444);
+    background: color-mix(in srgb, var(--status-error-text) 18%, transparent);
+    color: var(--status-error-text);
   }
 
   .editor-container {
     flex: 1;
-    min-height: 200px;
+    min-height: 0; /* Important: allows flex child to shrink below content size */
     overflow: hidden;
   }
 
