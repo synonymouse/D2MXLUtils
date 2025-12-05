@@ -142,7 +142,6 @@ impl Default for WindowState {
 /// Load application settings from the store
 #[tauri::command]
 pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
-    log_info("Loading settings from store");
 
     let store = app
         .store(SETTINGS_FILE)
@@ -160,7 +159,6 @@ pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
         }
     };
 
-    log_info(&format!("Settings loaded: theme={}", settings.theme));
     Ok(settings)
 }
 

@@ -9,18 +9,23 @@
     stats: string;
     is_ethereal: boolean;
     is_identified: boolean;
+    exiting?: boolean;
   }
   
   interface Props {
     items: ItemDrop[];
     position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
     maxVisible?: number;
+    fontSize?: number;
+    opacity?: number;
   }
   
   let {
     items,
     position = 'bottom-right',
-    maxVisible = 10
+    maxVisible = 10,
+    fontSize = 14,
+    opacity = 0.9
   }: Props = $props();
   
   const visibleItems = $derived(items.slice(0, maxVisible));
@@ -40,7 +45,12 @@
   style="{positionStyles[position]} flex-direction: {stackDirection};"
 >
   {#each visibleItems as item (item.unit_id)}
-    <Notification {item} />
+    <Notification 
+      {item} 
+      exiting={item.exiting ?? false}
+      {fontSize}
+      {opacity}
+    />
   {/each}
 </div>
 
@@ -57,4 +67,3 @@
     pointer-events: auto;
   }
 </style>
-

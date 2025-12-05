@@ -251,44 +251,6 @@
   background: var(--status-error-text);
 }
 
-/* Notification toast */
-.notification {
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-overlay);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-lg);
-  backdrop-filter: blur(8px);
-  animation: notification-enter 200ms ease-out;
-}
-
-.notification-quality {
-  border-left-width: 3px;
-  border-left-style: solid;
-}
-
-@keyframes notification-enter {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes notification-exit {
-  from {
-    opacity: 1;
-    transform: translateX(0);
-  }
-  to {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-}
-
 /* Utility classes */
 .text-muted { color: var(--text-muted); }
 .text-secondary { color: var(--text-secondary); }

@@ -12,29 +12,32 @@
   interface Props {
     item: ItemDrop;
     exiting?: boolean;
+    fontSize?: number;
+    opacity?: number;
   }
   
-  let { item, exiting = false }: Props = $props();
+  let { item, exiting = false, fontSize = 14, opacity = 0.9 }: Props = $props();
   
-  const qualityColors: Record<string, { color: string; border: string }> = {
-    'Unique': { color: 'var(--quality-unique)', border: 'var(--quality-unique)' },
-    'Set': { color: 'var(--quality-set)', border: 'var(--quality-set)' },
-    'Rare': { color: 'var(--quality-rare)', border: 'var(--quality-rare)' },
-    'Magic': { color: 'var(--quality-magic)', border: 'var(--quality-magic)' },
-    'Crafted': { color: 'var(--quality-crafted)', border: 'var(--quality-crafted)' },
-    'Superior': { color: 'var(--quality-superior)', border: 'var(--quality-superior)' },
-    'Normal': { color: 'var(--quality-normal)', border: 'var(--quality-normal)' }
+  const qualityColors: Record<string, string> = {
+    'Unique': 'var(--quality-unique)',
+    'Set': 'var(--quality-set)',
+    'Rare': 'var(--quality-rare)',
+    'Magic': 'var(--quality-magic)',
+    'Crafted': 'var(--quality-crafted)',
+    'Superior': 'var(--quality-superior)',
+    'Normal': 'var(--quality-normal)'
   };
   
-  const style = $derived(qualityColors[item.quality] ?? { color: 'var(--text-muted)', border: 'var(--border-primary)' });
+  const nameColor = $derived(qualityColors[item.quality] ?? 'var(--text-muted)');
 </script>
 
 <div 
-  class="notification notification-quality"
+  class="notification"
   class:exiting
-  style:border-left-color={style.border}
+  style:font-size="{fontSize}px"
+  style:background-color="rgba(0, 0, 0, {opacity})"
 >
-  <div class="item-name" style:color={style.color}>
+  <div class="item-name" style:color={nameColor}>
     {item.name}
   </div>
   <div class="item-meta">
@@ -57,14 +60,13 @@
   .notification {
     max-width: 320px;
     font-family: var(--font-mono);
+    padding: var(--space-2) var(--space-3);
+    /* Animation placeholder - currently instant */
+    /* animation: notification-enter 300ms ease-out; */
   }
-  
-  .notification.exiting {
-    animation: notification-exit 200ms ease-out forwards;
-  }
+
   
   .item-name {
-    font-size: var(--text-sm);
     font-weight: 600;
     line-height: 1.3;
   }
@@ -94,4 +96,3 @@
     text-overflow: ellipsis;
   }
 </style>
-
