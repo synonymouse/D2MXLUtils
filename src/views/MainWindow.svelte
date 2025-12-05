@@ -172,7 +172,7 @@
 
   <!-- Footer -->
   <footer class="footer">
-    <span class="footer-text">MedianXL Drop Notifier</span>
+    <span class="footer-text">Made with ❤️ by synonymouse</span>
   </footer>
 </main>
 
@@ -189,7 +189,7 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: var(--space-4) var(--space-5);
+    padding: var(--space-3) var(--space-4);
     background: var(--bg-secondary);
     border-bottom: 1px solid var(--border-primary);
   }
@@ -222,8 +222,8 @@
   .status-bar {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
-    padding: var(--space-2) var(--space-4);
+    gap: var(--space-3);
+    padding: var(--space-1) var(--space-3);
     background: var(--bg-tertiary);
     border-radius: var(--radius-lg);
   }
@@ -258,20 +258,21 @@
   /* Content */
   .content {
     flex: 1;
-    padding: var(--space-4) var(--space-5);
+    padding: var(--space-3) var(--space-4);
     overflow-y: auto;
   }
 
   /* Footer */
   .footer {
-    padding: var(--space-3) var(--space-5);
+    padding: var(--space-1) var(--space-4) var(--space-2);
     background: var(--bg-secondary);
     border-top: 1px solid var(--border-primary);
-    text-align: center;
+    text-align: right;
   }
 
   .footer-text {
     font-size: var(--text-xs);
     color: var(--text-muted);
+    line-height: 1;
   }
 </style>

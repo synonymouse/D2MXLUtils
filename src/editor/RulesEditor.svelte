@@ -4,7 +4,6 @@
   import {
     EditorView,
     keymap,
-    lineNumbers,
     highlightActiveLine,
     highlightActiveLineGutter,
     drawSelection,
@@ -70,8 +69,7 @@
       highlightActiveLine(),
       highlightActiveLineGutter(),
 
-      // Line numbers and gutter
-      lineNumbers(),
+      // Lint gutter (ошибки/предупреждения слева без номеров строк)
       lintGutter(),
 
       // Bracket handling
@@ -210,6 +208,14 @@
     border-radius: var(--radius-sm, 4px);
     padding: 4px 8px;
     font-size: var(--text-sm, 13px);
+    color: var(--text-primary, #e8e6e3);
+    font-family: var(--font-sans, system-ui);
+  }
+
+  /* Ensure inner text in tooltips остаётся читабельным в обеих темах */
+  .rules-editor :global(.cm-tooltip-lint *) {
+    font-family: inherit;
+    color: inherit;
   }
 
   .rules-editor :global(.cm-diagnostic) {

@@ -14,7 +14,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   background: var(--panel-header-bg);
   border-bottom: 1px solid var(--panel-border);
 }
@@ -26,7 +26,7 @@
 }
 
 .panel-body {
-  padding: var(--space-4);
+  padding: var(--space-3);
 }
 
 /* Button base */
@@ -148,10 +148,10 @@
 
 .toggle-track {
   position: relative;
-  width: 40px;
-  height: 22px;
+  width: 32px;
+  height: 18px;
   background: var(--border-secondary);
-  border-radius: 11px;
+  border-radius: 8px;
   transition: background var(--transition-fast);
 }
 
@@ -159,8 +159,8 @@
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   background: var(--text-primary);
   border-radius: 50%;
   transition: transform var(--transition-fast);
@@ -171,7 +171,7 @@
 }
 
 .toggle-input:checked + .toggle-track .toggle-thumb {
-  transform: translateX(18px);
+  transform: translateX(14px);
 }
 
 .toggle-input:focus-visible + .toggle-track {
@@ -192,9 +192,7 @@
 
 .tabs-list {
   display: flex;
-  gap: var(--space-1);
-  padding: var(--space-2);
-  background: var(--bg-secondary);
+  gap: var(--space-2);
   border-radius: var(--radius-lg);
 }
 
@@ -215,12 +213,12 @@
 
 .tab.active {
   color: var(--accent-primary);
-  background: var(--bg-primary);
+  background: var(--bg-tertiary);
   box-shadow: var(--shadow-sm);
 }
 
 .tabs-content {
-  padding: var(--space-4) 0;
+  padding: var(--space-3) 0;
 }
 
 /* Status indicator */
@@ -300,12 +298,12 @@
 
 /* Layout helpers for settings / placeholder sections */
 .tab-content {
-  min-height: 400px;
+  min-height: 320px;
 }
 
 .settings-section {
-  margin-bottom: var(--space-5);
-  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-lg);
@@ -329,7 +327,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-3) 0;
+  padding: var(--space-2) 0;
   border-top: 1px solid var(--border-primary);
 }
 
@@ -360,7 +358,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-6);
+  padding: var(--space-5);
   text-align: center;
   min-height: 300px;
   background: var(--bg-secondary);
