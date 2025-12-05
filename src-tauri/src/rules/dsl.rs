@@ -433,7 +433,7 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
                 line: line_num,
                 column: 0,
                 message: format!("Unknown flag: {}", token),
-                severity: ValidationSeverity::Warning,
+                severity: ValidationSeverity::Error,
             });
         }
     }

@@ -20,11 +20,11 @@
   } from "@codemirror/commands";
   import { bracketMatching } from "@codemirror/language";
   import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-  import { lintGutter } from "@codemirror/lint";
+  import { lintGutter, setDiagnostics } from "@codemirror/lint";
 
   import { d2rules } from "./d2rules-language";
   import { getDarkThemeExtensions } from "./d2rules-theme";
-  import { d2rulesLinter } from "./d2rules-linter";
+  import { d2rulesLinter, type ValidationResult } from "./d2rules-linter";
 
   interface Props {
     /** Editor content (two-way bindable) */
@@ -37,6 +37,8 @@
     onchange?: (value: string) => void;
     /** Called when Ctrl+S is pressed */
     onsave?: (value: string) => void;
+    /** Called after validation completes with results */
+    onvalidate?: (result: ValidationResult) => void;
   }
 
   let {
@@ -45,6 +47,7 @@
     class: className = "",
     onchange,
     onsave,
+    onvalidate,
   }: Props = $props();
 
   let container: HTMLDivElement;
@@ -69,7 +72,6 @@
       highlightActiveLine(),
       highlightActiveLineGutter(),
 
-      // Lint gutter (ошибки/предупреждения слева без номеров строк)
       lintGutter(),
 
       // Bracket handling
@@ -90,8 +92,7 @@
       // Theme (dark mode by default)
       ...getDarkThemeExtensions(),
 
-      // Real-time linting via Tauri
-      d2rulesLinter(),
+      d2rulesLinter(500, onvalidate),
 
       // Listen for document changes
       EditorView.updateListener.of((update) => {
@@ -99,6 +100,10 @@
           const newValue = update.state.doc.toString();
           value = newValue;
           onchange?.(newValue);
+
+          // Clear diagnostics immediately when user starts typing
+          // They will reappear after the debounced linter runs
+          update.view.dispatch(setDiagnostics(update.state, []));
         }
       }),
     ];
@@ -235,5 +240,3 @@
     border-left: 3px solid var(--quality-magic, #6969ff);
   }
 </style>
-
-

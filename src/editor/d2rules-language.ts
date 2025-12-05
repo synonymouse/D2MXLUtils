@@ -144,7 +144,7 @@ const d2rulesLanguage = StreamLanguage.define({
       if (MODIFIER_KEYWORDS.includes(word)) return "keyword modifier";
 
       // Unknown word - may be flagged by linter
-      return "invalid";
+      return "keyword unknown";
     }
 
     // Consume any other character

@@ -24,6 +24,8 @@ export {
 } from "./d2rules-theme";
 
 // Linting
-export { d2rulesLinter, validateDsl } from "./d2rules-linter";
-
-
+export {
+  d2rulesLinter,
+  type ValidationError,
+  type ValidationResult,
+} from "./d2rules-linter";

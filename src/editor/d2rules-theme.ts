@@ -28,7 +28,7 @@ const colors = {
   tier: "#bd93f9", // Purple (tier keywords)
   modifier: "#c7b377", // Gold italic (eth)
   display: "#aaaaaa", // Light gray (name/stat)
-  invalid: "#ff5555", // Red (errors)
+  unknown: "#888888", // Unknown tokens (gray)
 };
 
 /**

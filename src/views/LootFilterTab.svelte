@@ -1,6 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { RulesEditor } from "../editor";
+  import { RulesEditor, type ValidationResult } from "../editor";
   import { Button } from "../components";
 
   // Default example filter
@@ -28,45 +27,30 @@
 `;
 
   let dslText = $state(DEFAULT_FILTER);
-  let parseStatus = $state<"idle" | "parsing" | "valid" | "error">("idle");
-  let parseErrors = $state<string[]>([]);
+  let validationStatus = $state<"idle" | "valid" | "error">("idle");
+  let errorCount = $state(0);
   let ruleCount = $state(0);
   let isSaving = $state(false);
 
   /**
-   * Parse the filter and validate it
+   * Handle validation results from the editor's linter
    */
-  async function parseFilter() {
-    parseStatus = "parsing";
-    parseErrors = [];
-
-    try {
-      const config = await invoke<{ rules: unknown[] }>("parse_filter_dsl", {
-        text: dslText,
-      });
-      ruleCount = config.rules?.length ?? 0;
-      parseStatus = "valid";
-    } catch (e: unknown) {
-      if (Array.isArray(e)) {
-        parseErrors = e.map((err: { message?: string }) =>
-          err.message ?? String(err)
-        );
-      } else {
-        parseErrors = [String(e)];
-      }
-      parseStatus = "error";
+  function handleValidation(result: ValidationResult) {
+    if (result.errors.length > 0) {
+      validationStatus = "error";
+      errorCount = result.errors.length;
+    } else {
+      validationStatus = "valid";
+      ruleCount = result.ruleCount;
     }
   }
 
   /**
    * Handle editor content changes
    */
-  function handleChange(newValue: string) {
-    dslText = newValue;
-    // Reset status when content changes
-    if (parseStatus !== "idle") {
-      parseStatus = "idle";
-    }
+  function handleChange(_newValue: string) {
+    // Reset status when content changes (will be updated by linter after debounce)
+    validationStatus = "idle";
   }
 
   /**
@@ -84,12 +68,15 @@
     isSaving = true;
 
     try {
-      // First validate
-      await parseFilter();
-
-      if (parseStatus === "valid") {
+      // Only save if validation passed
+      if (validationStatus === "valid") {
         // TODO: Save to profile (Phase 7 - profiles support)
         console.log("[LootFilterTab] Filter saved successfully");
+      } else if (validationStatus === "error") {
+        console.log("[LootFilterTab] Cannot save - filter has errors");
+      } else {
+        // Status is idle - validation hasn't run yet
+        console.log("[LootFilterTab] Waiting for validation...");
       }
     } finally {
       isSaving = false;
@@ -101,8 +88,8 @@
    */
   function resetToDefault() {
     dslText = DEFAULT_FILTER;
-    parseStatus = "idle";
-    parseErrors = [];
+    validationStatus = "idle";
+    errorCount = 0;
     ruleCount = 0;
   }
 </script>
@@ -111,13 +98,11 @@
   <header class="tab-header">
     <div class="header-left">
       <h2>Loot Filter Editor</h2>
-      <span class="status-badge" class:valid={parseStatus === "valid"} class:error={parseStatus === "error"}>
-        {#if parseStatus === "parsing"}
-          <span class="spinner"></span> Parsing...
-        {:else if parseStatus === "valid"}
+      <span class="status-badge" class:valid={validationStatus === "valid"} class:error={validationStatus === "error"}>
+        {#if validationStatus === "valid"}
           ✓ {ruleCount} {ruleCount === 1 ? "rule" : "rules"}
-        {:else if parseStatus === "error"}
-          ✗ {parseErrors.length} {parseErrors.length === 1 ? "error" : "errors"}
+        {:else if validationStatus === "error"}
+          ✗ {errorCount} {errorCount === 1 ? "error" : "errors"}
         {:else}
           —
         {/if}
@@ -134,18 +119,10 @@
         Reset
       </Button>
       <Button
-        variant="secondary"
-        size="sm"
-        onclick={parseFilter}
-        disabled={parseStatus === "parsing" || isSaving}
-      >
-        {parseStatus === "parsing" ? "Parsing..." : "Validate"}
-      </Button>
-      <Button
         variant="primary"
         size="sm"
         onclick={saveFilter}
-        disabled={parseStatus === "parsing" || isSaving}
+        disabled={validationStatus !== "valid" || isSaving}
       >
         {isSaving ? "Saving..." : "Save"}
       </Button>
@@ -157,22 +134,9 @@
       bind:value={dslText}
       onchange={handleChange}
       onsave={handleSave}
+      onvalidate={handleValidation}
     />
   </div>
-
-  {#if parseErrors.length > 0}
-    <div class="error-panel">
-      <div class="error-header">
-        <span class="error-icon">⚠</span>
-        <span>Validation Errors</span>
-      </div>
-      <ul class="error-list">
-        {#each parseErrors as error}
-          <li class="error-item">{error}</li>
-        {/each}
-      </ul>
-    </div>
-  {/if}
 
   <div class="syntax-help">
     <details>
@@ -287,67 +251,10 @@
     color: var(--stat-fire, #ff4444);
   }
 
-  .spinner {
-    width: 12px;
-    height: 12px;
-    border: 2px solid currentColor;
-    border-top-color: transparent;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-  }
-
-  @keyframes spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   .editor-container {
     flex: 1;
     min-height: 200px;
     overflow: hidden;
-  }
-
-  .error-panel {
-    flex-shrink: 0;
-    background: rgba(255, 68, 68, 0.08);
-    border: 1px solid rgba(255, 68, 68, 0.3);
-    border-radius: var(--radius-md, 8px);
-    max-height: 120px;
-    overflow-y: auto;
-  }
-
-  .error-header {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2, 8px);
-    padding: var(--space-2, 8px) var(--space-3, 12px);
-    font-size: var(--text-sm, 13px);
-    font-weight: 600;
-    color: var(--stat-fire, #ff4444);
-    border-bottom: 1px solid rgba(255, 68, 68, 0.2);
-  }
-
-  .error-icon {
-    font-size: 14px;
-  }
-
-  .error-list {
-    list-style: none;
-    margin: 0;
-    padding: var(--space-2, 8px) var(--space-3, 12px);
-  }
-
-  .error-item {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm, 13px);
-    color: var(--text-secondary);
-    padding: var(--space-1, 4px) 0;
-  }
-
-  .error-item::before {
-    content: "→ ";
-    color: var(--stat-fire, #ff4444);
   }
 
   .syntax-help {
