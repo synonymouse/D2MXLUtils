@@ -229,6 +229,12 @@ fn extract_stat_pattern(s: &str, pattern: &mut Option<String>) -> String {
         if c == '{' && !in_braces {
             in_braces = true;
             brace_content.clear();
+        } else if c == '\\' && in_braces {
+            // Handle escape sequences inside braces - include the backslash and next char
+            brace_content.push(c);
+            if let Some(next) = chars.next() {
+                brace_content.push(next);
+            }
         } else if c == '}' && in_braces {
             in_braces = false;
             if !brace_content.trim().is_empty() {
@@ -546,6 +552,43 @@ mod tests {
         let dsl = r#""Ring" unique unknownflag gold"#;
         let errors = validate_dsl(dsl);
         assert!(errors.iter().any(|e| e.message.contains("Unknown")));
+    }
+
+    #[test]
+    fn test_parse_stat_pattern_with_escaped_brace() {
+        // Test that escaped closing braces don't terminate the pattern prematurely
+        let dsl = r#""Ring" rare {test\}pattern}"#;
+        let config = parse_dsl(dsl).unwrap();
+
+        assert_eq!(config.rules.len(), 1);
+        let rule = &config.rules[0];
+        assert_eq!(rule.stat_pattern, Some(r"test\}pattern".to_string()));
+    }
+
+    #[test]
+    fn test_parse_stat_pattern_with_multiple_escaped_braces() {
+        // Test multiple escaped braces in a pattern
+        let dsl = r#""Amulet" unique {\{start\} middle \{end\}}"#;
+        let config = parse_dsl(dsl).unwrap();
+
+        assert_eq!(config.rules.len(), 1);
+        let rule = &config.rules[0];
+        assert_eq!(
+            rule.stat_pattern,
+            Some(r"\{start\} middle \{end\}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_stat_pattern_with_escaped_backslash() {
+        // Test escaped backslash followed by closing brace
+        let dsl = r#""Ring" rare {pattern\\}"#;
+        let config = parse_dsl(dsl).unwrap();
+
+        assert_eq!(config.rules.len(), 1);
+        let rule = &config.rules[0];
+        // The \\ should be preserved and } should terminate the pattern
+        assert_eq!(rule.stat_pattern, Some(r"pattern\\".to_string()));
     }
 }
 
