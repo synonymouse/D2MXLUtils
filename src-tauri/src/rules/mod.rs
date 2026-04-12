@@ -461,6 +461,44 @@ impl Rule {
             sound: self.sound.map(|n| format!("sound{}", n)),
         }
     }
+
+    /// Count the number of criteria flags for priority calculation
+    /// More flags = more specific rule
+    pub fn flag_count(&self) -> usize {
+        let mut count = 0;
+        if self.name_pattern.is_some() {
+            count += 1;
+        }
+        if self.stat_pattern.is_some() {
+            count += 1;
+        }
+        if self.item_quality != 0 {
+            count += 1;
+        }
+        if self.tier.is_some() {
+            count += 1;
+        }
+        if self.ethereal != 0 {
+            count += 1;
+        }
+        if self.color.is_some() {
+            count += 1;
+        }
+        if self.sound.is_some() {
+            count += 1;
+        }
+        if self.notify {
+            count += 1;
+        }
+        count
+    }
+
+    /// Check if this rule has a real color (not hide/show pseudo-colors)
+    pub fn has_display_color(&self) -> bool {
+        self.color
+            .as_ref()
+            .map_or(false, |c| c != "hide" && c != "show")
+    }
 }
 
 /// Filter configuration containing multiple rules
@@ -518,18 +556,61 @@ impl FilterConfig {
     }
 
     /// Determine what action to take for an item (using MatchContext)
+    /// Uses three-level priority system:
+    /// 1. Stat match (rule has stat_pattern AND it matches) - highest priority
+    /// 2. Color flag (rule has display color) - medium priority
+    /// 3. Flag count (more flags = more specific) - lowest priority
     pub fn get_action(&self, ctx: &MatchContext) -> RuleAction {
-        if let Some(rule) = self.rules.iter().find(|r| r.active && ctx.matches(r)) {
-            rule.action()
-        } else {
-            RuleAction {
+        // Collect all matching rules
+        let matching_rules: Vec<&Rule> = self
+            .rules
+            .iter()
+            .filter(|r| r.active && ctx.matches(r))
+            .collect();
+
+        if matching_rules.is_empty() {
+            return RuleAction {
                 show_item: self.default_show_items,
                 notify: self.default_notify,
                 automap: false,
                 color: None,
                 sound: None,
-            }
+            };
         }
+
+        // Select the highest priority rule
+        let winner = self.select_highest_priority_rule(&matching_rules, ctx);
+        winner.action()
+    }
+
+    /// Select the winning rule based on priority:
+    /// 1. Stat match (highest) - rule has stat_pattern AND it matched
+    /// 2. Color flag (medium) - rule has a display color (not hide/show)
+    /// 3. Flag count (lowest) - more flags = more specific
+    fn select_highest_priority_rule<'a>(
+        &self,
+        rules: &[&'a Rule],
+        ctx: &MatchContext,
+    ) -> &'a Rule {
+        // Priority 1: Stat match (rule has stat_pattern AND it matches)
+        if let Some(rule) = rules
+            .iter()
+            .find(|r| r.stat_pattern.is_some() && ctx.stat_pattern_matched(r))
+        {
+            return rule;
+        }
+
+        // Priority 2: Color flag (rule has display color, not hide/show)
+        if let Some(rule) = rules.iter().find(|r| r.has_display_color()) {
+            return rule;
+        }
+
+        // Priority 3: Flag count (more flags = more specific rule)
+        rules
+            .iter()
+            .max_by_key(|r| r.flag_count())
+            .copied()
+            .unwrap_or(rules[0])
     }
 }
 

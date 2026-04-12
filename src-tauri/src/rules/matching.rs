@@ -120,6 +120,22 @@ impl<'a> MatchContext<'a> {
 
         true
     }
+
+    /// Check if a rule's stat_pattern matches the item stats
+    /// Used for priority calculation (stat match = highest priority)
+    pub fn stat_pattern_matched(&self, rule: &Rule) -> bool {
+        if let Some(ref pattern) = rule.stat_pattern {
+            match Regex::new(&format!("(?i){}", pattern)) {
+                Ok(re) => re.is_match(&self.stats_lower),
+                Err(_) => {
+                    // Invalid regex, try simple substring match
+                    self.stats_lower.contains(&pattern.to_lowercase())
+                }
+            }
+        } else {
+            false
+        }
+    }
 }
 
 /// Compile a regex pattern, returning None if invalid
@@ -140,6 +156,7 @@ mod tests {
             stats: stats.to_string(),
             is_ethereal: ethereal,
             is_identified: true,
+            p_unit_data: 0,
         }
     }
 

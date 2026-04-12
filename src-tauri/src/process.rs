@@ -81,6 +81,27 @@ impl ProcessHandle {
         Ok(buffer)
     }
 
+    /// Read into an existing buffer slice
+    pub fn read_buffer_into(&self, address: usize, buffer: &mut [u8]) -> Result<(), String> {
+        let mut bytes_read: usize = 0;
+
+        unsafe {
+            ReadProcessMemory(
+                self.handle,
+                address as *const c_void,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer.len(),
+                Some(&mut bytes_read)
+            ).map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+        }
+
+        if bytes_read != buffer.len() {
+            return Err("Incomplete read".to_string());
+        }
+
+        Ok(())
+    }
+
     pub fn write_buffer(&self, address: usize, buffer: &[u8]) -> Result<(), String> {
         let mut bytes_written: usize = 0;
         unsafe {
@@ -130,6 +151,60 @@ impl ProcessHandle {
         }
         
         Err(format!("Module '{}' not found", module_name))
+    }
+
+    /// Scan memory for a byte pattern within a given range.
+    /// Returns the address where the pattern was found, or None.
+    pub fn scan_pattern(&self, start: usize, size: usize, pattern: &[u8]) -> Option<usize> {
+        if pattern.is_empty() || size < pattern.len() {
+            return None;
+        }
+
+        // Read memory in chunks to avoid huge allocations
+        const CHUNK_SIZE: usize = 0x10000; // 64KB chunks
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut offset = 0;
+
+        while offset < size {
+            let read_size = std::cmp::min(CHUNK_SIZE, size - offset);
+            let addr = start + offset;
+
+            // Try to read this chunk
+            let mut bytes_read: usize = 0;
+            let result = unsafe {
+                ReadProcessMemory(
+                    self.handle,
+                    addr as *const c_void,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    read_size,
+                    Some(&mut bytes_read),
+                )
+            };
+
+            if result.is_err() || bytes_read == 0 {
+                // Skip unreadable regions
+                offset += CHUNK_SIZE;
+                continue;
+            }
+
+            // Search for pattern in this chunk
+            let search_len = if bytes_read >= pattern.len() {
+                bytes_read - pattern.len() + 1
+            } else {
+                0
+            };
+
+            for i in 0..search_len {
+                if &buffer[i..i + pattern.len()] == pattern {
+                    return Some(addr + i);
+                }
+            }
+
+            // Move forward (overlap by pattern length to catch patterns at chunk boundaries)
+            offset += read_size.saturating_sub(pattern.len());
+        }
+
+        None
     }
 }
 

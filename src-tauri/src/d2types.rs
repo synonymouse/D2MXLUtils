@@ -124,6 +124,8 @@ pub struct UniqueItemsTxt {
 pub struct ScannedItem {
     /// Raw unit pointer (for injection calls)
     pub p_unit: u32,
+    /// Pointer to ItemData structure (for set_item_visibility)
+    pub p_unit_data: u32,
     /// Unique unit ID
     pub unit_id: u32,
     /// Item class (index into items.txt)
@@ -150,6 +152,7 @@ impl ScannedItem {
     pub fn from_unit(unit: &UnitAny, item_data: &ItemData, p_unit: u32) -> Self {
         Self {
             p_unit,
+            p_unit_data: unit.p_unit_data,
             unit_id: unit.unit_id,
             class: unit.class,
             quality: item_data.quality,

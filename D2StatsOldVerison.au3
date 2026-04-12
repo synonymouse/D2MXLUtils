@@ -29,7 +29,14 @@
 #pragma compile(ProductVersion, {{version}})
 #pragma compile(FileVersion, {{version}})
 #pragma compile(Comments, {{buildTime}})
+#pragma compile(UPX, True) ;compression
 #pragma compile(inputboxres, True)
+;#pragma compile(ExecLevel, requireAdministrator)
+;#pragma compile(Compatibility, win7)
+;#pragma compile(x64, True)
+;#pragma compile(Out, D2Stats.exe)
+;#pragma compile(LegalCopyright, Legal stuff here)
+;#pragma compile(LegalTrademarks, '"Trademark something, and some text in "quotes" and stuff')
 
 
 if ($CmdLine[0] == 4 and $CmdLine[1] == "sound") then ; Notifier sounds
@@ -53,110 +60,6 @@ endif
 Opt("MustDeclareVars", 1)
 Opt("GUICloseOnESC", 0)
 Opt("GUIOnEventMode", 1)
-Opt("GUIResizeMode", BitOR($GUI_DOCKAUTO, $GUI_DOCKHEIGHT))
-
-#Region Global Variables
-func DefineGlobals()
-	global $g_sLog = ""
-
-	global const $HK_FLAG_D2STATS = BitOR($HK_FLAG_DEFAULT, $HK_FLAG_NOUNHOOK)
-
-	global $g_hScriptStartTime = TimerInit()
-	global $g_hOverlayGUI = 0
-	global $g_aMessages[0][4] ; Stores [GUI handle, GUI bg handle, expire time, height]
-	global $g_bCleanupRunning = False
-	global $g_iNextYPos;
-
-	Global $g_idOptionsScrollArea, $idScrollUp, $idScrollDown
-	Global $g_aOptionsControls[0] ; Array to store option control IDs
-	Global $g_iOptionsScrollPos = 0
-	Global $g_iOptionsVisibleLines = 12 ; Adjust based on your UI size
-
-	; Color array for ui elements
-	global $g_iColorArray[12] = [0xFFFFFF, 0xFF0000, 0x15FF00, 0x7878F5, 0x808000, 0x808080, 0x000000, 0xFF00FF, 0xFFBF00, 0xFFFF00, 0x008000, 0xA020F0]
-	; Color array for notifier overlay
-	global $g_NotifierColorArray[12] = [0xFFFFFF, 0xFF0000, 0x15FF00, 0x7878F5, 0xF0CD8C, 0x9D9D9D, 0x000000, 0xFF00FF, 0xFFBF00, 0xFFFF00, 0x008000, 0x9D00FF]
-
-	global enum $ePrintWhite, $ePrintRed, $ePrintLime, $ePrintBlue, $ePrintGold, $ePrintGrey, $ePrintBlack, $ePrintPink, $ePrintOrange, $ePrintYellow, $ePrintGreen, $ePrintPurple
-	global enum $eQualityNone, $eQualityLow, $eQualityNormal, $eQualitySuperior, $eQualityMagic, $eQualitySet, $eQualityRare, $eQualityUnique, $eQualityCraft, $eQualityHonorific
-	global $g_iQualityColor[] = [0x0, $ePrintWhite, $ePrintWhite, $ePrintWhite, $ePrintBlue, $ePrintLime, $ePrintYellow, $ePrintGold, $ePrintOrange, $ePrintGreen]
-
-	global $g_avGUI[256][3] = [[0]]			; Text, X, Control [0] Count
-	global $g_avGUIOption[32][3] = [[0]]	; Option, Control, Function [0] Count
-
-	global enum $eNotifyFlagsTier, $eNotifyFlagsQuality, $eNotifyFlagsMisc, $eNotifyFlagsNoMask, $eNotifyFlagsColour, $eNotifyFlagsSound, $eNotifyFlagsName, $eNotifyFlagsStat, $eNotifyFlagsMatchStats, $eNotifyFlagsMatch, $eNotifyFlagsLast
-	global $g_asNotifyFlags[$eNotifyFlagsLast][32] = [ _
-		[ "0", "1", "2", "3", "4", "sacred", "angelic", "master" ], _
-		[ "low", "normal", "superior", "magic", "set", "rare", "unique", "craft", "honor" ], _
-		[ "eth" ], _
-		[], _
-		[ "transparent", "white", "red", "lime", "blue", "gold", "grey", "black", "pink", "orange", "yellow", "green", "purple", "show", "hide" ], _
-		[ "sound_none" ], _
-		[ "name" ], _
-		[ "stat" ] _
-	]
-	global $g_aiFlagsCountPerLine[0]
-
-	global const $g_iNumSounds = 6 ; Max 31
-	global $g_idVolumeSlider
-
-	for $i = 1 to $g_iNumSounds
-		$g_asNotifyFlags[$eNotifyFlagsSound][$i] = "sound" & $i
-	next
-
-	global const $g_sNotifierRulesDirectory = @WorkingDir & "\NotifierRules"
-	global const $g_sNotifierRulesExtension = ".rules"
-	global $g_avNotifyCache[0][3]					; Name, Tier flag, Last line of name
-	global $g_avNotifyCompile[0][$eNotifyFlagsLast]	; Flags, Regex
-	global $g_bNotifyCache = True
-	global $g_bNotifyCompile = True
-	global $g_bNotifierChanged = False
-
-	global const $g_iNumStats = 1024
-	global $g_aiStatsCache[2][$g_iNumStats]
-	global $g_aiStatsCacheCopy[2][$g_iNumStats]
-
-	global $g_asDLL[] = ["D2Client.dll", "D2Common.dll", "D2Win.dll", "D2Lang.dll", "D2Sigma.dll"]
-	global $g_hD2Client, $g_hD2Common, $g_hD2Win, $g_hD2Lang, $g_hD2Sigma
-	global $g_ahD2Handle
-
-	global $g_iD2pid, $g_iUpdateFailCounter
-
-	global $g_pD2sgpt, $g_pD2InjectPrint, $g_pD2InjectString, $g_pD2InjectParams, $g_pD2InjectGetString, $g_pD2Client_GetItemName, $g_pD2Client_GetItemStat, $g_pD2Common_GetUnitStat
-
-	global $g_bHotkeysEnabled = False
-	global $g_hTimerCopyName = 0
-	global $g_sCopyName = ""
-
-	global const $g_iGUIOptionsGeneral = 14
-	global const $g_iGUIOptionsHotkey = 3
-
-	global $g_avGUIOptionList[][5] = [ _
-		["nopickup", 0, "cb", "Automatically enable /nopickup"], _
-		["goblin-alert", 1, "cb", "Play sound (sound 6) when goblins are nearby."], _
-		["unique-tier", 1, "cb", "Show sacred tier of unique (SU/SSU/SSSU)"], _
-		["notify-enabled", 1, "cb", "Enable notifier"], _
-		["notify-superior", 0, "cb", "Notifier prefixes superior items with 'Superior'"], _
-		["notify-only-filtered", 0, "cb", "Only show filtered stats"], _
-		["oneline-name", 0, "cb", "One line item name and base type notification style"], _
-		["oneline-stats", 0, "cb", "One line item stats notification style"], _
-		["overlay-x", 10, "int", "Overlay X offset", "OnChange_OverlaySettings"], _
-		["overlay-y", 30, "int", "Overlay Y offset", "OnChange_OverlaySettings"], _
-		["overlay-fontsize", 12, "int", "Overlay font size", "OnChange_OverlaySettings"], _
-		["overlay-timeout", 7500, "int", "Notification timeout (ms)", "OnChange_OverlaySettings"], _
-		["debug-notifier", 0, "cb", "Debug item notifications with match criteria and matching rule"], _
-		["use-wav", 0, "cb", "Use .wav instead of .mp3 for sounds (For Linux Compatibility)"], _
-		["copy", 0x002D, "hk", "Copy item text", "HotKey_CopyItem"], _
-		["copy-name", 0, "cb", "Only copy item name"], _
-		["readstats", 0x0000, "hk", "Read stats without tabbing out of the game", "HotKey_ReadStats"], _
-		["notify-text", $g_sNotifyTextDefault, "tx"], _
-		["selectedNotifierRulesName", "Default", "tx"] _
-	]
-
-	global $g_goblinIds = [2774, 2775, 2776, 2779, 2780, 2781, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793, 2794, 2795, 2799, 2802, 2803, 2805]
-	global $g_goblinBuffer[] = []
-endfunc
-#EndRegion
 
 DefineGlobals()
 
@@ -175,8 +78,6 @@ func Main()
 	while 1
 		Sleep(20)
 
-		OverlayMain()
-
 		if (TimerDiff($hTimerUpdateDelay) > 250) then
 			$hTimerUpdateDelay = TimerInit()
 
@@ -184,10 +85,19 @@ func Main()
 			UpdateGUIOptions()
 
 			if (IsIngame()) then
+
 				; why inject every frame if we can just inject once?
 				if (not $bIsIngame) then 
 					$g_bNotifyCache = True
 					InjectFunctions()
+					PrintString("test")
+				endif
+
+				if (_GUI_Option("mousefix") <> IsMouseFixEnabled()) then ToggleMouseFix()
+
+				; Keep showing items if they don't
+				if ($g_ShowItems) then
+					FixShowItemsOnEsc()
 				endif
 
 				if (_GUI_Option("nopickup") and not $bIsIngame) then _MemoryWrite($g_hD2Client + 0x11C2F0, $g_ahD2Handle, 1, "byte")
@@ -195,7 +105,6 @@ func Main()
 				if (_GUI_Option("notify-enabled")) then NotifierMain()
 
 				$bIsIngame = True
-				
 			else
 				$bIsIngame = False
 				$g_hTimerCopyName = 0
@@ -374,11 +283,59 @@ func HotKey_CopyItem($TEST = False)
 	PrintString("Item text copied.")
 endfunc
 
+func HotKey_DropFilter($TEST = False)
+	if ($TEST or not IsIngame()) then return
+
+	local $hDropFilter = GetDropFilterHandle()
+
+	if ($hDropFilter) then
+		if (EjectDropFilter($hDropFilter)) then
+			PrintString("Ejected DropFilter.", $ePrintRed)
+			_Log("HotKey_DropFilter", "Ejected DropFilter.")
+		else
+			_Debug("HotKey_DropFilter", "Failed to eject DropFilter.")
+		endif
+	else
+		if (InjectDropFilter()) then
+			PrintString("Injected DropFilter.", $ePrintGreen)
+			_Log("HotKey_DropFilter", "Injected DropFilter.")
+		else
+			_Debug("HotKey_DropFilter", "Failed to inject DropFilter.")
+		endif
+	endif
+endfunc
+
+func HotKey_ToggleShowItems($TEST = False)
+	if ($TEST or not IsIngame()) then return
+	if(not $g_ShowItems) then
+		PrintString("Always show items.", $ePrintBlue)
+		$g_ShowItems = True
+		; Show items
+		_MemoryWrite($g_hD2Client + 0xFADB4, $g_ahD2Handle, 1)
+
+		; Enable objects interaction
+		local $sWrite = "0x90909090909090909090"
+		_MemoryWrite($g_hD2Client + 0x594A1, $g_ahD2Handle, $sWrite, "byte[10]")
+	else
+		PrintString("Hold to show items.", $ePrintBlue)
+		$g_ShowItems = False
+		_MemoryWrite($g_hD2Client + 0xFADB4, $g_ahD2Handle, 0)
+
+		local $sWrite = "0xC705" & SwapEndian($g_hD2Client + 0x11C2F4) & "00000000"
+		_MemoryWrite($g_hD2Client + 0x594A1, $g_ahD2Handle, $sWrite, "byte[10]")
+	endif
+endfunc
+
+func FixShowItemsOnEsc()
+	if(_MemoryRead($g_hD2Client + 0xFADB4, $g_ahD2Handle) == 0) then
+		Sleep(500)
+		_MemoryWrite($g_hD2Client + 0xFADB4, $g_ahD2Handle, 1)
+	endif
+endfunc
+
 func HotKey_ReadStats()
 	UpdateStatValues()
 	UpdateGUI()
-
-	$g_aiStatsCacheCopy = $g_aiStatsCache
 endfunc
 
 func CompareStats()
@@ -388,21 +345,13 @@ func CompareStats()
 	;Compare stats
 	local $statDiffCount = 0
 	local $g_statDiff[0][5]
-	for $i = 0 To $g_iNumStats - 1	
-		if (($g_aiStatsCacheCopy[0][$i] <> $g_aiStatsCache[0][$i]) AND $g_d2StatNames[$i][2] == True) then
-			_ArrayAdd($g_statDiff,$i &"|"& _
-								$g_d2StatNames[$i][1] &"|"& _
-								$g_aiStatsCacheCopy[0][$i] &"|"& _
-								$g_aiStatsCache[0][$i] &"|"& _
-								$g_aiStatsCache[0][$i]-$g_aiStatsCacheCopy[0][$i])
+	for $i = 0 To 1023	
+		if ($g_aiStatsCacheCopy[0][$i] <> $g_aiStatsCache[0][$i]) then
+			_ArrayAdd($g_statDiff,$i&"|"&$g_d2StatNames[$i][0]&"|"&$g_aiStatsCacheCopy[0][$i]&"|"&$g_aiStatsCache[0][$i]&"|"&$g_aiStatsCache[0][$i]-$g_aiStatsCacheCopy[0][$i])
 			$statDiffCount += 1
 		endif
-		if (($g_aiStatsCacheCopy[1][$i] <> $g_aiStatsCache[1][$i]) AND $g_d2StatNames[$i][4] == True) then
-			_ArrayAdd($g_statDiff,$i &"|"& _
-								$g_d2StatNames[$i][3] &"|"& _
-								$g_aiStatsCacheCopy[1][$i] &"|"& _
-								$g_aiStatsCache[1][$i] &"|"& _
-								$g_aiStatsCache[1][$i]-$g_aiStatsCacheCopy[1][$i])
+		if ($g_aiStatsCacheCopy[1][$i] <> $g_aiStatsCache[1][$i]) then
+			_ArrayAdd($g_statDiff,$i&"|"&$g_d2StatNames[$i][1]&"|"&$g_aiStatsCacheCopy[1][$i]&"|"&$g_aiStatsCache[1][$i]&"|"&$g_aiStatsCache[1][$i]-$g_aiStatsCacheCopy[1][$i])
 			$statDiffCount += 1
 		endif
 	next
@@ -411,7 +360,7 @@ func CompareStats()
 		_ArrayDisplay($g_statDiff, "Stat diff", default, 32, @LF, "Stat ID|Name|Old|New|Diff")
 	endif
 	
-	$g_aiStatsCacheCopy = $g_aiStatsCache
+	CopyStatsArray()
 endfunc
 #EndRegion
 
@@ -490,6 +439,10 @@ func UpdateStatValues()
 		local $iFactor = Floor((GetStatValue(278) * GetStatValue(0, 1) + GetStatValue(485) * GetStatValue(1, 1)) / 3e6 * 100)
 		$g_aiStatsCache[1][904] = $iFactor > 100 ? 100 : $iFactor
 	endif
+endfunc
+
+func CopyStatsArray()
+	$g_aiStatsCacheCopy = $g_aiStatsCache
 endfunc
 
 func GetUnitWeapon($pUnit)
@@ -717,25 +670,19 @@ func NotifierCache()
 		$sTier = "0"
 
 		if (_MemoryRead($pBaseAddr + 0x84, $g_ahD2Handle)) then ; Weapon / Armor
-			$asMatch = StringRegExp($sName, "[1-4]|\Q(Sacred)\E|\Q(Angelic)\E|\Q(Mastercrafted)\E", $STR_REGEXPARRAYGLOBALMATCH)
-			if (not @error) and IsArray($asMatch) then
-				if (Ubound($asMatch) > 1 or $asMatch[0] == "") then
-					MsgBox($MB_OK+$MB_ICONWARNING, "D2Stats NotifierCache error", StringFormat("Error while parsing item: '%s'", $sName))
-					_Debug("NotifierCache", StringFormat("Error while parsing item: '%s'", $sName))
-					exit
-				endif
-
-				select
+			$asMatch = StringRegExp($sName, "[1-4]|\Q(Sacred)\E|\Q(Angelic)\E|\Q(Masterworked)\E", $STR_REGEXPARRAYGLOBALMATCH)
+			if (not @error) then
+				Select
 					Case $asMatch[0] == "(Sacred)"
 						$sTier = "sacred"
 					Case $asMatch[0] == "(Angelic)"
 						$sTier = "angelic"
-					Case $asMatch[0] == "(Mastercrafted)"
+					Case $asMatch[0] == "(Masterworked)"
 						$sTier = "master"
 					Case Else
 						$sTier = $asMatch[0]
 				EndSelect
-			endif
+			Endif
 		endif
 
 		$g_avNotifyCache[$iClass][0] = $sName
@@ -757,7 +704,7 @@ func NotifierFlagRef($sFlag, ByRef $iFlag, ByRef $iGroup)
 		for $j = 0 to UBound($g_asNotifyFlags, $UBOUND_COLUMNS) - 1
 			if ($g_asNotifyFlags[$i][$j] == "") then
 				exitloop
-			elseif (StringLower($g_asNotifyFlags[$i][$j]) == StringLower($sFlag)) then
+			elseif ($g_asNotifyFlags[$i][$j] == $sFlag) then
 				$iGroup = $i
 				$iFlag = $j
 				return 1
@@ -890,7 +837,7 @@ func NotifierHelp($sInput)
 			$sName = $g_avNotifyCache[$i][0]
 			$iTierFlag = $g_avNotifyCache[$i][1]
 
-			if (StringRegExp(StringLower($sName), StringLower($sMatch))) then
+			if (StringRegExp($sName, $sMatch)) then
 				if ($iFlagsTier and not BitAND($iFlagsTier, $iTierFlag)) then continueloop
 
 				$asMatches[$iCount][0] = $sName
@@ -918,7 +865,7 @@ func NotifierMain()
 
 	local $pPath, $pUnit, $pUnitData, $pCurrentUnit
 	local $iUnitType, $iClass, $iUnitId, $iQuality, $iFileIndex, $iEarLevel, $iFlags, $iTierFlag
-	local $bIsEthereal
+	local $bIsNewItem, $bIsSocketed, $bIsEthereal
 	local $iFlagsTier, $iFlagsQuality, $iFlagsMisc, $iFlagsColour, $iFlagsSound, $iFlagsDisplayName, $iFlagsDisplayStat
 	local $sType, $sText
 
@@ -931,7 +878,7 @@ func NotifierMain()
 	local $aOnGroundDisplayPool[0][4]
 
 	for $i = 0 to $iPaths - 1
-		$pPath = _MemoryRead($pPaths + 4 * $i, $g_ahD2Handle)
+		$pPath = _MemoryRead($pPaths + 4*$i, $g_ahD2Handle)
 		$pUnit = _MemoryRead($pPath + 0x74, $g_ahD2Handle)
 
 		; while object observable
@@ -965,6 +912,8 @@ func NotifierMain()
 				; We are showing items on ground by default
 				DisplayItemOnGround($pUnitData, true)
 				
+				$bIsNewItem = BitAND(0x2000, $iFlags) <> 0
+				$bIsSocketed = BitAND(0x800, $iFlags) <> 0
 				$bIsEthereal = BitAND(0x400000, $iFlags) <> 0
 
 				$sType = $g_avNotifyCache[$iClass][0]
@@ -972,7 +921,7 @@ func NotifierMain()
 
 				; Match with notifier rules
 				for $j = 0 to UBound($g_avNotifyCompile) - 1
-					if (StringRegExp(StringLower($sType), StringLower($g_avNotifyCompile[$j][$eNotifyFlagsMatch]))) then
+					if (StringRegExp($sType, $g_avNotifyCompile[$j][$eNotifyFlagsMatch])) then
 		                _WinAPI_ReadProcessMemory($g_ahD2Handle[1], $pUniqueItemsTxt + ($iFileIndex * 0x14c), DllStructGetPtr($tUniqueItemsTxt), DllStructGetSize($tUniqueItemsTxt), 0)
 		                local $iLvl = DllStructGetData($tUniqueItemsTxt, "wLvl")
 
@@ -1000,6 +949,7 @@ func NotifierMain()
 
 						if ($iFlagsTier and not BitAND($iFlagsTier, $iTierFlag)) then continueloop
 						if ($iFlagsQuality and not BitAND($iFlagsQuality, BitRotate(1, $iQuality - 1, "D"))) then continueloop
+						if (not $bIsSocketed and BitAND($iFlagsMisc, NotifierFlag("socket"))) then continueloop
 						if (not $bIsEthereal and BitAND($iFlagsMisc, NotifierFlag("eth"))) then continueloop
 
 						; Flags are added to the object because I don't know a more
@@ -1026,7 +976,7 @@ func NotifierMain()
 
 						; Forming an array of notifications to add to the pool
                         local $aOnGroundItem[1][4] = [[$sType, $oItemFlags]]
-						
+
                         _ArrayAdd($aOnGroundDisplayPool, $aOnGroundItem)
 					endif
 				next
@@ -1085,8 +1035,9 @@ func OnGroundFilterItems(byref $aOnGroundDisplayPool, byref $bDelayedHideItem)
 			$bHideCompletely = True
 		else
 			if (not $bStatGroupsExists) then $bDisplayNotification = True
-			_ArrayAdd($asPreNotificationsPool, $aNotification)
+            _ArrayAdd($asPreNotificationsPool, $aNotification)
 		endif
+
 	next
 
 	; Clean "on ground" pool after items on ground display processing
@@ -1095,7 +1046,7 @@ func OnGroundFilterItems(byref $aOnGroundDisplayPool, byref $bDelayedHideItem)
 	select
         case $bDisplayNotification
 			; Return pool of notifications if at least one rule without "show" or "hide" flags present
-			return $asPreNotificationsPool
+		    return $asPreNotificationsPool
 
         case $bShowOnGround
 			DisplayItemOnGround($pUnitData, true)
@@ -1149,11 +1100,7 @@ func FormatNotifications(byref $asPreNotificationsPool, $bDelayedHideItem)
         ; to display as notifications per line
         if (UBound($asStatGroups) or $bDisplayItemStats) then
 			local $sGetItemStats = GetItemStats($pCurrentUnit)
-			local $iSocketCount = GetUnitStat($oFlags.item('$pCurrentUnit'), 0xC2)
-			if $iQuality > 0 and $iQuality < 5 then
-				$sGetItemStats = "Socketed (" & $iSocketCount & ")" & @CRLF & $sGetItemStats
-			endif
-			$asItemStats = HighlightStats($sGetItemStats, $asStatGroups, $bIsMatchByStats)
+            $asItemStats = HighlightStats($sGetItemStats, $asStatGroups, $bIsMatchByStats)
             $oFlags.add('$bIsMatchByStats', $bIsMatchByStats)
         endif
 		
@@ -1228,88 +1175,58 @@ func FormatNotifications(byref $asPreNotificationsPool, $bDelayedHideItem)
 	return $asNotificationsPool
 endfunc
 
-func DisplayNotification(ByRef $asNotificationsPool)
-    if (UBound($asNotificationsPool) == 0) then return
+func DisplayNotification(byref $asNotificationsPool)
+	if (UBound($asNotificationsPool) == 0) then return
+	local $aNotifications = NarrowNotificationsPool($asNotificationsPool)
 
-    local $aNotifications = NarrowNotificationsPool($asNotificationsPool)
-    if (not UBound($aNotifications)) then return
+	if (not UBound($aNotifications)) then return
 
-    local $asName = $aNotifications[0]
-    local $asType = $aNotifications[1]
-    local $asStats = $aNotifications[2]
-    local $oFlags = $aNotifications[3]
+	local $asName = $aNotifications[0]
+	local $asType = $aNotifications[1]
+	local $asStats = $aNotifications[2]
+	local $oFlags = $aNotifications[3]
 
-    local $sMatchingLine = $oFlags.item('$sMatchingLine')
-    local $iFlagsSound = $oFlags.item('$iFlagsSound')
-    local $pCurrentUnit = $oFlags.item('$pCurrentUnit')
-    local $iQuality = $oFlags.item('$iQuality')
+	local $sMatchingLine = $oFlags.item('$sMatchingLine')
+	local $iFlagsSound = $oFlags.item('$iFlagsSound')
+	local $pCurrentUnit = $oFlags.item('$pCurrentUnit')
+	local $iQuality = $oFlags.item('$iQuality')
 
-    ; Play sound if needed
-    if ($iFlagsSound <> NotifierFlag("sound_none")) then
-        NotifierPlaySound($iFlagsSound)
+	; Display item name
+	if (UBound($asName)) then
+		PrintString($asName[0], $asName[1])
     endif
 
-    ; Display name and type
-    ShowIfAvailable($asName)
-    ShowIfAvailable($asType)
+	; Display item type
+	if (UBound($asType)) then
+		PrintString($asType[0], $asType[1])
+	endif
 
-    ; Show stats
-    DisplayStats($asStats)
-
-    ; Debug info
-    if (_GUI_Option("debug-notifier")) then
-        PrintString("rule - " & $sMatchingLine, $ePrintRed)
-    endif
-endfunc
-
-;Show a 2-element array if it exists
-func ShowIfAvailable($arr)
-    if (UBound($arr)) then
-        PrintString($arr[0], $arr[1])
-    endif
-endfunc
-
-;Display stats based on GUI options
-func DisplayStats($asStats)
-    if (not UBound($asStats)) then return
-
-    local $asCombinedStats = ""
-
-    for $n = 0 to UBound($asStats) - 1
-        local $statText = $asStats[$n][0]
-        local $statColor = $asStats[$n][1]
-
-        if ($statText == "") then continueLoop
-
-        if (_GUI_Option("oneline-stats")) then
-			;Skip prefixes and suffixes when pringing oneline stat style
-			if StringInStr($statText, "Prefixes") = 0 AND StringInStr($statText, "Suffixes") = 0 then
-				if (ShouldPrintStat($statColor)) then
-					$asCombinedStats &= $statText & ", "
+	; Display item stats
+	if (UBound($asStats)) then
+		for $n = 0 to UBound($asStats) - 1
+			if ($asStats[$n][0] <> "") then
+				if (_GUI_Option("notify-only-filtered")) then
+					if ($asStats[$n][1] == $ePrintRed) then
+						PrintString("  " & $asStats[$n][0], $asStats[$n][1])
+					endif
+				else
+					PrintString("  " & $asStats[$n][0], $asStats[$n][1])
 				endif
 			endif
-        else
-            if (ShouldPrintStat($statColor)) then
-                PrintString("  " & $statText, $statColor)
-            endif
-        endif
-    next
 
-    if (_GUI_Option("oneline-stats")) and ($asCombinedStats <> "") then
-		local $ePrintColor = $ePrintBlue
-		;Modify print color based on notify filtered stats checkbox state
-		if (_GUI_Option("notify-only-filtered")) then $ePrintColor = $ePrintRed
+			if($n == UBound($asStats) - 1 and $iQuality > 0 and $iQuality < 5) then
+				local $iSockets = GetUnitStat($pCurrentUnit, 0xC2)
 
-		PrintString(StringTrimRight($asCombinedStats, 2), $ePrintColor)
+				if($iSockets > 0) then
+					PrintString("  " & "Socketed (" & $iSockets & ")", $asStats[$n][1])
+				endif
+			endif
+        next
 	endif
-endfunc
 
-;Determine whether a stat should be printed
-func ShouldPrintStat($color)
-    if (_GUI_Option("notify-only-filtered")) then
-        return $color == $ePrintRed
-    endif
-    return True
+	if(_GUI_Option("debug-notifier")) then PrintString('rule - ' & $sMatchingLine, $ePrintRed)
+
+    if ($iFlagsSound <> NotifierFlag("sound_none")) then NotifierPlaySound($iFlagsSound)
 endfunc
 
 ; To display only one notification we need to narrow notifications
@@ -1384,7 +1301,7 @@ func HighlightStats($sGetItemStats, $asStatGroups, byref $bIsMatchByStats)
                 continueloop
             endif
 
-            if (StringRegExp(StringLower($sStat), StringLower($asStatGroups[$i]))) then
+            if (StringRegExp($sStat, $asStatGroups[$i])) then
                 $aColoredStats[$asStats[0] - $k][1] = $ePrintRed
                 $iMatchCounter += 1
             endif
@@ -1474,9 +1391,10 @@ func _GUI_OptionCount()
 endfunc
 
 func _GUI_NewOption($iLine, $sOption, $sText, $sFunc = "")
-    local $iY = _GUI_LineY($iLine)*2 - _GUI_LineY(0)
-    local $aControls[2] = [0, 0] ; Initialize array: [0]=label, [1]=control
-    local $sOptionType = _GUI_OptionType($sOption)
+	local $iY = _GUI_LineY($iLine)*2 - _GUI_LineY(0)
+
+	local $idControl
+	local $sOptionType = _GUI_OptionType($sOption)
 
 	switch $sOptionType
 		case null
@@ -1495,58 +1413,23 @@ func _GUI_NewOption($iLine, $sOption, $sText, $sFunc = "")
 				_HotKey_Assign($iKeyCode, $sFunc, $HK_FLAG_D2STATS, "[CLASS:Diablo II]")
 			endif
 
-			$aControls[0] = _GUICtrlHKI_Create($iKeyCode, _GUI_GroupX(), $iY, 120, 22)
+			$idControl = _GUICtrlHKI_Create($iKeyCode, _GUI_GroupX(), $iY, 120, 25)
 			GUICtrlCreateLabel($sText, _GUI_GroupX() + 124, $iY + 4)
-			$aControls[1] = 0
 		case "cb"
-            $aControls[0] = GUICtrlCreateCheckbox($sText, 10, $iY, Default, 22)
-            GUICtrlSetState($aControls[0], _GUI_Option($sOption) ? $GUI_CHECKED : $GUI_UNCHECKED)
-            $aControls[1] = 0
-		case "int"
-            $aControls[0] = GUICtrlCreateInput(Int(_GUI_Option($sOption)), 10, $iY, 50, 22)
-			GUICtrlSetOnEvent($aControls[0], $sFunc)
-            $aControls[1] = GUICtrlCreateLabel($sText, 70, $iY + 4, Default, 22)
+			$idControl = GUICtrlCreateCheckbox($sText, _GUI_GroupX(), $iY)
+			GUICtrlSetState(-1, _GUI_Option($sOption) ? $GUI_CHECKED : $GUI_UNCHECKED)
 		case else
 			_Log("_GUI_NewOption", "Invalid option type '" & $sOptionType & "'")
 			exit
 	endswitch
-    
-    $g_avGUIOption[0][0] += 1
-    local $iIndex = $g_avGUIOption[0][0]
-    $g_avGUIOption[$iIndex][0] = $sOption
-    $g_avGUIOption[$iIndex][1] = ($aControls[1] <> 0) ? $aControls[1] : $aControls[0] ; Main control
-    $g_avGUIOption[$iIndex][2] = $sFunc
 
-    Return $aControls
+	$g_avGUIOption[0][0] += 1
+	local $iIndex = $g_avGUIOption[0][0]
+
+	$g_avGUIOption[$iIndex][0] = $sOption
+	$g_avGUIOption[$iIndex][1] = $idControl
+	$g_avGUIOption[$iIndex][2] = $sFunc
 endfunc
-
-Func OnChange_OverlaySettings()
-    Local $idCtrl = @GUI_CtrlId
-    Local $sOptionKey = ""
-
-    ; Find the matching option key for this control
-    For $i = 0 To UBound($g_aOptionsControls) - 1
-        If $g_aOptionsControls[$i][1] = $idCtrl Then
-            $sOptionKey = $g_avGUIOptionList[$i][0]
-            ExitLoop
-        EndIf
-    Next
-
-    ; If we found a valid key, update the value
-    If $sOptionKey <> "" Then
-        Local $sValue = GUICtrlRead($idCtrl)
-        _GUI_Option($sOptionKey, $sValue)
-
-        ; Special handling for overlay options
-        If StringInStr($sOptionKey, "overlay-") Then
-            If $g_hOverlayGUI Then
-                GUIDelete($g_hOverlayGUI)
-                $g_hOverlayGUI = 0
-            EndIf
-        EndIf
-    EndIf
-EndFunc
-
 
 func _GUI_OptionByRef($iOption, byref $sOption, byref $idControl, byref $sFunc)
 	$sOption = $g_avGUIOption[$iOption][0]
@@ -1592,20 +1475,6 @@ func _GUI_Volume($iIndex, $iValue = default)
 
 	return GUICtrlRead($id)
 endfunc
-
-func WM_GETMINMAXINFO($hWnd, $MsgID, $wParam, $lParam)
-	;Credits: iCode
-    ;https://www.autoitscript.com/forum/topic/159947-resize-tabs-relative-to-gui-width/
-	#forceref $MsgID, $wParam
-    If Not IsHWnd($hWnd) Then Return $GUI_RUNDEFMSG
-
-    Local $minmaxinfo = DllStructCreate("int;int;int;int;int;int;int;int;int;int", $lParam)
-
-    DllStructSetData($minmaxinfo, 7, $g_WindowPos[2]) ; enforce a minimum width for the gui (min width will be the initial width of the gui)
-    DllStructSetData($minmaxinfo, 8, $g_WindowPos[3]) ; enforce a minimum height for the gui (min height will be the initial height of the gui)
-
-    Return $GUI_RUNDEFMSG
-endfunc
 #EndRegion
 
 #Region GUI
@@ -1625,13 +1494,13 @@ func UpdateGUI()
 			exit
 		elseif ($iMatches == 4) then
 			$sText = StringReplace($sText, $asMatches[0], "")
-			$iColor = $g_iColorArray[$ePrintRed]
+			$iColor = $g_iColorRed
 
 			$iStatValue = GetStatValue($asMatches[1])
 			if ($iStatValue >= $asMatches[2]) then
-				$iColor = $g_iColorArray[$ePrintGreen]
+				$iColor = $g_iColorGreen
 			elseif ($iStatValue >= $asMatches[3]) then
-				$iColor = $g_iColorArray[$ePrintGold]
+				$iColor = $g_iColorGold
 			endif
 		endif
 
@@ -1652,7 +1521,7 @@ endfunc
 func OnClick_ReadStats()
 	UpdateStatValues()
 	UpdateGUI()
-	$g_aiStatsCacheCopy = $g_aiStatsCache
+	CopyStatsArray()
 endfunc
 
 func OnClick_Tab()
@@ -1777,19 +1646,21 @@ func OnClick_NotifyHelp()
 		'> white red lime blue gold orange yellow green purple - Notification color.', _
 		StringFormat('> sound[1-%s] - Notification sound.', $g_iNumSounds), _
 		'', _
-		'Example 1:', _
+		'Example:', _
 		'"Battle" sacred unique eth sound3', _
 		'This would notify for ethereal SU Battle Axe, Battle Staff,', _
 		'Short Battle Bow and Long Battle Bow, and would play Sound 3', _
 		'', _
-		'Example 2:', _
-        'sacred {socketed \([0,6]\)}', _
-        'This would match ever sacred item with 0 or 6 Sockets', _
-		'', _
+        'Example 2:', _
+        'hide rare', _
+        '"Leather Gloves" sacred rare', _
+        'This would hide every rare on ground, except sacred rare Leather Gloves', _
+        '', _
         'Example 3:', _
-        '"Amulet$" normal rare magic', _
+        'hide "Amulet$" normal rare magic', _
         '"Amulet$" rare {[3-5] to All Skills}', _
-        'This would match ever rare amulet with 3-5 to All skills', _
+        'This would hide every normal, rare, magic amulet on ground, except', _
+        'rare amulets with 3-5 to All skills', _
 		'', _
         'Example 4:', _
         '"Amulet$" {[3-5] to All Skills} {Spell Focus} {to Spell Damage}', _
@@ -1893,19 +1764,19 @@ func AskUserForNotifierRulesName(byref $sNewNotifierRulesName, $sInitialNotifier
 		endif
 
 		$sNewNotifierRulesName = $sUserInput
-		return True
+		return True;
 	wend
 endfunc
 
 func RefreshNotifyRulesCombo($sSelectedNotifierRulesName = "")
 	global $g_aNotifierRulesFilePaths = _FileListToArray($g_sNotifierRulesDirectory, "*" & $g_sNotifierRulesExtension, $FLTA_FILES, True)
-	if (@error <> 0 or $g_aNotifierRulesFilePaths == 0) then
+	if (@error not == 0 or $g_aNotifierRulesFilePaths == 0) then
 		SetError(0)
 		CreateNotifierRulesFile(GetNotifierRulesFilePath("Default"), _GUI_Option("notify-text"))
 		$g_aNotifierRulesFilePaths = _FileListToArray($g_sNotifierRulesDirectory, "*" & $g_sNotifierRulesExtension, $FLTA_FILES, True)
 	endif
 
-	if (@error <> 0 or $g_aNotifierRulesFilePaths == 0) then
+	if (@error not == 0 or $g_aNotifierRulesFilePaths == 0) then
 		MsgBox($MB_ICONERROR, "Error!", "Could not locate/create any notifier rules files inside " & $g_sNotifierRulesDirectory)
 		return False
 	endif
@@ -1940,342 +1811,61 @@ func OnClick_VolumeTest()
 endfunc
 
 func OnClick_Forum()
-	ShellExecute("https://forum.median-xl.com/viewtopic.php?f=4&t=85654")
+	ShellExecute("https://forum.median-xl.com/viewtopic.php?f=4&t=3702")
 endfunc
 
-Func OptionsScrollUp()
-    If $g_iOptionsScrollPos > 0 Then
-        $g_iOptionsScrollPos -= 1
-        UpdateVisibleOptions()
-    EndIf
-EndFunc
-
-Func OptionsScrollDown()
-    If $g_iOptionsScrollPos < $g_iGUIOptionsGeneral - $g_iOptionsVisibleLines Then
-        $g_iOptionsScrollPos += 1
-        UpdateVisibleOptions()
-    EndIf
-EndFunc
-
-Func UpdateVisibleOptions()
-    For $i = 0 To UBound($g_aOptionsControls) - 1
-        Local $bVisible = ($i >= $g_iOptionsScrollPos And $i < $g_iOptionsScrollPos + $g_iOptionsVisibleLines)
-        Local $iYPos = 30 + ($i - $g_iOptionsScrollPos) * 25
-
-        For $j = 0 To 1
-            If $g_aOptionsControls[$i][$j] Then
-                GUICtrlSetState($g_aOptionsControls[$i][$j], $bVisible ? $GUI_SHOW : $GUI_HIDE)
-                If $bVisible Then
-                    Local $aPos = ControlGetPos($g_hGUI, "", $g_aOptionsControls[$i][$j])
-                    GUICtrlSetPos($g_aOptionsControls[$i][$j], $aPos[0], $iYPos)
-                EndIf
-            EndIf
-        Next
-    Next
-    UpdateOptionsScrollButtons()
-EndFunc
-
-Func UpdateOptionsScrollButtons()
-    GUICtrlSetState($idScrollUp, $g_iOptionsScrollPos > 0 ? $GUI_ENABLE : $GUI_DISABLE)
-    GUICtrlSetState($idScrollDown, $g_iOptionsScrollPos < $g_iGUIOptionsGeneral - $g_iOptionsVisibleLines ? $GUI_ENABLE : $GUI_DISABLE)
-EndFunc
-
-Func WM_MOUSEWHEEL($hWnd, $iMsg, $wParam, $lParam)
-    ; Only process if mouse is over our options tab
-    Local $aPos = WinGetPos($g_hGUI)
-    Local $iMouseX = BitAND($lParam, 0xFFFF)
-    Local $iMouseY = BitShift($lParam, 16)
-    
-    If $iMouseX >= $aPos[0] And $iMouseX <= $aPos[0] + $aPos[2] And _
-       $iMouseY >= $aPos[1] + 25 And $iMouseY <= $aPos[1] + $aPos[3] - 60 Then
-        
-        Local $iDelta = BitShift($wParam, 16)
-        If $iDelta > 0 Then
-            OptionsScrollUp()
-        ElseIf $iDelta < 0 Then
-            OptionsScrollDown()
-        EndIf
-    EndIf
-    Return $GUI_RUNDEFMSG
-EndFunc
-
-#Region Overlay
-Func IsGameWindowPresent()
-    Local $hGameWindow = WinGetHandle("[CLASS:Diablo II]")
-    If Not $hGameWindow Then Return False
-    
-    ; Check if window is minimized
-    Local $iStyle = _WinAPI_GetWindowLong($hGameWindow, $GWL_STYLE)
-    If BitAND($iStyle, $WS_MINIMIZE) Then Return False
-    
-    Return True
-EndFunc
-
-Func CreateOverlayWindow()
-    If $g_hOverlayGUI <> 0 Then Return
-    
-    Local $hGameWindow = WinGetHandle("[CLASS:Diablo II]")
-    If Not $hGameWindow Then Return
-    
-    Local $aPos = WinGetPos($hGameWindow)
-    If @error Then Return
-    $g_iNextYPos = 0
-
-    ; Create overlay covering full game width with small margins
-    $g_hOverlayGUI = GUICreate("D2StatsOverlay", _
-								$aPos[2] - _GUI_Option("overlay-x"), _
-								$aPos[3] - _GUI_Option("overlay-y"), _
-								$aPos[0] + _GUI_Option("overlay-x"), _
-								$aPos[1] + _GUI_Option("overlay-y"), _
-								$WS_POPUP, BitOR($WS_EX_LAYERED, $WS_EX_TOPMOST, $WS_EX_TOOLWINDOW))
-	
-    GUISetBkColor(0xABCDEF)
-    _WinAPI_SetLayeredWindowAttributes($g_hOverlayGUI, 0xABCDEF, 255)
-    GUISetState(@SW_SHOWNOACTIVATE, $g_hOverlayGUI)
-EndFunc
-
-Func UpdateOverlayPosition()
-    Local $hGameWindow = WinGetHandle("[CLASS:Diablo II]")
-    If Not $hGameWindow Then Return
-    
-    Local $aPos = WinGetPos($hGameWindow)
-    If Not @error Then
-        ; Update overlay to match game window dimensions with margins
-        WinMove($g_hOverlayGUI, "", _
-				$aPos[0] + _GUI_Option("overlay-x"), _
-				$aPos[1] + _GUI_Option("overlay-y"), _
-				$aPos[2] - _GUI_Option("overlay-x"), _
-				$aPos[3] - _GUI_Option("overlay-y"))
-    EndIf
-EndFunc
-
-Func PrintString($sText, $iColor = $ePrintWhite)
-    If $g_hOverlayGUI = 0 Then 
-        CreateOverlayWindow()
-        If $g_hOverlayGUI = 0 Then Return ; Still failed to create
-    EndIf
-
-    Local $iTextColor = $g_NotifierColorArray[$iColor]
-    Local $aOverlayPos = WinGetPos($g_hOverlayGUI)
-    Local $iTextWidth = $aOverlayPos[2]
-    
-    ; Remove Diablo II color codes (ÿcX)
-    $sText = StringRegExpReplace($sText, "ÿc.", "")
-
-    ; Split text into lines
-    Local $aSplitText = _SplitTextToWidth($sText, $iTextWidth)
-
-    ; Create labels for each line
-    For $i = 0 To UBound($aSplitText) - 1
-        Local $sLine = $aSplitText[$i]
-        If $sLine = "" Then ContinueLoop ; Skip empty lines
-		
-		local $iRowHeight = Floor(_GUI_Option("overlay-fontsize") * 1.65)
-        ; Background (black outline)
-        Local $idLabelBg = GUICtrlCreateLabel(StringRegExpReplace($sLine & " ", "(?s).", "█"), 0, $g_iNextYPos, $iTextWidth, $iRowHeight)
-        GUICtrlSetColor($idLabelBg, 0x0A0A0A)
-        GUICtrlSetBkColor($idLabelBg, $GUI_BKCOLOR_TRANSPARENT)
-        GUICtrlSetFont($idLabelBg, _GUI_Option("overlay-fontsize"), $FW_NORMAL, $GUI_FONTNORMAL, "Courier New", $ANTIALIASED_QUALITY)
-
-        ; Foreground (colored text)
-        Local $idLabel = GUICtrlCreateLabel($sLine, 0, $g_iNextYPos, $iTextWidth, $iRowHeight)
-        GUICtrlSetColor($idLabel, $iTextColor)
-        GUICtrlSetBkColor($idLabel, $GUI_BKCOLOR_TRANSPARENT)
-        GUICtrlSetFont($idLabel, _GUI_Option("overlay-fontsize"), $FW_NORMAL, $GUI_FONTNORMAL, "Courier New", $ANTIALIASED_QUALITY)
-
-		Local $iUBound = UBound($g_aMessages)
-        ReDim $g_aMessages[$iUBound + 1][4]
-        $g_aMessages[$iUBound][0] = $idLabelBg
-        $g_aMessages[$iUBound][1] = $idLabel
-        $g_aMessages[$iUBound][2] = TimerDiff($g_hScriptStartTime)
-        $g_aMessages[$iUBound][3] = $iRowHeight
-
-        $g_iNextYPos += $iRowHeight
-    Next
-
-    ; Start cleanup timer if needed
-    If Not $g_bCleanupRunning And IsArray($g_aMessages) And UBound($g_aMessages) > 0 Then
-        $g_bCleanupRunning = True
-        AdlibRegister("CleanUpExpiredText", 100)
-    EndIf
-EndFunc
-
-Func _SplitTextToWidth($sText, $iMaxWidth)
-    Local $aLines[0]
-    
-    ; Get average char width (monospace)
-    Local $iCharWidth = Floor((_GUI_Option("overlay-fontsize") * _GetDPI()[2]) * 0.85)
-    Local $iMaxChars = Floor($iMaxWidth / $iCharWidth)
-    
-    ; Split by paragraphs first
-    Local $aParagraphs = StringSplit($sText, @CRLF, $STR_ENTIRESPLIT + $STR_NOCOUNT)
-
-    For $sParagraph In $aParagraphs
-        $sParagraph = StringStripWS($sParagraph, $STR_STRIPLEADING + $STR_STRIPTRAILING)
-        If $sParagraph = "" Then
-            ReDim $aLines[UBound($aLines) + 1]
-            $aLines[UBound($aLines) - 1] = ""
-            ContinueLoop
-        EndIf
-
-        While StringLen($sParagraph) > 0
-            ; Check if remaining text fits in max width
-            If StringLen($sParagraph) <= $iMaxChars Then
-				ReDim $aLines[UBound($aLines) + 1]
-                $aLines[UBound($aLines) - 1] = $sParagraph
-                ExitLoop
-            EndIf
-            
-            ; Get left part up to max chars
-            Local $sSegment = StringLeft($sParagraph, $iMaxChars)
-            
-            ; Find the rightmost space character
-            Local $iSplitPos = StringInStr($sSegment, " ", 0, -1)
-            
-            ; If no space found, split at max chars (break word)
-            If $iSplitPos = 0 Then $iSplitPos = $iMaxChars
-            
-            ; Split the paragraph
-            Local $sLine = StringLeft($sParagraph, $iSplitPos)
-            $sParagraph = StringTrimLeft($sParagraph, $iSplitPos)
-            
-            ; Trim whitespace and add to lines array
-            $sLine = StringStripWS($sLine, $STR_STRIPTRAILING)
-            $sParagraph = StringStripWS($sParagraph, $STR_STRIPLEADING)
-            
-            ReDim $aLines[UBound($aLines) + 1]
-            $aLines[UBound($aLines) - 1] = $sLine
-        WEnd
-    Next
-
-    Return $aLines
-EndFunc
-
-Func CleanUpExpiredText()
-    ; Only proceed if we have messages to process
-    If UBound($g_aMessages) = 0 Then
-        AdlibUnRegister("CleanUpExpiredText")
-        $g_bCleanupRunning = False
-        Return
-    EndIf
-
-    Local $aMessagesToKeep[0][4]  ; Changed to 4 columns to match the new structure
-    Local $bMessagesRemoved = False
-    Local $iNewYPos = 0
-
-    For $i = 0 To UBound($g_aMessages) - 1
-        ; Check if message should expire
-        If $g_aMessages[$i][2] <> 0 And TimerDiff($g_hScriptStartTime) >= $g_aMessages[$i][2] + _GUI_Option("overlay-timeout") Then
-            ; Message expired - delete it
-            GUICtrlDelete($g_aMessages[$i][0])  ; Delete background label
-            GUICtrlDelete($g_aMessages[$i][1])   ; Delete foreground label
-            $bMessagesRemoved = True
-        Else
-            ; Message stays - keep it and reposition if needed
-            If $bMessagesRemoved Then
-                GUICtrlSetPos($g_aMessages[$i][0], 0, $iNewYPos)  ; Reposition background
-                GUICtrlSetPos($g_aMessages[$i][1], 0, $iNewYPos)  ; Reposition foreground
-            EndIf
-            
-            ; Add to new array
-            ReDim $aMessagesToKeep[UBound($aMessagesToKeep) + 1][4]
-            $aMessagesToKeep[UBound($aMessagesToKeep) - 1][0] = $g_aMessages[$i][0]  ; Background label
-            $aMessagesToKeep[UBound($aMessagesToKeep) - 1][1] = $g_aMessages[$i][1]  ; Foreground label
-            $aMessagesToKeep[UBound($aMessagesToKeep) - 1][2] = $g_aMessages[$i][2]  ; Timestamp
-            $aMessagesToKeep[UBound($aMessagesToKeep) - 1][3] = $g_aMessages[$i][3]  ; Height
-            
-            $iNewYPos += $g_aMessages[$i][3]
-        EndIf
-    Next
-    ; Update global array and positions if messages were removed
-    If $bMessagesRemoved Then
-        $g_aMessages = $aMessagesToKeep
-        $g_iNextYPos = $iNewYPos
-    EndIf
-
-    ; Stop cleanup timer if no more messages
-    If UBound($g_aMessages) = 0 Then
-        $g_bCleanupRunning = False
-        $g_iNextYPos = 0
-        AdlibUnRegister("CleanUpExpiredText")
-    EndIf
-EndFunc
-
-Func OverlayMain()
-    ; Find the game window if we haven't already
-    If $g_hOverlayGUI = 0 And IsGameWindowPresent() Then
-        CreateOverlayWindow()
-    ElseIf $g_hOverlayGUI <> 0 Then
-        ; Check if game window still exists or is minimized
-        If Not IsGameWindowPresent() Then
-            GUIDelete($g_hOverlayGUI)
-            $g_hOverlayGUI = 0
-            ; Clear all messages
-            For $i = 0 To UBound($g_aMessages) - 1
-                GUICtrlDelete($g_aMessages[$i][0])  ; Delete background label
-                GUICtrlDelete($g_aMessages[$i][1])   ; Delete foreground label
-            Next
-
-			ReDim $g_aMessages[0][4]
-
-            $g_iNextYPos = 0
-            $g_bCleanupRunning = False
-            AdlibUnRegister("CleanUpExpiredText")
-        Else
-            ; Update overlay position and visibility
-            UpdateOverlayPosition()
-        EndIf
-    EndIf
-EndFunc
-#EndRegion
-
 func CreateGUI()
+	;global $g_iGroupLines = 16
 	global $g_iGroupWidth = 110
 	global $g_iGroupXStart = 8
-	global $g_iGUIWidth = 32 + 4 * $g_iGroupWidth
-	global $g_iGUIHeight = 330
+	global $g_iGUIWidth = 32 + 4*$g_iGroupWidth
+	global $g_iGUIHeight = 350
 
 	local $sTitle = not @Compiled ? "Test" : StringFormat("D2Stats %s - [%s]", FileGetVersion(@AutoItExe, "FileVersion"), FileGetVersion(@AutoItExe, "Comments"))
 
-	global $g_hGUI = GUICreate($sTitle, $g_iGUIWidth, $g_iGUIHeight, -1, -1, BitOR($GUI_SS_DEFAULT_GUI,$WS_SIZEBOX))
+	global $g_hGUI = GUICreate($sTitle, $g_iGUIWidth, $g_iGUIHeight, -1, -1, -1)
 	GUISetFont(9 / _GetDPI()[2], 0, 0, "Courier New")
 	GUISetOnEvent($GUI_EVENT_CLOSE, "_Exit")
-	global $g_WindowPos = WinGetPos($g_hGUI)
-	
+
 	local $iBottomButtonCoords = $g_iGUIHeight - 30
 
 	global $g_idReadStats = GUICtrlCreateButton("Read", $g_iGroupXStart, $iBottomButtonCoords, 70, 25)
 	GUICtrlSetOnEvent(-1, "OnClick_ReadStats")
-
+	
 	global $g_idShowDiff = GUICtrlCreateButton("Diff", $g_iGroupXStart + 78, $iBottomButtonCoords, 70, 25)
 	GUICtrlSetOnEvent(-1, "CompareStats")
 
-	global $g_idReadMercenary = GUICtrlCreateCheckbox("Mercenary", $g_iGroupXStart + 156, $iBottomButtonCoords + 1)
+	global $g_idReadMercenary = GUICtrlCreateCheckbox("Mercenary", $g_iGroupXStart + 156, $iBottomButtonCoords)
 
 	global $g_idTab = GUICtrlCreateTab(0, 0, $g_iGUIWidth, 0, $TCS_FOCUSNEVER)
-	GUICtrlSetResizing (-1, $GUI_DOCKMENUBAR)
 	GUICtrlSetOnEvent(-1, "OnClick_Tab")
+
+	local $idDummySelectAll = GUICtrlCreateDummy()
+	GUICtrlSetOnEvent(-1, "DummySelectAll")
+
+	local $avAccelKeys[][2] = [ ["^a", $idDummySelectAll] ]
+	GUISetAccelerators($avAccelKeys)
 
 #Region Stats
 	GUICtrlCreateTabItem("Basic")
 	_GUI_GroupFirst()
 	_GUI_NewText(00, "Character data")
 	_GUI_NewItem(01, "Level: {012}")
-	_GUI_NewItem(02, "Exp: {013}")
-
+	_GUI_NewItem(02, "Experience: {013}")
+	
 	_GUI_NewItem(04, "Gold: {014}", "Current gold on character.||Max gold on character calculated from the following formula:|(CharacterLevel*10,000)")
 	_GUI_NewItem(05, "Stash: {015} [015:2500000/1000000]", "Current gold in stash||Max gold in stash is constant:|2,500,000")
 
 	_GUI_NewItem(07, "Signets: {185}/400 [185:400/400]", "Signets of Learning.|Each grants 1 stat point. Catalyst is not used up in craft. Can't mix sets and uniques while disenchanting.||Cube recipes:|Any sacred unique item x1-10 + Catalyst of Learning ? Signet of Learning x1-10|Any set item x1-10 + Catalyst of Learning ? Signet of Learning x1-10|Unique ring/amulet/jewel/quiver + Catalyst of Learning ? Signet of Learning")
-	_GUI_NewItem(08, "Charms: {356}/97 [356:97/97]", "Charm counter|Value calculated by the following formula: (Charms+Relics)*2||Exceptions:|Ennead charm - 1pt|Sunstone of the Twin Seas - 1pt, +1pt for all 3 scrolls|Riftwalker - 2pt for base, +1pt for each upgrade (max 6pt)|Sleep - gives 2pt only after full upgrade (Awakening), otherwise 0pt|Tome of Posession - increases by 2pt despite not being a charm")
-
+	_GUI_NewItem(08, "Charms: {356}/97 [356:97/97]","Charm counter|Value calculated by the following formula: (Charms+Relics)*2||Exceptions:|Ennead charm - 1pt|Sunstone of the Sunless Sea - 1pt, +1pt for all 3 scrolls|Riftwalker - 2pt for base, +1pt for each upgrade (max 6pt)|Sleep - gives 2pt only after full upgrade (Awaken), otherwise 0pt")
+	
 	_GUI_GroupNext()
 	_GUI_GroupNext()
 	_GUI_NewItem(00, "M.Find: {080}%", "Magic Find")
 	_GUI_NewItem(01, "G.Find: {079}%", "Gold Find")
 	_GUI_NewItem(02, "Exp.Gain: +{085}%")
 	_GUI_NewItem(03, "M.Skill: +{479}", "Maximum Skill Level")
-
+	
 	GUICtrlCreateTabItem("Page 1")
 	_GUI_GroupFirst()
 	_GUI_NewText(00, "Base stats")
@@ -2304,33 +1894,32 @@ func CreateGUI()
 	_GUI_NewItem(02, "EWD: {025}%", "Enchanced Weapon Damage")
 	_GUI_NewItem(03, "TCD: {171}% ", "Total Character Defense")
 	_GUI_NewItem(04, "AR: {119}% ", "Attack Rating")
-	_GUI_NewItem(05, "PDR: {034}", "Physical Damage taken Reduction")
-	_GUI_NewItem(06, "MDR: {035}", "Magic Damage taken Reduction")
-	_GUI_NewItem(07, "Grit: {184}%", "Damage reduction from all sources (mostly from Grit)")
-	_GUI_NewItem(08, "Dodge: {338}%", "Chance to avoid melee attacks while standing still")
-	_GUI_NewItem(09, "Avoid: {339}%", "Chance to avoid projectiles while standing still")
-	_GUI_NewItem(10, "Evade: {340}%", "Chance to avoid any attack while moving")
+	_GUI_NewItem(05, "PDR: {034}", "Physical Damage Reduction")
+	_GUI_NewItem(06, "MDR: {035}", "Magic Damage Reduction")
+	_GUI_NewItem(07, "Dodge: {338}%", "Chance to avoid melee attacks while standing still")
+	_GUI_NewItem(08, "Avoid: {339}%", "Chance to avoid projectiles while standing still")
+	_GUI_NewItem(09, "Evade: {340}%", "Chance to avoid any attack while moving")
 
-	_GUI_NewItem(12, "CB: {136}%", "Crushing Blow. Chance to deal physical damage based on target's current health")
-	_GUI_NewItem(13, "DS: {141}%", "Deadly Strike. Chance to double physical damage of attack")
-	_GUI_NewItem(14, "Crit: {344}%", "Critical Strike. Chance to double physical damage of attack")
+	_GUI_NewItem(11, "CB: {136}%", "Crushing Blow. Chance to deal physical damage based on target's current health")
+	_GUI_NewItem(12, "DS: {141}%", "Deadly Strike. Chance to double physical damage of attack")
+	_GUI_NewItem(13, "Crit: {344}%", "Critical Strike. Chance to double physical damage of attack")
 
 	_GUI_GroupNext()
 	_GUI_NewText(00, "Resistance")
-	_GUI_NewItem(01, "{039}%", "Fire", $g_iColorArray[$ePrintRed])
-	_GUI_NewItem(02, "{043}%", "Cold", $g_iColorArray[$ePrintBlue])
-	_GUI_NewItem(03, "{041}%", "Lightning", $g_iColorArray[$ePrintGold])
-	_GUI_NewItem(04, "{045}%", "Poison", $g_iColorArray[$ePrintGreen])
-	_GUI_NewItem(05, "{037}%", "Magic", $g_iColorArray[$ePrintPink])
+	_GUI_NewItem(01, "{039}%", "Fire", $g_iColorRed)
+	_GUI_NewItem(02, "{043}%", "Cold", $g_iColorBlue)
+	_GUI_NewItem(03, "{041}%", "Lightning", $g_iColorGold)
+	_GUI_NewItem(04, "{045}%", "Poison", $g_iColorGreen)
+	_GUI_NewItem(05, "{037}%", "Magic", $g_iColorPink)
 	_GUI_NewItem(06, "{036}%", "Physical")
 
 	_GUI_NewText(07, "Damage/Pierce", "Spell damage / -Enemy resist")
-	_GUI_NewItem(08, "{329}%/{333}%", "Fire", $g_iColorArray[$ePrintRed])
-	_GUI_NewItem(09, "{331}%/{335}%", "Cold", $g_iColorArray[$ePrintBlue])
-	_GUI_NewItem(10, "{330}%/{334}%", "Lightning", $g_iColorArray[$ePrintGold])
-	_GUI_NewItem(11, "{332}%/{336}%", "Poison", $g_iColorArray[$ePrintGreen])
-	_GUI_NewItem(12, "{431}% PSD", "Poison Skill Duration", $g_iColorArray[$ePrintGreen])
-	_GUI_NewItem(13, "{357}%/0%", "Physical/Magic", $g_iColorArray[$ePrintPink])
+	_GUI_NewItem(08, "{329}%/{333}%", "Fire", $g_iColorRed)
+	_GUI_NewItem(09, "{331}%/{335}%", "Cold", $g_iColorBlue)
+	_GUI_NewItem(10, "{330}%/{334}%", "Lightning", $g_iColorGold)
+	_GUI_NewItem(11, "{332}%/{336}%", "Poison", $g_iColorGreen)
+	_GUI_NewItem(12, "{431}% PSD", "Poison Skill Duration", $g_iColorGreen)
+	_GUI_NewItem(13, "{357}%/0%", "Physical/Magic", $g_iColorPink)
 
 	GUICtrlCreateTabItem("Page 2")
 	_GUI_GroupFirst()
@@ -2344,7 +1933,7 @@ func CreateGUI()
 	_GUI_NewItem(07, "TTAD: {489}", "Target Takes Additional Damage")
 	_GUI_NewItem(08, "DtD: {121}%", "Damage to Demons")
 	_GUI_NewItem(09, "DtU: {122}%", "Damage to Undead")
-
+	
 	_GUI_NewText(11, "Slow")
 	_GUI_NewItem(12, "Tgt.: {150}%/{376}%", "Slows Target / Slows Melee Target")
 	_GUI_NewItem(13, "Att.: {363}%/{493}%", "Slows Attacker / Slows Ranged Attacker")
@@ -2364,26 +1953,43 @@ func CreateGUI()
 
 	_GUI_GroupNext()
 	_GUI_NewText(00, "Weapon Damage")
-	_GUI_NewItem(01, "{048}-{049}", "Fire", $g_iColorArray[$ePrintRed])
-	_GUI_NewItem(02, "{054}-{055}", "Cold", $g_iColorArray[$ePrintBlue])
-	_GUI_NewItem(03, "{050}-{051}", "Lightning", $g_iColorArray[$ePrintGold])
-	_GUI_NewItem(04, "{057}-{058}/s", "Poison/sec", $g_iColorArray[$ePrintGreen])
-	_GUI_NewItem(05, "{052}-{053}", "Magic", $g_iColorArray[$ePrintPink])
+	_GUI_NewItem(01, "{048}-{049}", "Fire", $g_iColorRed)
+	_GUI_NewItem(02, "{054}-{055}", "Cold", $g_iColorBlue)
+	_GUI_NewItem(03, "{050}-{051}", "Lightning", $g_iColorGold)
+	_GUI_NewItem(04, "{057}-{058}/s", "Poison/sec", $g_iColorGreen)
+	_GUI_NewItem(05, "{052}-{053}", "Magic", $g_iColorPink)
 	_GUI_NewItem(06, "{021}-{022}", "One-hand physical damage. Estimated; may be inaccurate, especially when dual wielding")
 	_GUI_NewItem(07, "{023}-{024}", "Two-hand/Ranged physical damage. Estimated; may be inaccurate, especially when dual wielding")
 
 	_GUI_GroupNext()
 	_GUI_NewText(00, "Abs/Flat", "Absorb / Flat absorb")
-	_GUI_NewItem(01, "{142}%/{143}", "Fire", $g_iColorArray[$ePrintRed])
-	_GUI_NewItem(02, "{148}%/{149}", "Cold", $g_iColorArray[$ePrintBlue])
-	_GUI_NewItem(03, "{144}%/{145}", "Lightning", $g_iColorArray[$ePrintGold])
-	_GUI_NewItem(04, "{146}%/{147}", "Magic", $g_iColorArray[$ePrintPink])
+	_GUI_NewItem(01, "{142}%/{143}", "Fire", $g_iColorRed)
+	_GUI_NewItem(02, "{148}%/{149}", "Cold", $g_iColorBlue)
+	_GUI_NewItem(03, "{144}%/{145}", "Lightning", $g_iColorGold)
+	_GUI_NewItem(04, "{146}%/{147}", "Magic", $g_iColorPink)
 
 	_GUI_NewItem(06, "RIP [108:1/1]", "Slain Monsters Rest In Peace|Nullifies Reanimates from monsters and you")
 	_GUI_NewItem(07, "Half freeze [118:1/1]", "Half freeze duration")
 	_GUI_NewItem(08, "Cannot be Frozen [153:1/1]")
 #EndRegion
+
 	LoadGUISettings()
+	_GUI_GroupX(8)
+
+	GUICtrlCreateTabItem("Options")
+	local $iOption = 0
+
+	for $i = 1 to $g_iGUIOptionsGeneral
+		_GUI_NewOption($i-1, $g_avGUIOptionList[$iOption][0], $g_avGUIOptionList[$iOption][3], $g_avGUIOptionList[$iOption][4])
+		$iOption += 1
+	next
+
+	GUICtrlCreateTabItem("Hotkeys")
+	for $i = 1 to $g_iGUIOptionsHotkey
+		_GUI_NewOption($i-1, $g_avGUIOptionList[$iOption][0], $g_avGUIOptionList[$iOption][3], $g_avGUIOptionList[$iOption][4])
+		$iOption += 1
+	next
+	
 	GUICtrlCreateTabItem("Notifier")
 	
 	local $iButtonWidth = 60
@@ -2400,78 +2006,32 @@ func CreateGUI()
 	GUICtrlSetOnEvent(-1, "OnClick_NotifyDelete")
 
 	global $g_idNotifyEdit = GUICtrlCreateEdit("", 4, _GUI_LineY(2), $g_iGUIWidth - 8, $iBottomButtonCoords - _GUI_LineY(2) - 5)
-	GUICtrlSetResizing (-1, $GUI_DOCKAUTO)
-	
 	global $g_idNotifySave = GUICtrlCreateButton("Save", 4 + 0*62, $iBottomButtonCoords, 60, 25)
 	GUICtrlSetOnEvent(-1, "OnClick_NotifySave")
-	; Add Ctrl + S as hotkey for saving notifier
-	local $avAccelKeys[][2] = [ ["^s", $g_idNotifySave] ]
-	GUISetAccelerators($avAccelKeys)
-
 	global $g_idNotifyReset = GUICtrlCreateButton("Reset", 4 + 1*62, $iBottomButtonCoords, 60, 25)
 	GUICtrlSetOnEvent(-1, "OnClick_NotifyReset")
-
 	global $g_idNotifyTest = GUICtrlCreateButton("Help", 4 + 2*62, $iBottomButtonCoords, 60, 25)
 	GUICtrlSetOnEvent(-1, "OnClick_NotifyHelp")
-
 	GUICtrlCreateButton("Default", 4 + 3*62, $iBottomButtonCoords, 60, 25)
 	GUICtrlSetOnEvent(-1, "OnClick_NotifyDefault")
 
 	OnClick_NotifyReset()
 	RefreshNotifyRulesCombo(_GUI_Option("selectedNotifierRulesName"))
 
-	_GUI_GroupX(8)
-
-	GUICtrlCreateTabItem("Options")
-    
-    ; Create scroll buttons
-    Local $idScrollUp = GUICtrlCreateButton("▲", $g_iGUIWidth - 20, 25, 18, 18)
-    GUICtrlSetOnEvent(-1, "OptionsScrollUp")
-    Local $idScrollDown = GUICtrlCreateButton("▼", $g_iGUIWidth - 20, $g_iGUIHeight - 20, 18, 18)
-    GUICtrlSetOnEvent(-1, "OptionsScrollDown")
-    
-    ; Initialize options controls array
-    ReDim $g_aOptionsControls[$g_iGUIOptionsGeneral][2]
-    
-    Local $iOption = 0
-    For $i = 0 To $g_iGUIOptionsGeneral - 1
-        Local $aControls = _GUI_NewOption($i, $g_avGUIOptionList[$iOption][0], $g_avGUIOptionList[$iOption][3], $g_avGUIOptionList[$iOption][4])
-        $g_aOptionsControls[$i][0] = $aControls[1] ; Label
-		$g_aOptionsControls[$i][1] = $aControls[0] ; Control
-        
-        ; Hide options outside visible range
-        If $i >= $g_iOptionsVisibleLines Then
-            For $j = 0 To 1
-                If $g_aOptionsControls[$i][$j] Then
-                    GUICtrlSetState($g_aOptionsControls[$i][$j], $GUI_HIDE)
-                EndIf
-            Next
-        EndIf
-        
-        $iOption += 1
-    Next
-    UpdateOptionsScrollButtons()
-
-	GUICtrlCreateTabItem("Hotkeys")
-	for $i = 1 to $g_iGUIOptionsHotkey
-		_GUI_NewOption($i-1, $g_avGUIOptionList[$iOption][0], $g_avGUIOptionList[$iOption][3], $g_avGUIOptionList[$iOption][4])
-		$iOption += 1
-	next
-
 	GUICtrlCreateTabItem("Sounds")
 	for $i = 0 to $g_iNumSounds - 1
 		local $iLine = 1 + $i*2
 
-		local $id = GUICtrlCreateSlider(60, _GUI_LineY($iLine), $g_iGUIWidth-128, 25, BitOR($TBS_TOOLTIPS, $TBS_AUTOTICKS, $TBS_ENABLESELRANGE))
+		local $id = GUICtrlCreateSlider(60, _GUI_LineY($iLine), 200, 25, BitOR($TBS_TOOLTIPS, $TBS_AUTOTICKS, $TBS_ENABLESELRANGE))
 		GUICtrlSetLimit(-1, 10, 0)
 		GUICtrlSetOnEvent(-1, "OnChange_VolumeSlider")
-			_GUICtrlSlider_SetTicFreq($id, 1)
+		_GUICtrlSlider_SetTicFreq($id, 1)
 
 		_GUI_NewTextBasic($iLine, "Sound " & ($i + 1), False)
 
-		GUICtrlCreateButton("Test", $g_iGUIWidth-68, _GUI_LineY($iLine), 60, 25)
+		GUICtrlCreateButton("Test", 260, _GUI_LineY($iLine), 60, 25)
 		GUICtrlSetOnEvent(-1, "OnClick_VolumeTest")
-	
+
 		if ($i == 0) then $g_idVolumeSlider = $id
 		_GUI_Volume($i, 5)
 	next
@@ -2495,8 +2055,7 @@ func CreateGUI()
 	GUICtrlCreateTabItem("")
 	UpdateGUI()
 	GUIRegisterMsg($WM_COMMAND, "WM_COMMAND")
-	GUIRegisterMsg($WM_GETMINMAXINFO, "WM_GETMINMAXINFO")
-	GUIRegisterMsg($WM_MOUSEWHEEL, "WM_MOUSEWHEEL")
+
 	GUISetState(@SW_SHOW)
 endfunc
 
@@ -2542,14 +2101,7 @@ func SaveGUISettings()
 	local $sWrite = "", $vValue
 	for $i = 0 to UBound($g_avGUIOptionList) - 1
 		$vValue = $g_avGUIOptionList[$i][1]
-
-		switch $g_avGUIOptionList[$i][2]
-			case "tx"
-				$vValue = StringToBinary($vValue)
-			case "int"
-				$vValue = Int($vValue)
-		endswitch
-		
+		if ($g_avGUIOptionList[$i][2] == "tx") then $vValue = StringToBinary($vValue)
 		$sWrite &= StringFormat("%s=%s%s", $g_avGUIOptionList[$i][0], $vValue, @LF)
 	next
 	IniWriteSection(@AutoItExe & ".ini", "General", $sWrite)
@@ -2607,6 +2159,12 @@ func LoadGUIVolume()
 	endif
 endfunc
 
+func DummySelectAll()
+    local $hWnd = _WinAPI_GetFocus()
+    local $sClass = _WinAPI_GetClassName($hWnd)
+    if ($sClass == "Edit") then _GUICtrlEdit_SetSel($hWnd, 0, -1)
+endfunc
+
 Func WM_COMMAND($hWnd, $iMsg, $wParam, $lParam)
 	Local $iIDFrom = BitAND($wParam, 0xFFFF)
 	Local $iCode = BitShift($wParam, 16)
@@ -2617,7 +2175,7 @@ Func WM_COMMAND($hWnd, $iMsg, $wParam, $lParam)
 				OnChange_NotifyEdit()
 		EndSwitch
 	EndIf
-EndFunc
+EndFunc   ;==>WM_COMMAND
 
 Func _GetDPI()
     Local $avRet[3]
@@ -2646,7 +2204,7 @@ Func _GetDPI()
     $avRet[2] = $iDPIRat
 
     Return $avRet
-EndFunc
+EndFunc   ;==>_GetDPI
 
 Func GoblinAlert($id)
 	If CheckGoblinHaveSeenBefore($id) Then
@@ -2689,18 +2247,21 @@ func SwapEndian($pAddress)
 	return StringFormat("%08s", StringLeft(Hex(Binary($pAddress)), 8))
 endfunc
 
-
-#cs
 func PrintString($sString, $iColor = $ePrintWhite)
 	if (not IsIngame()) then return
 	if (not WriteWString($sString)) then return _Log("PrintString", "Failed to write string.")
+
+	; Signal MedianXL notification hook in D2Sigma:
+	; - g_pD2NotifyFlags: desired EDX-like flags (default 0x40)
+	; - g_pD2NotifyFlag:  request flag (1 = show our message once)
+	_MemoryWrite($g_pD2NotifyFlags, $g_ahD2Handle, 0x40, "dword")
+	_MemoryWrite($g_pD2NotifyFlag, $g_ahD2Handle, 1, "dword")
 
 	RemoteThread($g_pD2InjectPrint, $iColor)
 	if (@error) then return _Log("PrintString", "Failed to create remote thread.")
 
 	return True
 endfunc
-#ce
 
 func GetItemName($pUnit)
 	if (not IsIngame()) then return ""
@@ -2743,7 +2304,7 @@ func GetOutputNumber()
 	return $iNumber
 endfunc
 
-#cs
+
 func WriteString($sString)
 	if (not IsIngame()) then return _Log("WriteString", "Not ingame.")
 
@@ -2755,13 +2316,100 @@ endfunc
 
 func WriteWString($sString)
 	if (not IsIngame()) then return _Log("WriteWString", "Not ingame.")
-	
+
 	_MemoryWrite($g_pD2InjectString, $g_ahD2Handle, $sString, StringFormat("wchar[%s]", StringLen($sString) + 1))
 	if (@error) then return _Log("WriteWString", "Failed to write string.")
 
 	return True
 endfunc
+
+func GetDropFilterHandle()
+	if (not WriteString("DropFilter.dll")) then return _Debug("GetDropFilterHandle", "Failed to write string.")
+
+	local $pGetModuleHandleA = _WinAPI_GetProcAddress(_WinAPI_GetModuleHandle("kernel32.dll"), "GetModuleHandleA")
+	if (not $pGetModuleHandleA) then return _Debug("GetDropFilterHandle", "Couldn't retrieve GetModuleHandleA address.")
+
+	return RemoteThread($pGetModuleHandleA, $g_pD2InjectString)
+endfunc
+
+#cs
+D2Client.dll+5907E - 83 3E 04              - cmp dword ptr [esi],04 { 4 }
+D2Client.dll+59081 - 0F85
+-->
+D2Client.dll+5907E - E9 *           - jmp DropFilter.dll+15D0 { PATCH_DropFilter }
 #ce
+
+func InjectDropFilter()
+	local $sPath = FileGetLongName("DropFilter.dll", $FN_RELATIVEPATH)
+	if (not FileExists($sPath)) then return _Debug("InjectDropFilter", "Couldn't find DropFilter.dll. Make sure it's in the same folder as " & @ScriptName & ".")
+	if (not WriteString($sPath)) then return _Debug("InjectDropFilter", "Failed to write DropFilter.dll path.")
+
+	local $pLoadLibraryA = _WinAPI_GetProcAddress(_WinAPI_GetModuleHandle("kernel32.dll"), "LoadLibraryA")
+	if (not $pLoadLibraryA) then return _Debug("InjectDropFilter", "Couldn't retrieve LoadLibraryA address.")
+
+	local $iRet = RemoteThread($pLoadLibraryA, $g_pD2InjectString)
+	if (@error) then return _Debug("InjectDropFilter", "Failed to create remote thread.")
+
+	local $bInjected = 233 <> _MemoryRead($g_hD2Client + 0x5907E, $g_ahD2Handle, "byte")
+
+	; TODO: Check if this is still needed
+	if ($iRet and $bInjected) then
+		local $hDropFilter = _WinAPI_LoadLibrary("DropFilter.dll")
+		if ($hDropFilter) then
+			local $pEntryAddress = _WinAPI_GetProcAddress($hDropFilter, "_PATCH_DropFilter@0")
+			if ($pEntryAddress) then
+				local $pJumpAddress = $pEntryAddress - 0x5 - ($g_hD2Client + 0x5907E)
+				_MemoryWrite($g_hD2Client + 0x5907E, $g_ahD2Handle, "0xE9" & SwapEndian($pJumpAddress), "byte[5]")
+			else
+				_Debug("InjectDropFilter", "Couldn't find DropFilter.dll entry point.")
+				$iRet = 0
+			endif
+			_WinAPI_FreeLibrary($hDropFilter)
+		else
+			_Debug("InjectDropFilter", "Failed to load DropFilter.dll.")
+			$iRet = 0
+		endif
+	endif
+
+	return $iRet
+endfunc
+
+func EjectDropFilter($hDropFilter)
+	local $pFreeLibrary = _WinAPI_GetProcAddress(_WinAPI_GetModuleHandle("kernel32.dll"), "FreeLibrary")
+	if (not $pFreeLibrary) then return _Debug("EjectDropFilter", "Couldn't retrieve FreeLibrary address.")
+
+	local $iRet = RemoteThread($pFreeLibrary, $hDropFilter)
+	if (@error) then return _Debug("EjectDropFilter", "Failed to create remote thread.")
+
+	if ($iRet) then _MemoryWrite($g_hD2Client + 0x5907E, $g_ahD2Handle, "0x833E040F85", "byte[5]")
+
+	return $iRet
+endfunc
+
+#cs
+D2Client.dll+42AE1 - A3 *                  - mov [D2Client.dll+11C3DC],eax { [00000000] }
+D2Client.dll+42AE6 - A3 *                  - mov [D2Client.dll+11C3E0],eax { [00000000] }
+->
+D2Client.dll+42AE1 - 90                    - nop
+D2Client.dll+42AE2 - 90                    - nop
+D2Client.dll+42AE3 - 90                    - nop
+D2Client.dll+42AE4 - 90                    - nop
+D2Client.dll+42AE5 - 90                    - nop
+D2Client.dll+42AE6 - 90                    - nop
+D2Client.dll+42AE7 - 90                    - nop
+D2Client.dll+42AE8 - 90                    - nop
+D2Client.dll+42AE9 - 90                    - nop
+D2Client.dll+42AEA - 90                    - nop
+#ce
+
+func IsMouseFixEnabled()
+	return _MemoryRead($g_hD2Client + 0x42AE1, $g_ahD2Handle, "byte") == 0x90
+endfunc
+
+func ToggleMouseFix()
+	local $sWrite = IsMouseFixEnabled() ? "0xA3" & SwapEndian($g_hD2Client + 0x11C3DC) & "A3" & SwapEndian($g_hD2Client + 0x11C3E0) : "0x90909090909090909090"
+	_MemoryWrite($g_hD2Client + 0x42AE1, $g_ahD2Handle, $sWrite, "byte[10]")
+endfunc
 
 #cs
 D2Client.dll+CDE00 - 53                    - push ebx
@@ -2786,15 +2434,83 @@ endfunc
 
 func InjectFunctions()
 #cs
-	D2Client.dll+CDE00 - 53                    - push ebx
-	D2Client.dll+CDE01 - 68 *                  - push D2Client.dll+CDE20
-	D2Client.dll+CDE06 - 31 C0                 - xor eax,eax
-	D2Client.dll+CDE08 - E8 *                  - call D2Client.dll+7D850
-	D2Client.dll+CDE0D - C3                    - ret
+	push ebx
+	mov edx, 0x40
+	mov ecx, g_pD2InjectString
+	push edx
+	push ecx
+	call D2Sigma.dll+16D0CB
+	pop ebx
+	ret
 #ce
-	local $iPrintOffset = ($g_hD2Client + 0x7D850) - ($g_hD2Client + 0xCDE0E)
-	local $sWrite = "0x5368" & SwapEndian($g_pD2InjectString) & "31C0E8" & SwapEndian($iPrintOffset) & "C3"
+	; Temporary safe stub for MedianXL: injected print code does nothing except return.
+	; This removes the unstable RemoteThread call into D2Sigma.dll, so the game won't crash,
+	; while we are designing a new in-thread notification hook.
+	; 0xC3C3C3C3 = four RET instructions; InjectCode verifies the first dword, so we write 4 bytes.
+	local $sWrite = "0xC3C3C3C3"
 	local $bPrint = InjectCode($g_pD2InjectPrint, $sWrite)
+
+	; --------------------------------------------------------------------
+	; MedianXL notification hook in D2Sigma.dll
+	;
+	; We hook D2Sigma.dll.text + D7D6F, where the game normally does:
+	;     push edx
+	;     push ecx
+	;     call 16D0CB
+	;     add esp, 8
+	;
+	; Our hook runs in the main game thread and:
+	;   1) If g_pD2NotifyFlag != 0, calls 16D0CB with (flags from g_pD2NotifyFlags, text from g_pD2InjectString),
+	;      then clears g_pD2NotifyFlag.
+	;   2) Executes the original 4 instructions and jumps back.
+	; --------------------------------------------------------------------
+
+	; Address of original notification call site in D2Sigma
+	; Cheat Engine labels it as D2Sigma.dll.text+D7D6F, so translate to module RVA.
+	local $pD2SigmaNotify = $g_hD2Sigma + 0xD8D6F
+	; Return address after the 4 original instructions (10 bytes total)
+	local $pD2SigmaNotifyRet = $pD2SigmaNotify + 0x0A
+
+	; Target function: D2Sigma.dll+16D0CB (same address, как в старом стабе печати).
+	local $pNotifyFunc = $g_hD2Sigma + 0x16D0CB
+
+	; Build hook body at g_pD2NotifyHook using absolute calls/jumps (избегаем rel32).
+	local $sHook = "0x" & _
+		"833D" & SwapEndian($g_pD2NotifyFlag) & "00" & _ ; cmp dword ptr [flag], 0
+		"7423" & _ ; je .no_custom (custom block = 0x23 bytes)
+		"52" & _ ; push edx (save original)
+		"51" & _ ; push ecx
+		"FF35" & SwapEndian($g_pD2NotifyFlags) & _ ; push dword ptr [flags]
+		"68" & SwapEndian($g_pD2InjectString) & _ ; push g_pD2InjectString
+		"51" & _ ; push ecx ; reserve space for saved ecx
+		"50" & _ ; push eax ; reserve space for saved edx
+		"89 4C 24 08" & _ ; mov [esp+08], ecx (store original ecx above saved slots)
+		"89 54 24 04" & _ ; mov [esp+04], edx (store original edx)
+		"B8" & SwapEndian($pNotifyFunc) & _ ; mov eax, notify_func
+		"FFD0" & _ ; call eax
+		"83C410" & _ ; add esp, 0x10 (remove saved regs + custom args)
+		"C705" & SwapEndian($g_pD2NotifyFlag) & "00000000" & _ ; mov dword ptr [flag], 0
+		"52" & _ ; push edx
+		"51" & _ ; push ecx
+		"B8" & SwapEndian($pNotifyFunc) & _ ; mov eax, notify_func
+		"FFD0" & _ ; call eax
+		"83C408" & _ ; add esp, 8
+		"B8" & SwapEndian($pD2SigmaNotifyRet) & _ ; mov eax, return address
+		"FFE0" ; jmp eax
+
+	local $bNotifyHook = InjectCode($g_pD2NotifyHook, $sHook)
+
+	; Patch original D2Sigma+D7D6F with a JMP to our hook and NOP the remaining bytes
+	local $iJmpToHook = $g_pD2NotifyHook - ($pD2SigmaNotify + 0x5)
+	$sWrite = "0xE9" & SwapEndian($iJmpToHook) & "9090909090"
+	local $bNotifyPatch = InjectCode($pD2SigmaNotify, $sWrite)
+
+	#cs
+	; Previous experimental MedianXL stub (kept for reference):
+	; local $iPrintOffset = ($g_hD2Sigma + 0x16D0CB) - ($g_pD2InjectPrint + 18)
+	; local $sWrite = "0x53BA40000000B9" & SwapEndian($g_pD2InjectString) & "5251E8" & SwapEndian($iPrintOffset) & "83C4085BC3"
+	; local $bPrint = InjectCode($g_pD2InjectPrint, $sWrite)
+	#ce
 
 #cs
 	D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx
@@ -2813,7 +2529,7 @@ func InjectFunctions()
 	D2Client.dll+CDE2B - E8 *                  - call D2Client.dll+914F0
 	D2Client.dll+CDE30 - C3                    - ret
 #ce
-	local $iIDWNT = ($g_hD2Client + 0x914F0) - ($g_hD2Client + 0xCDE31)
+	local $iIDWNT = ($g_hD2Client + 0x914F0) - ($g_pD2Client_GetItemName + 0x10)
 	$sWrite = "0x680001000068" & SwapEndian($g_pD2InjectString) & "53E8" & SwapEndian($iIDWNT) & "C3"
 	local $bGetItemName = InjectCode($g_pD2Client_GetItemName, $sWrite)
 
@@ -2827,7 +2543,7 @@ func InjectFunctions()
 	D2Client.dll+CDE50 - 5F                    - pop edi
 	D2Client.dll+CDE51 - C3                    - ret
 #ce
-	local $iIDWNTT = ($g_hD2Client + 0x560B0) - ($g_hD2Client + 0xCDE4E)
+	local $iIDWNTT = ($g_hD2Client + 0x560B0) - ($g_pD2Client_GetItemStat + 0x10)
 	$sWrite = "0x57BF" & SwapEndian($g_pD2InjectString) & "6A006A0153E8" & SwapEndian($iIDWNTT) & "5FC3"
 	local $bGetItemStat = InjectCode($g_pD2Client_GetItemStat, $sWrite)
 
@@ -2839,7 +2555,7 @@ func InjectFunctions()
 	D2Client.dll+CDE60 - A3 *                  - mov *,eax
 	D2Client.dll+CDE65 - C3                    - ret 
 #ce
-	local $iIDWNT3 = ($g_hD2Common + 0x38B70) - ($g_hD2Client + 0xCDE60)
+	local $iIDWNT3 = ($g_hD2Common + 0x38B70) - ($g_pD2Common_GetUnitStat + 0x0C)
 	$sWrite = "0x6A00FF33FF7304E8" & SwapEndian($iIDWNT3) & "A3" & SwapEndian($g_pD2InjectString) & "C3"
 	local $bGetUnitStat = InjectCode($g_pD2Common_GetUnitStat, $sWrite)
 
@@ -2871,14 +2587,23 @@ func UpdateDllHandles()
 
 	local $pD2Inject = $g_hD2Client + 0xCDE00
 	$g_pD2InjectPrint = $pD2Inject + 0x01 ; memory alignment
-	$g_pD2InjectGetString = $pD2Inject + 0x11
-	$g_pD2Client_GetItemName = $pD2Inject + 0x21
-	$g_pD2Client_GetItemStat = $pD2Inject + 0x3E
-	$g_pD2Common_GetUnitStat = $pD2Inject + 0x54
+	$g_pD2InjectGetString = $pD2Inject + 0x40
+	$g_pD2Client_GetItemName = $pD2Inject + 0x80
+	$g_pD2Client_GetItemStat = $pD2Inject + 0xC0
+	$g_pD2Common_GetUnitStat = $pD2Inject + 0x100
 	;~ make more room for full item description
 	$g_pD2InjectString = _MemVirtualAllocEx($g_ahD2Handle[1], 0, 0x1000, BitOR($MEM_COMMIT, $MEM_RESERVE), $PAGE_EXECUTE_READWRITE)
 	;~ make room for params array
 	$g_pD2InjectParams = _MemVirtualAllocEx($g_ahD2Handle[1], 0, 0x100, BitOR($MEM_COMMIT, $MEM_RESERVE), $PAGE_EXECUTE_READWRITE)
+
+	; MedianXL notification channel: flag + flags buffer and hook code region
+	$g_pD2NotifyFlag = _MemVirtualAllocEx($g_ahD2Handle[1], 0, 0x4, BitOR($MEM_COMMIT, $MEM_RESERVE), $PAGE_EXECUTE_READWRITE)
+	$g_pD2NotifyFlags = _MemVirtualAllocEx($g_ahD2Handle[1], 0, 0x4, BitOR($MEM_COMMIT, $MEM_RESERVE), $PAGE_EXECUTE_READWRITE)
+	$g_pD2NotifyHook = _MemVirtualAllocEx($g_ahD2Handle[1], 0, 0x100, BitOR($MEM_COMMIT, $MEM_RESERVE), $PAGE_EXECUTE_READWRITE)
+
+	; Initialize notify buffers: no pending request, default flags = 0x40
+	_MemoryWrite($g_pD2NotifyFlag, $g_ahD2Handle, 0, "dword")
+	_MemoryWrite($g_pD2NotifyFlags, $g_ahD2Handle, 0x40, "dword")
 
 	$g_pD2sgpt = _MemoryRead($g_hD2Common + 0x99E1C, $g_ahD2Handle)
 
@@ -2887,5 +2612,96 @@ func UpdateDllHandles()
 	if ($bFailed) then return _Debug("UpdateDllHandles", "Couldn't retrieve dll addresses.")
 
 	return True
+endfunc
+#EndRegion
+
+#Region Global Variables
+func DefineGlobals()
+	global $g_sLog = ""
+
+	global const $HK_FLAG_D2STATS = BitOR($HK_FLAG_DEFAULT, $HK_FLAG_NOUNHOOK)
+
+	global const $g_iColorRed	= 0xFF0000
+	global const $g_iColorBlue	= 0x0066CC
+	global const $g_iColorGold	= 0x808000
+	global const $g_iColorGreen	= 0x008000
+	global const $g_iColorPink	= 0xFF00FF
+
+	global enum $ePrintWhite, $ePrintRed, $ePrintLime, $ePrintBlue, $ePrintGold, $ePrintGrey, $ePrintBlack, $ePrintUnk, $ePrintOrange, $ePrintYellow, $ePrintGreen, $ePrintPurple
+	global enum $eQualityNone, $eQualityLow, $eQualityNormal, $eQualitySuperior, $eQualityMagic, $eQualitySet, $eQualityRare, $eQualityUnique, $eQualityCraft, $eQualityHonorific
+	global $g_iQualityColor[] = [0x0, $ePrintWhite, $ePrintWhite, $ePrintWhite, $ePrintBlue, $ePrintLime, $ePrintYellow, $ePrintGold, $ePrintOrange, $ePrintGreen]
+
+	global $g_avGUI[256][3] = [[0]]			; Text, X, Control [0] Count
+	global $g_avGUIOption[32][3] = [[0]]	; Option, Control, Function [0] Count
+
+	global enum $eNotifyFlagsTier, $eNotifyFlagsQuality, $eNotifyFlagsMisc, $eNotifyFlagsNoMask, $eNotifyFlagsColour, $eNotifyFlagsSound, $eNotifyFlagsName, $eNotifyFlagsStat, $eNotifyFlagsMatchStats, $eNotifyFlagsMatch, $eNotifyFlagsLast
+		global $g_asNotifyFlags[$eNotifyFlagsLast][32] = [ _
+		[ "0", "1", "2", "3", "4", "sacred", "angelic", "master" ], _
+		[ "low", "normal", "superior", "magic", "set", "rare", "unique", "craft", "honor" ], _
+		[ "eth", "socket" ], _
+		[], _
+		[ "clr_none", "white", "red", "lime", "blue", "gold", "grey", "black", "clr_unk", "orange", "yellow", "green", "purple", "show", "hide" ], _
+		[ "sound_none" ], _
+		[ "name" ], _
+		[ "stat" ] _
+	]
+	global $g_aiFlagsCountPerLine[0]
+
+	global const $g_iNumSounds = 6 ; Max 31
+	global $g_idVolumeSlider
+
+	for $i = 1 to $g_iNumSounds
+		$g_asNotifyFlags[$eNotifyFlagsSound][$i] = "sound" & $i
+	next
+
+	global const $g_sNotifierRulesDirectory = @WorkingDir & "\NotifierRules"
+	global const $g_sNotifierRulesExtension = ".rules"
+	global $g_avNotifyCache[0][3]					; Name, Tier flag, Last line of name
+	global $g_avNotifyCompile[0][$eNotifyFlagsLast]	; Flags, Regex
+	global $g_bNotifyCache = True
+	global $g_bNotifyCompile = True
+	global $g_bNotifierChanged = False
+
+	global const $g_iNumStats = 1024
+	global $g_aiStatsCache[2][$g_iNumStats]
+	global $g_aiStatsCacheCopy[2][$g_iNumStats]
+
+	global $g_asDLL[] = ["D2Client.dll", "D2Common.dll", "D2Win.dll", "D2Lang.dll", "D2Sigma.dll"]
+	global $g_hD2Client, $g_hD2Common, $g_hD2Win, $g_hD2Lang, $g_hD2Sigma
+	global $g_ahD2Handle
+
+	global $g_iD2pid, $g_iUpdateFailCounter
+
+	global $g_pD2sgpt, $g_pD2InjectPrint, $g_pD2InjectString, $g_pD2InjectParams, $g_pD2InjectGetString, $g_pD2Client_GetItemName, $g_pD2Client_GetItemStat, $g_pD2Common_GetUnitStat, $g_pD2NotifyFlag, $g_pD2NotifyFlags, $g_pD2NotifyHook
+
+	global $g_bHotkeysEnabled = False
+	global $g_ShowItems = False
+	global $g_hTimerCopyName = 0
+	global $g_sCopyName = ""
+
+	global const $g_iGUIOptionsGeneral = 10
+	global const $g_iGUIOptionsHotkey = 5
+
+	global $g_avGUIOptionList[][5] = [ _
+		["nopickup", 0, "cb", "Automatically enable /nopickup"], _
+		["mousefix", 0, "cb", "Continue attacking when monster dies under cursor"], _
+		["goblin-alert", 1, "cb", "Play sound (sound 6) when goblins are nearby."], _
+		["unique-tier", 1, "cb", "Show sacred tier of unique (SU/SSU/SSSU)"], _
+		["notify-enabled", 1, "cb", "Enable notifier"], _
+		["notify-superior", 0, "cb", "Notifier prefixes superior items with 'Superior'"], _
+		["notify-only-filtered", 0, "cb", "Only show filtered stats"], _
+		["oneline-name", 0, "cb", "One line item name and stats notification style"], _
+		["debug-notifier", 0, "cb", "Debug item notifications with match criteria and matching rule"], _
+		["use-wav", 0, "cb", "Use .wav instead of .mp3 for sounds (For Linux Compatibility)"], _
+		["copy", 0x002D, "hk", "Copy item text", "HotKey_CopyItem"], _
+		["copy-name", 0, "cb", "Only copy item name"], _
+		["filter", 0x0124, "hk", "Inject/eject DropFilter", "HotKey_DropFilter"], _
+		["toggle", 0x0024, "hk", "Always show items", "HotKey_ToggleShowItems"], _
+		["readstats", 0x0000, "hk", "Read stats without tabbing out of the game", "HotKey_ReadStats"], _
+		["notify-text", $g_sNotifyTextDefault, "tx"], _
+		["selectedNotifierRulesName", "Default", "tx"] _
+	]
+	global $g_goblinIds = [2774, 2775, 2776, 2779, 2780, 2781, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793, 2794, 2795, 2799, 2802, 2803, 2805]
+	global $g_goblinBuffer[] = []
 endfunc
 #EndRegion

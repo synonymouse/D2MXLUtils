@@ -4,6 +4,7 @@ mod d2types;
 mod hotkeys;
 mod injection;
 mod logger;
+mod loot_filter_hook;
 mod notifier;
 mod offsets;
 mod process;
@@ -12,7 +13,7 @@ mod rules;
 mod settings;
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
 
@@ -57,6 +58,10 @@ use std::os::windows::ffi::OsStrExt;
 struct AppState {
     is_scanning: Arc<AtomicBool>,
     should_auto_scan: Arc<AtomicBool>,
+    /// Filter configuration shared with scanner thread
+    filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
+    /// Whether filtering is enabled
+    filter_enabled: Arc<AtomicBool>,
 }
 
 /// Check if Diablo II window exists
@@ -77,21 +82,26 @@ fn is_diablo2_running() -> bool {
 }
 
 /// Start the scanner (internal function used by auto-start and manual start)
-fn start_scanner_internal(is_scanning: Arc<AtomicBool>, app_handle: AppHandle) {
+fn start_scanner_internal(
+    is_scanning: Arc<AtomicBool>,
+    filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
+    filter_enabled: Arc<AtomicBool>,
+    app_handle: AppHandle,
+) {
     // Check if already running
     if is_scanning.load(Ordering::SeqCst) {
         return;
     }
-    
+
     // Set scanning flag
     is_scanning.store(true, Ordering::SeqCst);
     log_info("Scanner starting...");
-    
+
     // Emit status to frontend
     if let Err(e) = app_handle.emit("scanner-status", "starting") {
         log_error(&format!("Failed to emit event (starting): {}", e));
     }
-    
+
     // Spawn background scanning thread
     thread::spawn(move || {
         // Try to create scanner
@@ -121,6 +131,18 @@ fn start_scanner_internal(is_scanning: Arc<AtomicBool>, app_handle: AppHandle) {
                 return;
             }
         };
+
+        // Configure filter if available
+        if let Ok(guard) = filter_config.read() {
+            if let Some(ref config) = *guard {
+                scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+                log_info("Scanner: Filter config loaded");
+            }
+        }
+        scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
+        if filter_enabled.load(Ordering::SeqCst) {
+            log_info("Scanner: Filtering enabled");
+        }
         
         let mut was_ingame = false;
         
@@ -149,19 +171,33 @@ fn start_scanner_internal(is_scanning: Arc<AtomicBool>, app_handle: AppHandle) {
             }
             was_ingame = ingame;
             
+            // Sync filter_config from AppState if scanner doesn't have it yet
+            if !scanner.has_filter_config() {
+                if let Ok(guard) = filter_config.read() {
+                    if let Some(ref config) = *guard {
+                        scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+                        log_info("Scanner: Filter config synced from AppState");
+                    }
+                }
+            }
+
+            // Sync filter_enabled state from AppState
+            let current_filter_enabled = filter_enabled.load(Ordering::SeqCst);
+            scanner.set_filter_enabled(current_filter_enabled);
+
             // Scan for items
             if ingame {
                 let items = scanner.tick();
                 for item in items {
                     log_info(&format!("Found item: {} ({})", item.name, item.quality));
-                    
+
                     // Emit item-drop event to frontend
                     if let Err(e) = app_handle.emit("item-drop", &item) {
                         log_error(&format!("Failed to emit item-drop event: {}", e));
                     }
                 }
             }
-            
+
             // Sleep between scans (200ms as in original D2Stats)
             thread::sleep(Duration::from_millis(200));
         }
@@ -190,22 +226,29 @@ fn start_scanner_internal(is_scanning: Arc<AtomicBool>, app_handle: AppHandle) {
 fn spawn_auto_scanner(
     is_scanning: Arc<AtomicBool>,
     should_auto_scan: Arc<AtomicBool>,
+    filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
+    filter_enabled: Arc<AtomicBool>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
         log_info("Auto-scanner monitor started");
-        
+
         while should_auto_scan.load(Ordering::SeqCst) {
             // If not currently scanning, check if D2 is running
             if !is_scanning.load(Ordering::SeqCst) && is_diablo2_running() {
                 log_info("Diablo II detected, auto-starting scanner");
-                start_scanner_internal(is_scanning.clone(), app_handle.clone());
+                start_scanner_internal(
+                    is_scanning.clone(),
+                    filter_config.clone(),
+                    filter_enabled.clone(),
+                    app_handle.clone(),
+                );
             }
-            
+
             // Check every 2 seconds
             thread::sleep(Duration::from_secs(2));
         }
-        
+
         log_info("Auto-scanner monitor stopped");
     });
 }
@@ -215,8 +258,13 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
     if state.is_scanning.load(Ordering::SeqCst) {
         return "Scanner is already running".to_string();
     }
-    
-    start_scanner_internal(state.is_scanning.clone(), app);
+
+    start_scanner_internal(
+        state.is_scanning.clone(),
+        state.filter_config.clone(),
+        state.filter_enabled.clone(),
+        app,
+    );
     "Scanner started".to_string()
 }
 
@@ -242,6 +290,30 @@ fn get_scanner_status(state: tauri::State<AppState>) -> bool {
     state.is_scanning.load(Ordering::SeqCst)
 }
 
+// ===== Filter Configuration Commands =====
+
+/// Set the filter configuration for the scanner
+#[tauri::command]
+fn set_filter_config(config: rules::FilterConfig, state: tauri::State<AppState>) -> Result<(), String> {
+    let mut guard = state.filter_config.write().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+    *guard = Some(config);
+    log_info("Filter config updated");
+    Ok(())
+}
+
+/// Enable or disable item filtering
+#[tauri::command]
+fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
+    state.filter_enabled.store(enabled, Ordering::SeqCst);
+    log_info(&format!("Filtering {}", if enabled { "enabled" } else { "disabled" }));
+}
+
+/// Get current filter enabled status
+#[tauri::command]
+fn get_filter_enabled(state: tauri::State<AppState>) -> bool {
+    state.filter_enabled.load(Ordering::SeqCst)
+}
+
 // ===== DSL Parser Commands =====
 
 /// Parse DSL text into FilterConfig JSON
@@ -260,6 +332,54 @@ fn filter_to_dsl(config: rules::FilterConfig) -> String {
 #[tauri::command]
 fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
     rules::validate_dsl(&text)
+}
+
+// ===== Loot Filter Hook Commands =====
+// Note: Hook is managed internally by scanner thread when filtering is enabled.
+// These commands provide a foundation for future UI integration.
+
+/// Apply filter rules to a specific item by setting its visibility flag
+/// This is used when items are scanned and filtered from the UI.
+///
+/// Note: For automatic filtering during scanning, use DropScanner's built-in
+/// filter integration which reuses the scanner's D2Context.
+/// This command creates a new D2Context each call for simplicity and thread-safety.
+#[tauri::command]
+fn apply_item_filter(
+    p_unit_data: u32,
+    visible: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use crate::process::D2Context;
+        use crate::offsets::item_data;
+
+        if p_unit_data == 0 {
+            return Err("p_unit_data is null".to_string());
+        }
+
+        let ctx = D2Context::new()?;
+        let value: u8 = if visible { 1 } else { 2 };
+        let addr = p_unit_data as usize + item_data::EAR_LEVEL;
+        ctx.process.write_buffer(addr, &[value])
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (p_unit_data, visible);
+        Err("Not supported on this OS".to_string())
+    }
+}
+
+/// Get the action for an item based on filter rules
+#[tauri::command]
+fn get_item_filter_action(
+    config: rules::FilterConfig,
+    item: notifier::ItemDropEvent,
+) -> rules::RuleAction {
+    use crate::rules::MatchContext;
+    let ctx = MatchContext::new(&item);
+    config.get_action(&ctx)
 }
 
 /// Sync the transparent overlay window with the Diablo II game window.
@@ -577,9 +697,13 @@ fn main() {
             let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
                 should_auto_scan: Arc::new(AtomicBool::new(true)),
+                filter_config: Arc::new(RwLock::new(None)),
+                filter_enabled: Arc::new(AtomicBool::new(false)),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
+            let filter_config = state.filter_config.clone();
+            let filter_enabled = state.filter_enabled.clone();
             app.manage(state);
 
             // Initialize hotkey state
@@ -606,7 +730,13 @@ fn main() {
 
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
-            spawn_auto_scanner(is_scanning.clone(), should_auto_scan.clone(), app_handle);
+            spawn_auto_scanner(
+                is_scanning.clone(),
+                should_auto_scan.clone(),
+                filter_config.clone(),
+                filter_enabled.clone(),
+                app_handle,
+            );
 
             // When the main window is closed, stop everything, close the overlay window
             // and terminate the application.
@@ -642,10 +772,15 @@ fn main() {
             start_scanner,
             stop_scanner,
             get_scanner_status,
+            set_filter_config,
+            set_filter_enabled,
+            get_filter_enabled,
             sync_overlay_with_game,
             parse_filter_dsl,
             filter_to_dsl,
             validate_filter_dsl,
+            apply_item_filter,
+            get_item_filter_action,
             settings::load_settings,
             settings::save_settings,
             settings::get_window_state,

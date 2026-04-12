@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { RulesEditor, type ValidationResult } from "../editor";
   import { Button, ProfileSelector } from "../components";
   import { settingsStore } from "../stores";
@@ -34,6 +36,48 @@
   let ruleCount = $state(0);
   let isSaving = $state(false);
   let hasUnsavedChanges = $state(false);
+  let filterEnabled = $state(false);
+
+  // Load filter enabled state on mount
+  onMount(async () => {
+    try {
+      filterEnabled = await invoke<boolean>("get_filter_enabled");
+    } catch (e) {
+      console.error("[LootFilterTab] Failed to get filter enabled state:", e);
+    }
+  });
+
+  /**
+   * Toggle filter enabled state
+   */
+  async function toggleFilter(enabled: boolean) {
+    try {
+      await invoke("set_filter_enabled", { enabled });
+      filterEnabled = enabled;
+      console.log("[LootFilterTab] Filter", enabled ? "enabled" : "disabled");
+    } catch (e) {
+      console.error("[LootFilterTab] Failed to toggle filter:", e);
+      // Revert UI state on error
+      filterEnabled = !enabled;
+    }
+  }
+
+  /**
+   * Send current filter config to backend
+   */
+  async function syncFilterConfig() {
+    if (validationStatus !== "valid") return;
+
+    try {
+      const config = await invoke("parse_filter_dsl", { text: dslText });
+      if (config && !("errors" in config)) {
+        await invoke("set_filter_config", { config });
+        console.log("[LootFilterTab] Filter config synced to backend");
+      }
+    } catch (e) {
+      console.error("[LootFilterTab] Failed to sync filter config:", e);
+    }
+  }
 
   /**
    * Handle validation results from the editor's linter
@@ -70,16 +114,19 @@
   /**
    * Handle profile load from ProfileSelector
    */
-  function handleProfileLoad(name: string, dslSource: string) {
+  async function handleProfileLoad(name: string, dslSource: string) {
     dslText = dslSource || DEFAULT_FILTER;
     selectedProfile = name;
     hasUnsavedChanges = false;
     validationStatus = "idle";
-    
+
     // Update settings with active profile
     if (name) {
       settingsStore.set('activeProfile', name);
     }
+
+    // Sync filter config to backend after a short delay for validation
+    setTimeout(() => syncFilterConfig(), 600);
   }
 
   /**
@@ -99,9 +146,12 @@
   /**
    * Handle save completion
    */
-  function handleSaveComplete() {
+  async function handleSaveComplete() {
     hasUnsavedChanges = false;
     console.log("[LootFilterTab] Profile saved successfully");
+
+    // Sync filter config to backend
+    await syncFilterConfig();
   }
 
   /**
@@ -138,6 +188,24 @@
     </div>
 
     <div class="header-actions">
+      <div class="filter-mode-switch">
+        <button
+          class="mode-btn"
+          class:active={!filterEnabled}
+          onclick={() => toggleFilter(false)}
+          title="Show all items (filtering disabled)"
+        >
+          Show All
+        </button>
+        <button
+          class="mode-btn"
+          class:active={filterEnabled}
+          onclick={() => toggleFilter(true)}
+          title="Apply filter rules to items"
+        >
+          Apply Rules
+        </button>
+      </div>
       <ProfileSelector
         bind:selectedProfile
         onselect={handleProfileSelect}
@@ -258,6 +326,38 @@
     display: flex;
     align-items: center;
     gap: var(--space-2, 8px);
+  }
+
+  .filter-mode-switch {
+    display: flex;
+    background: var(--bg-tertiary, #12121a);
+    border: 1px solid var(--border, #2a2a35);
+    border-radius: var(--radius-md, 8px);
+    padding: 2px;
+    gap: 2px;
+  }
+
+  .mode-btn {
+    padding: 6px 12px;
+    font-size: var(--text-sm, 13px);
+    font-weight: 500;
+    border: none;
+    border-radius: var(--radius-sm, 6px);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .mode-btn:hover:not(.active) {
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+  }
+
+  .mode-btn.active {
+    background: var(--accent, #c7b377);
+    color: var(--bg-primary, #0a0a0f);
+    font-weight: 600;
   }
 
   .status-badge {

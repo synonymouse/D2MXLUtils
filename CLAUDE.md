@@ -1,37 +1,92 @@
-## Инструкции для LLM при работе с проектом D2MXLUtils
+# CLAUDE.md
 
-### 1. Как читать исходники legacy AutoIt (`D2Stats.au3`)
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-- **Не загружать файл `D2Stats.au3` целиком**  
-  Этот файл очень большой и легко забивает контекст LLM.
+## Project Overview
 
-- **Ориентироваться по индексу в `docs/index.md`**  
-  Перед чтением кода:
-  - сначала смотреть структуру и диапазоны строк в `docs/index.md`;
-  - выбирать только нужный логический блок (например, Drop Notifier, Injection, GUI и т.д.).
+**D2MXLUtils** is an overlay utility for *Diablo II: Median XL* that provides drop notifications and loot filtering. It's a rewrite of a legacy AutoIt script (`D2Stats.au3`) using modern technologies.
 
-- **Читать legacy `D2Stats.au3` кусками по диапазонам строк**  
-  При необходимости кода из `D2Stats.au3`:
-  - читать только соответствующий диапазон строк (согласно `docs/index.md`);
-  - при точечном поиске использовать `grep` по `D2Stats.au3` вместо полного чтения файла.
+## Tech Stack
 
-- **Если нужно ориентироваться в legacy архитектуре**  
-  Для общего понимания использовать:
-  - индекс в `docs/index.md`;
-  - план рефакторинга в `docs/d2mxlutils-refactoring.plan.md`.
+- **Frontend**: Svelte 5 + TypeScript + vanilla CSS (variables + themes)
+- **Desktop Shell**: Tauri v2
+- **Backend**: Rust (using `windows` crate for WinAPI)
+- **Package Manager**: pnpm
 
-### 2. Использование MCP `context7` для документации библиотек
+## Development Commands
 
-- **Использовать MCP `context7` при возникновение проблем и спорных ситуациях с внешними API и фреймворками**, в частности:
-  - по Tauri (`tauri-apps/tauri`, Rust backend, либо `docs.rs/tauri/2.9.3`);
-  - по Svelte (включая Svelte + TypeScript);
-  - по сопутствующим инструментам (Tailwind, Vite и т.п., если нужна точная актуальная API-документация).
+```bash
+pnpm install          # Install dependencies
+pnpm tauri dev        # Run the app in dev mode (launches Vite + Tauri)
+pnpm tauri build      # Build release version
+```
 
-### 3. Логирование в Rust-бэкенде (`src-tauri/src`)
+## Architecture
 
-- **Не использовать прямые `println!` / `eprintln!` в продакшн-коде бэкенда.**
-  - Вместо этого вызывать функции логгера: `logger::info(...)` и `logger::error(...)`.
-  - Логгер сам дублирует сообщения в:
-    - stdout/stderr (для dev-режима);
-    - файл `d2mxlutils.log` рядом с exe.
-- Исключение: сам модуль `logger.rs` может использовать `println!/eprintln!` для реализации зеркалирования.
+### Rust Backend (`src-tauri/src/`)
+
+The backend handles all low-level Windows operations:
+
+- **`main.rs`** — Tauri app setup, commands, scanner lifecycle, overlay window management, UAC elevation handling
+- **`process.rs`** — D2 process attachment via WinAPI (`OpenProcess`, `ReadProcessMemory`)
+- **`injection.rs`** — Remote thread injection into D2 process to call internal game functions
+- **`notifier.rs`** — `DropScanner` that scans item unit lists and emits `item-drop` events
+- **`rules/`** — Loot filter rule engine: DSL parsing (`dsl.rs`), rule matching (`matching.rs`)
+- **`d2types.rs`** — `#[repr(C)]` structs for D2 memory structures (`UnitAny`, `ItemData`, etc.)
+- **`offsets.rs`** — D2 memory offsets (DLL bases, unit lists, item data pointers)
+- **`logger.rs`** — File logger writing to `d2mxlutils.log` next to the exe
+- **`settings.rs`** — App settings persistence
+- **`profiles.rs`** — Loot filter profile management
+- **`hotkeys.rs`** — Global hotkey handling
+
+### Svelte Frontend (`src/`)
+
+- **`App.svelte`** — Entry point, routes to `MainWindow` or `OverlayWindow` based on Tauri window label
+- **`views/`** — Main window tabs (`GeneralTab`, `LootFilterTab`, `NotificationsTab`) and overlay
+- **`components/`** — Reusable UI components (Button, Toggle, Tabs, etc.)
+- **`editor/`** — CodeMirror-based loot filter rules editor
+- **`stores/`** — Svelte stores for settings and window state
+
+### Communication
+
+- **Tauri Commands**: Frontend calls Rust via `invoke()` (e.g., `start_scanner`, `stop_scanner`)
+- **Events**: Backend emits events to frontend via `app_handle.emit()` (e.g., `item-drop`, `scanner-status`)
+
+## Important Conventions
+
+### Logging in Rust Backend
+
+**Do NOT use `println!` / `eprintln!` in production code.** Use the logger module:
+```rust
+use crate::logger::{info as log_info, error as log_error};
+
+log_info("Scanner started");
+log_error(&format!("Failed to open process: {}", err));
+```
+
+Exception: `logger.rs` itself may use println/eprintln for stdout mirroring.
+
+### Working with Legacy Code (`D2Stats.au3`)
+
+The file is ~3000 lines. **Never load it fully** — it will overflow context.
+
+1. First, check `docs/index_d2Stats.md` for section line ranges
+2. Read only the needed section using `offset` and `limit` parameters
+3. Use grep for specific searches instead of full file reads
+
+### Documentation
+
+- `docs/index_d2Stats.md` — Index of legacy AutoIt code sections
+- `docs/d2mxlutils-refactoring.plan.md` — Refactoring plan and progress log
+- `docs/loot-filter-spec.md`, `docs/loot-filter-dsl.md` — Loot filter DSL specification
+
+## Version Bumping
+
+```bash
+pnpm version patch    # 0.1.0 → 0.1.1
+pnpm version minor    # 0.1.0 → 0.2.0
+pnpm version major    # 0.1.0 → 1.0.0
+git push --follow-tags  # Triggers GitHub Actions release
+```
+
+This syncs version across `package.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`.
