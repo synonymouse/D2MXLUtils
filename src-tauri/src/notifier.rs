@@ -90,10 +90,12 @@ impl DropScanner {
         })
     }
 
-    /// Set the filter config for automatic item filtering
     pub fn set_filter_config(&mut self, config: Arc<RwLock<FilterConfig>>) {
+        let was_none = self.filter_config.is_none();
         self.filter_config = Some(config);
-        log_info("DropScanner: Filter config set");
+        if was_none {
+            log_info("DropScanner: Filter config set");
+        }
     }
 
     /// Enable or disable automatic filtering
@@ -111,7 +113,10 @@ impl DropScanner {
             }
         }
 
-        log_info(&format!("DropScanner: Filtering {}", if enabled { "enabled" } else { "disabled" }));
+        log_info(&format!(
+            "DropScanner: Filtering {}",
+            if enabled { "enabled" } else { "disabled" }
+        ));
     }
 
     /// Check if filtering is enabled
@@ -132,7 +137,7 @@ impl DropScanner {
             Err(_) => false,
         }
     }
-    
+
     /// Clear the seen items cache (call when entering a new game)
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
@@ -162,7 +167,10 @@ impl DropScanner {
 
         log_info(&format!(
             "set_item_visibility: pUnitData=0x{:08X}, addr=0x{:08X}, value={} ({})",
-            p_unit_data, addr, value, if visible { "SHOW" } else { "HIDE" }
+            p_unit_data,
+            addr,
+            value,
+            if visible { "SHOW" } else { "HIDE" }
         ));
 
         // Write the value
@@ -192,44 +200,47 @@ impl DropScanner {
             return events;
         }
 
-        // DEBUG: Periodically check hook counter even when no items found
-        if self.loot_hook.is_injected() {
-            if let Ok(counter) = self.loot_hook.get_call_counter(&self.ctx) {
-                if counter != self.last_call_counter {
-                    log_info(&format!(
-                        "DEBUG: Hook counter changed: {} -> {}",
-                        self.last_call_counter, counter
-                    ));
-                    self.last_call_counter = counter;
-                }
-            }
-        }
-        
         // Read paths structure to iterate through rooms/units
         let base_ptr = self.ctx.d2_client + d2client::PLAYER_UNIT;
-        
+
         // Follow pointer chain: [base] -> [+0x2C] -> [+0x1C] -> pPaths (at +0x0) and iPaths (at +0x24)
         let ptr1 = match self.ctx.process.read_memory::<u32>(base_ptr) {
             Ok(p) if p != 0 => p as usize,
             _ => return events,
         };
-        
-        let ptr2 = match self.ctx.process.read_memory::<u32>(ptr1 + paths::TO_PATHS_PTR[1]) {
+
+        let ptr2 = match self
+            .ctx
+            .process
+            .read_memory::<u32>(ptr1 + paths::TO_PATHS_PTR[1])
+        {
             Ok(p) if p != 0 => p as usize,
             _ => return events,
         };
-        
-        let ptr3 = match self.ctx.process.read_memory::<u32>(ptr2 + paths::TO_PATHS_PTR[2]) {
+
+        let ptr3 = match self
+            .ctx
+            .process
+            .read_memory::<u32>(ptr2 + paths::TO_PATHS_PTR[2])
+        {
             Ok(p) if p != 0 => p as usize,
             _ => return events,
         };
-        
-        let p_paths = match self.ctx.process.read_memory::<u32>(ptr3 + paths::TO_PATHS_PTR[3]) {
+
+        let p_paths = match self
+            .ctx
+            .process
+            .read_memory::<u32>(ptr3 + paths::TO_PATHS_PTR[3])
+        {
             Ok(p) if p != 0 => p as usize,
             _ => return events,
         };
-        
-        let i_paths = match self.ctx.process.read_memory::<u32>(ptr3 + paths::TO_PATHS_COUNT[3]) {
+
+        let i_paths = match self
+            .ctx
+            .process
+            .read_memory::<u32>(ptr3 + paths::TO_PATHS_COUNT[3])
+        {
             Ok(p) => p as usize,
             _ => return events,
         };
@@ -243,19 +254,23 @@ impl DropScanner {
             log_info(&msg);
             self.debug_logged_paths = true;
         }
-        
+
         // Iterate through each path/room
         for i in 0..i_paths {
             let p_path = match self.ctx.process.read_memory::<u32>(p_paths + 4 * i) {
                 Ok(p) if p != 0 => p as usize,
                 _ => continue,
             };
-            
-            let mut p_unit = match self.ctx.process.read_memory::<u32>(p_path + paths::PATH_TO_UNIT) {
+
+            let mut p_unit = match self
+                .ctx
+                .process
+                .read_memory::<u32>(p_path + paths::PATH_TO_UNIT)
+            {
                 Ok(p) if p != 0 => p,
                 _ => continue,
             };
-            
+
             // Iterate through units in this room
             while p_unit != 0 {
                 if let Some(scanned) = self.scan_unit(p_unit) {
@@ -266,6 +281,25 @@ impl DropScanner {
                         if let Some(ref filter_arc) = self.filter_config {
                             if let Ok(filter) = filter_arc.read() {
                                 let ctx = MatchContext::new(&event);
+
+                                // DEBUG: list matching rules before picking action
+                                let matching: Vec<String> = filter
+                                    .rules
+                                    .iter()
+                                    .filter(|r| r.active && ctx.matches(r))
+                                    .map(|r| {
+                                        format!(
+                                            "pattern={:?} color={:?} show={}",
+                                            r.name_pattern, r.color, r.show_item
+                                        )
+                                    })
+                                    .collect();
+                                log_info(&format!(
+                                    "Filter DEBUG: item='{}' quality='{}' class={} total_rules={} matching={}: {:?}",
+                                    event.name, event.quality, event.class,
+                                    filter.rules.len(), matching.len(), matching
+                                ));
+
                                 let action = filter.get_action(&ctx);
 
                                 log_info(&format!(
@@ -276,7 +310,10 @@ impl DropScanner {
                                 // Hide item by adding to bitmask (if filter says to hide)
                                 if !action.show_item {
                                     if self.loot_hook.is_injected() {
-                                        if let Err(e) = self.loot_hook.add_hidden_unit_id(&self.ctx, event.unit_id) {
+                                        if let Err(e) = self
+                                            .loot_hook
+                                            .add_hidden_unit_id(&self.ctx, event.unit_id)
+                                        {
                                             log_error(&format!(
                                                 "Failed to hide item {}: {}",
                                                 event.unit_id, e
@@ -343,7 +380,11 @@ impl DropScanner {
                 _ => continue,
             };
 
-            let mut p_unit = match self.ctx.process.read_memory::<u32>(p_path + paths::PATH_TO_UNIT) {
+            let mut p_unit = match self
+                .ctx
+                .process
+                .read_memory::<u32>(p_path + paths::PATH_TO_UNIT)
+            {
                 Ok(p) if p != 0 => p,
                 _ => continue,
             };
@@ -358,12 +399,19 @@ impl DropScanner {
                 // Only process items
                 if unit.unit_type == unit_type::ITEM && unit.p_unit_data != 0 {
                     // Read item data to get quality/flags for filtering
-                    if let Ok(idata) = self.ctx.process.read_memory::<ItemData>(unit.p_unit_data as usize) {
+                    if let Ok(idata) = self
+                        .ctx
+                        .process
+                        .read_memory::<ItemData>(unit.p_unit_data as usize)
+                    {
                         // Get item name (simplified - just use class for now to avoid injection overhead)
                         let scanned = ScannedItem::from_unit(&unit, &idata, p_unit);
 
                         // Try to get name from injection if possible, but don't fail
-                        let name = scanned.name.clone().unwrap_or_else(|| format!("Item#{}", unit.class));
+                        let name = scanned
+                            .name
+                            .clone()
+                            .unwrap_or_else(|| format!("Item#{}", unit.class));
 
                         let event = ItemDropEvent {
                             unit_id: unit.unit_id,
@@ -390,28 +438,32 @@ impl DropScanner {
             }
         }
     }
-    
+
     /// Process a single unit, returning a fully scanned item if it's a new item.
     fn scan_unit(&mut self, p_unit: u32) -> Option<ScannedItem> {
         // Read UnitAny structure
         let unit: UnitAny = self.ctx.process.read_memory(p_unit as usize).ok()?;
-        
+
         // Only process items (unit_type == 4)
         if unit.unit_type != unit_type::ITEM {
             return None;
         }
-        
+
         // Skip if we've already seen this item
         if self.seen_items.contains(&unit.unit_id) {
             return None;
         }
-        
+
         // Read ItemData
         if unit.p_unit_data == 0 {
             return None;
         }
-        
-        let item_data: ItemData = self.ctx.process.read_memory(unit.p_unit_data as usize).ok()?;
+
+        let item_data: ItemData = self
+            .ctx
+            .process
+            .read_memory(unit.p_unit_data as usize)
+            .ok()?;
 
         // DEBUG: Log addresses for reverse engineering
         log_info(&format!(
@@ -423,18 +475,12 @@ impl DropScanner {
         let mut scanned = ScannedItem::from_unit(&unit, &item_data, p_unit);
 
         // Try to resolve item name via injected GetItemName.
-        match self
-            .injector
-            .get_item_name(&self.ctx.process, p_unit)
-        {
+        match self.injector.get_item_name(&self.ctx.process, p_unit) {
             Ok(raw_name) => {
                 let cleaned = strip_color_codes(&raw_name);
 
                 // Use the last non-empty line as the display name (matches D2Stats behavior).
-                if let Some(last_line) = cleaned
-                    .lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
+                if let Some(last_line) = cleaned.lines().rev().find(|line| !line.trim().is_empty())
                 {
                     scanned.name = Some(last_line.to_string());
                 } else if !cleaned.trim().is_empty() {
@@ -457,10 +503,7 @@ impl DropScanner {
         }
 
         // Try to resolve item stats text via injected GetItemStats.
-        match self
-            .injector
-            .get_item_stats(&self.ctx.process, p_unit)
-        {
+        match self.injector.get_item_stats(&self.ctx.process, p_unit) {
             Ok(raw_stats) => {
                 let cleaned = strip_color_codes(&raw_stats);
                 if !cleaned.trim().is_empty() {
@@ -475,7 +518,7 @@ impl DropScanner {
                 log_error(&msg);
             }
         }
-        
+
         // Mark as seen
         self.seen_items.insert(unit.unit_id);
 
@@ -504,7 +547,7 @@ impl DropScanner {
 fn strip_color_codes(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
-    
+
     while let Some(c) = chars.next() {
         if c == 'ÿ' {
             // Skip 'c' and the color character
@@ -516,7 +559,7 @@ fn strip_color_codes(s: &str) -> String {
         }
         result.push(c);
     }
-    
+
     result
 }
 
@@ -573,4 +616,3 @@ impl DropScanner {
         Vec::new()
     }
 }
-

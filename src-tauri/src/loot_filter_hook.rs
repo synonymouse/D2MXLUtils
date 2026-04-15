@@ -373,49 +373,147 @@ impl LootFilterHook {
 
     /// Generate trampoline code (x86 assembly)
     ///
-    /// MINIMAL TEST VERSION: Just increment counter and run original code
-    /// This is to verify the hook is being called at all
+    /// On entry: ECX = pUnit (thiscall convention)
+    /// Returns via AL: 0 = hide item, 1 = show item
+    ///
+    /// Flow:
+    ///   if (!g_filter_enabled)          -> original code (built-in MXL filter decides)
+    ///   if (!g_show_all_loot)           -> return 0 (hide everything)
+    ///   if (pUnit == NULL)              -> original code
+    ///   unit_id = [pUnit + 0x0C]
+    ///   if (bit set in g_hide_mask)     -> return 0 (hide)
+    ///   else                            -> original code
     fn generate_trampoline_code(&self) -> Vec<u8> {
-        let mut code = Vec::new();
+        let mut code: Vec<u8> = Vec::new();
 
         let addr_counter = self.g_call_counter as u32;
+        let addr_filter = self.g_filter_enabled as u32;
+        let addr_show_all = self.g_show_all_loot as u32;
+        let addr_unit_id = self.g_last_unit_id as u32;
+        let addr_hide_mask = self.g_hide_mask as u32;
         let original_continue = (self.hook_address + PATCH_SIZE) as u32;
 
-        // MINIMAL TRAMPOLINE: Just increment and continue
-        // inc dword ptr [addr_counter]
+        // inc dword ptr [g_call_counter]        ; FF 05 <addr>
         code.push(0xFF);
         code.push(0x05);
         code.extend_from_slice(&addr_counter.to_le_bytes());
 
-        // Original code:
-        // sub esp, 08
+        // cmp byte ptr [g_filter_enabled], 0    ; 80 3D <addr> 00
+        code.push(0x80);
+        code.push(0x3D);
+        code.extend_from_slice(&addr_filter.to_le_bytes());
+        code.push(0x00);
+
+        // je do_original                        ; 74 <rel8>
+        code.push(0x74);
+        let patch_je_filter = code.len();
+        code.push(0x00);
+
+        // cmp byte ptr [g_show_all_loot], 0     ; 80 3D <addr> 00
+        code.push(0x80);
+        code.push(0x3D);
+        code.extend_from_slice(&addr_show_all.to_le_bytes());
+        code.push(0x00);
+
+        // je return_hide                        ; 74 <rel8>
+        code.push(0x74);
+        let patch_je_show_all = code.len();
+        code.push(0x00);
+
+        // test ecx, ecx                         ; 85 C9
+        code.push(0x85);
+        code.push(0xC9);
+
+        // je do_original                        ; 74 <rel8>
+        code.push(0x74);
+        let patch_je_null = code.len();
+        code.push(0x00);
+
+        // mov eax, [ecx+0x0C]                   ; 8B 41 0C
+        code.push(0x8B);
+        code.push(0x41);
+        code.push(0x0C);
+
+        // mov [g_last_unit_id], eax             ; A3 <addr>
+        code.push(0xA3);
+        code.extend_from_slice(&addr_unit_id.to_le_bytes());
+
+        // and eax, 0x7FF                        ; 25 FF 07 00 00
+        code.push(0x25);
+        code.extend_from_slice(&0x7FFu32.to_le_bytes());
+
+        // bt dword ptr [g_hide_mask], eax       ; 0F A3 05 <addr>
+        // Tests bit EAX (0..2047) in the 256-byte array at g_hide_mask.
+        // Sets CF=1 if bit is set.
+        code.push(0x0F);
+        code.push(0xA3);
+        code.push(0x05);
+        code.extend_from_slice(&addr_hide_mask.to_le_bytes());
+
+        // jc return_hide                        ; 72 <rel8>
+        code.push(0x72);
+        let patch_jc_hide = code.len();
+        code.push(0x00);
+
+        // do_original:
+        let do_original_offset = code.len();
+
+        // Replay the 9 bytes overwritten by the JMP patch:
+        // sub esp, 8                            ; 83 EC 08
         code.push(0x83);
         code.push(0xEC);
         code.push(0x08);
-        // push ebx
+        // push ebx                              ; 53
         code.push(0x53);
-        // push ebp
+        // push ebp                              ; 55
         code.push(0x55);
-        // mov ebx, ecx
+        // mov ebx, ecx                          ; 8B D9
         code.push(0x8B);
         code.push(0xD9);
-        // push esi
+        // push esi                              ; 56
         code.push(0x56);
-        // push edi
+        // push edi                              ; 57
         code.push(0x57);
-        // jmp [original_continue]
+
+        // jmp rel32 -> original_continue (hook_address + PATCH_SIZE)
         code.push(0xE9);
         let jmp_target = original_continue as i32
             - (self.trampoline_address as i32 + code.len() as i32 + 4);
         code.extend_from_slice(&jmp_target.to_le_bytes());
 
+        // return_hide:
+        let return_hide_offset = code.len();
+
+        // xor al, al                            ; 32 C0
+        code.push(0x32);
+        code.push(0xC0);
+        // ret                                   ; C3
+        code.push(0xC3);
+
+        // Patch rel8 jumps now that label offsets are known
+        let patch_rel8 = |code: &mut Vec<u8>, at: usize, target: usize| {
+            let rel = target as i32 - (at as i32 + 1);
+            assert!(
+                (-128..=127).contains(&rel),
+                "rel8 out of range: from {} to {} (={})", at, target, rel
+            );
+            code[at] = (rel as i8) as u8;
+        };
+        patch_rel8(&mut code, patch_je_filter, do_original_offset);
+        patch_rel8(&mut code, patch_je_show_all, return_hide_offset);
+        patch_rel8(&mut code, patch_je_null, do_original_offset);
+        patch_rel8(&mut code, patch_jc_hide, return_hide_offset);
+
         log_info(&format!(
-            "LootFilterHook: Generated {} bytes of MINIMAL TEST trampoline",
-            code.len()
+            "LootFilterHook: Generated {} bytes of FULL trampoline (do_original=+{}, return_hide=+{})",
+            code.len(), do_original_offset, return_hide_offset
         ));
 
-        // DEBUG: Log all bytes
-        let debug_bytes: String = code.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+        let debug_bytes: String = code
+            .iter()
+            .map(|b| format!("{:02X}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
         log_info(&format!("LootFilterHook: Trampoline bytes: {}", debug_bytes));
 
         code

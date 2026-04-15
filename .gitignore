@@ -32,3 +32,4 @@ dist-ssr
 /src-tauri/gen/android
 /src-tauri/gen/ios
 
+.ignore

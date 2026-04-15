@@ -26,33 +26,32 @@ use notifier::DropScanner;
 
 // Windows-only imports for process / overlay / privileges
 #[cfg(target_os = "windows")]
+use std::ffi::OsStr;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{BOOL, HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::WindowsAndMessaging::{
-    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect,
-    MoveWindow, SetWindowLongW, SetWindowPos,
-    ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_LAYERED, WS_EX_TOOLWINDOW,
-    WS_EX_TRANSPARENT,
-};
-#[cfg(target_os = "windows")]
 use windows::Win32::Security::{
     AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevationType,
-    TokenLinkedToken, LUID_AND_ATTRIBUTES, TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION_TYPE,
-    TOKEN_LINKED_TOKEN, TOKEN_PRIVILEGES, TOKEN_QUERY, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
+    TokenLinkedToken, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
+    TOKEN_ADJUST_PRIVILEGES, TOKEN_ELEVATION_TYPE, TOKEN_LINKED_TOKEN, TOKEN_PRIVILEGES,
+    TOKEN_QUERY,
 };
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Com::CoTaskMemFree;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_FLAG_DEFAULT};
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Com::CoTaskMemFree;
-#[cfg(target_os = "windows")]
-use std::ffi::OsStr;
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow, SetWindowLongW,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+};
 
 /// Shared state for controlling the scanner
 struct AppState {
@@ -143,9 +142,9 @@ fn start_scanner_internal(
         if filter_enabled.load(Ordering::SeqCst) {
             log_info("Scanner: Filtering enabled");
         }
-        
+
         let mut was_ingame = false;
-        
+
         // Main scanning loop
         while is_scanning.load(Ordering::SeqCst) {
             // Check if D2 is still running
@@ -153,9 +152,9 @@ fn start_scanner_internal(
                 log_info("Diablo II closed, stopping scanner");
                 break;
             }
-            
+
             let ingame = scanner.is_ingame();
-            
+
             // Detect entering a new game
             if ingame && !was_ingame {
                 log_info("Entered game, clearing item cache");
@@ -170,14 +169,10 @@ fn start_scanner_internal(
                 }
             }
             was_ingame = ingame;
-            
-            // Sync filter_config from AppState if scanner doesn't have it yet
-            if !scanner.has_filter_config() {
-                if let Ok(guard) = filter_config.read() {
-                    if let Some(ref config) = *guard {
-                        scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
-                        log_info("Scanner: Filter config synced from AppState");
-                    }
+
+            if let Ok(guard) = filter_config.read() {
+                if let Some(ref config) = *guard {
+                    scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
                 }
             }
 
@@ -198,10 +193,9 @@ fn start_scanner_internal(
                 }
             }
 
-            // Sleep between scans (200ms as in original D2Stats)
-            thread::sleep(Duration::from_millis(200));
+            thread::sleep(Duration::from_millis(30));
         }
-        
+
         is_scanning.store(false, Ordering::SeqCst);
         log_info("Scanner thread stopped");
         if let Err(e) = app_handle.emit("scanner-status", "stopped") {
@@ -273,15 +267,15 @@ fn stop_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
     if !state.is_scanning.load(Ordering::SeqCst) {
         return "Scanner is not running".to_string();
     }
-    
+
     // Signal the scanner to stop
     state.is_scanning.store(false, Ordering::SeqCst);
     log_info("Scanner stop requested");
-    
+
     if let Err(e) = app.emit("scanner-status", "stopping") {
         log_error(&format!("Failed to emit event (stopping): {}", e));
     }
-    
+
     "Scanner stopped".to_string()
 }
 
@@ -294,8 +288,14 @@ fn get_scanner_status(state: tauri::State<AppState>) -> bool {
 
 /// Set the filter configuration for the scanner
 #[tauri::command]
-fn set_filter_config(config: rules::FilterConfig, state: tauri::State<AppState>) -> Result<(), String> {
-    let mut guard = state.filter_config.write().map_err(|e| format!("Failed to acquire lock: {}", e))?;
+fn set_filter_config(
+    config: rules::FilterConfig,
+    state: tauri::State<AppState>,
+) -> Result<(), String> {
+    let mut guard = state
+        .filter_config
+        .write()
+        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
     *guard = Some(config);
     log_info("Filter config updated");
     Ok(())
@@ -305,7 +305,10 @@ fn set_filter_config(config: rules::FilterConfig, state: tauri::State<AppState>)
 #[tauri::command]
 fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
     state.filter_enabled.store(enabled, Ordering::SeqCst);
-    log_info(&format!("Filtering {}", if enabled { "enabled" } else { "disabled" }));
+    log_info(&format!(
+        "Filtering {}",
+        if enabled { "enabled" } else { "disabled" }
+    ));
 }
 
 /// Get current filter enabled status
@@ -345,14 +348,11 @@ fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
 /// filter integration which reuses the scanner's D2Context.
 /// This command creates a new D2Context each call for simplicity and thread-safety.
 #[tauri::command]
-fn apply_item_filter(
-    p_unit_data: u32,
-    visible: bool,
-) -> Result<(), String> {
+fn apply_item_filter(p_unit_data: u32, visible: bool) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        use crate::process::D2Context;
         use crate::offsets::item_data;
+        use crate::process::D2Context;
 
         if p_unit_data == 0 {
             return Err("p_unit_data is null".to_string());
@@ -422,7 +422,8 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     }
 
     // Ensure Tauri overlay window exists (by label)
-    let overlay_window = app.get_webview_window("overlay")
+    let overlay_window = app
+        .get_webview_window("overlay")
         .ok_or("Overlay window with label 'overlay' not found")?;
 
     // Find overlay OS window by its title
@@ -476,7 +477,14 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
         // When transitioning from hidden to visible, resize by 1 pixel then back.
         if !was_visible {
             // First resize to different size
-            let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width + 1, height + 1, BOOL(1));
+            let _ = MoveWindow(
+                hwnd_overlay,
+                rect.left,
+                rect.top,
+                width + 1,
+                height + 1,
+                BOOL(1),
+            );
             let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
             let _ = overlay_window.show();
             // Then resize to correct size
@@ -708,7 +716,7 @@ fn main() {
 
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
-            
+
             // Load settings and start hotkey listener
             let app_handle_for_hotkeys = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
@@ -717,7 +725,8 @@ fn main() {
                         "Starting hotkey listener with: {}",
                         loaded_settings.toggle_window_hotkey.display
                     ));
-                    hotkey_state.start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
+                    hotkey_state
+                        .start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
@@ -725,7 +734,7 @@ fn main() {
                     hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
                 }
             }
-            
+
             app.manage(hotkey_state);
 
             // Spawn auto-scanner monitor
@@ -746,7 +755,9 @@ fn main() {
                 let app_handle_clone = app.handle().clone();
                 main_window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        log_info("Main window close requested, stopping scanner and closing overlay");
+                        log_info(
+                            "Main window close requested, stopping scanner and closing overlay",
+                        );
                         // Stop auto-scanner monitor
                         should_auto_scan_clone.store(false, Ordering::SeqCst);
                         // Stop scanner loop
