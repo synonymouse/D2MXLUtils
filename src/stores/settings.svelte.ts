@@ -41,6 +41,8 @@ export interface AppSettings {
   notificationY: number;
   /** Hotkey configuration for toggling main window */
   toggleWindowHotkey: HotkeyConfig;
+  /** Global loot filter mode: true = Show All (default_show_items), false = Hide All */
+  defaultShowItems: boolean;
 }
 
 /** Window state interface */
@@ -72,6 +74,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   notificationX: 2.0,
   notificationY: 50.0,
   toggleWindowHotkey: DEFAULT_HOTKEY,
+  defaultShowItems: true,
 };
 
 /** Settings store singleton */
@@ -106,11 +109,9 @@ class SettingsStore {
       const loaded = await invoke<AppSettings>('load_settings');
       this._settings = { ...DEFAULT_SETTINGS, ...loaded };
       this._isLoaded = true;
-      
+
       // Apply theme immediately
       this.applyTheme(this._settings.theme);
-      
-      console.log('[Settings] Loaded:', this._settings);
     } catch (error) {
       console.error('[Settings] Failed to load:', error);
       // Use defaults on error
@@ -132,7 +133,6 @@ class SettingsStore {
     this._saveTimeout = setTimeout(async () => {
       try {
         await invoke('save_settings', { settings: this._settings });
-        console.log('[Settings] Saved');
       } catch (error) {
         console.error('[Settings] Failed to save:', error);
       }
@@ -207,7 +207,6 @@ class SettingsStore {
     // Also update the backend hotkey listener
     try {
       await invoke('update_hotkey', { hotkey });
-      console.log('[Settings] Hotkey updated:', hotkey.display);
     } catch (error) {
       console.error('[Settings] Failed to update hotkey:', error);
     }

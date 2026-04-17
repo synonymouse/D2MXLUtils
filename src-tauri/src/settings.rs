@@ -59,6 +59,11 @@ pub struct AppSettings {
     /// Hotkey configuration for toggling main window
     #[serde(default)]
     pub toggle_window_hotkey: HotkeyConfig,
+
+    /// Global loot filter mode: true = Show All (unmatched items visible),
+    /// false = Hide All (unmatched items hidden). Maps to FilterConfig.default_show_items.
+    #[serde(default = "default_true")]
+    pub default_show_items: bool,
 }
 
 /// Window state for persistence
@@ -123,6 +128,7 @@ impl Default for AppSettings {
             notification_x: default_notification_x(),
             notification_y: default_notification_y(),
             toggle_window_hotkey: HotkeyConfig::default(),
+            default_show_items: true,
         }
     }
 }

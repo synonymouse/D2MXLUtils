@@ -50,6 +50,8 @@ pub struct LootFilterHook {
     g_last_ear_level: usize,
     /// Address of hide mask (256 bytes = 2048 bits for unit_id tracking)
     g_hide_mask: usize,
+    /// Address of show mask (256 bytes = 2048 bits, force-show overrides game filter)
+    g_show_mask: usize,
     /// Saved original bytes from the hook point
     original_bytes: [u8; PATCH_SIZE],
     /// Whether the hook is currently injected
@@ -71,6 +73,7 @@ impl LootFilterHook {
             g_last_unit_id: 0,
             g_last_ear_level: 0,
             g_hide_mask: 0,
+            g_show_mask: 0,
             original_bytes: [0; PATCH_SIZE],
             is_injected: false,
             process_handle: HANDLE::default(),
@@ -93,7 +96,6 @@ impl LootFilterHook {
         }
 
         // Find the loot filter function by signature scanning
-        log_info("LootFilterHook: Scanning for function signature...");
         let found_addr = ctx
             .process
             .scan_pattern(ctx.d2_sigma, D2SIGMA_SCAN_SIZE, &FUNCTION_SIGNATURE)
@@ -106,12 +108,7 @@ impl LootFilterHook {
 
         self.hook_address = found_addr;
         self.process_handle = ctx.process.handle;
-
         let offset = found_addr - ctx.d2_sigma;
-        log_info(&format!(
-            "LootFilterHook: Found function at D2Sigma+{:X} (0x{:08X})",
-            offset, self.hook_address
-        ));
 
         // 1. Allocate memory for trampoline code (256 bytes)
         self.trampoline_address = self.alloc_remote(&ctx.process, 256)?;
@@ -125,10 +122,12 @@ impl LootFilterHook {
 
         // 3. Allocate 256 bytes for hide mask (2048 bits for unit_id tracking)
         self.g_hide_mask = self.alloc_remote(&ctx.process, 256)?;
+        // 3b. Allocate 256 bytes for show mask (force-show, overrides game filter)
+        self.g_show_mask = self.alloc_remote(&ctx.process, 256)?;
 
         log_info(&format!(
-            "LootFilterHook: Trampoline=0x{:08X}, g_show_all=0x{:08X}, g_filter_en=0x{:08X}, g_counter=0x{:08X}, g_unit_id=0x{:08X}, g_ear=0x{:08X}, g_hide_mask=0x{:08X}",
-            self.trampoline_address, self.g_show_all_loot, self.g_filter_enabled, self.g_call_counter, self.g_last_unit_id, self.g_last_ear_level, self.g_hide_mask
+            "LootFilterHook: hook@D2Sigma+{:X}=0x{:08X} trampoline=0x{:08X} hide_mask=0x{:08X} show_mask=0x{:08X}",
+            offset, self.hook_address, self.trampoline_address, self.g_hide_mask, self.g_show_mask
         ));
 
         // 4. Initialize global flags (both TRUE by default) and debug variables
@@ -138,32 +137,21 @@ impl LootFilterHook {
         ctx.process.write_buffer(self.g_last_unit_id, &[0u8, 0u8, 0u8, 0u8])?;
         ctx.process.write_buffer(self.g_last_ear_level, &[0u8])?;
 
-        // 5. Initialize hide mask to all zeros (show all items by default)
+        // 5. Initialize hide/show masks to all zeros (no forced decisions by default)
         let zeros = vec![0u8; 256];
         ctx.process.write_buffer(self.g_hide_mask, &zeros)?;
+        ctx.process.write_buffer(self.g_show_mask, &zeros)?;
 
         // 4. Generate and write trampoline code
         let trampoline_code = self.generate_trampoline_code();
         ctx.process
             .write_buffer(self.trampoline_address, &trampoline_code)?;
 
-        // Verify trampoline was written correctly
-        let mut verify_trampoline = vec![0u8; 32];
-        if let Ok(()) = ctx.process.read_buffer_into(self.trampoline_address, &mut verify_trampoline) {
-            let verify_str: String = verify_trampoline.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
-            log_info(&format!("LootFilterHook: Verified trampoline at 0x{:08X}: {}", self.trampoline_address, verify_str));
-        }
-
         // 5. Save original bytes
         let mut saved = [0u8; PATCH_SIZE];
         ctx.process
             .read_buffer_into(self.hook_address, &mut saved)?;
         self.original_bytes = saved;
-
-        log_info(&format!(
-            "LootFilterHook: Saved original bytes: {:02X?}",
-            self.original_bytes
-        ));
 
         // 6. Change memory protection to allow writing
         let mut old_protect = PAGE_PROTECTION_FLAGS(0);
@@ -197,16 +185,7 @@ impl LootFilterHook {
 
         self.is_injected = true;
 
-        // Verify the JMP was written correctly
-        let mut verify_jmp = [0u8; PATCH_SIZE];
-        if let Ok(()) = ctx.process.read_buffer_into(self.hook_address, &mut verify_jmp) {
-            log_info(&format!(
-                "LootFilterHook: Verified JMP at hook point: {:02X?}",
-                verify_jmp
-            ));
-        }
-
-        log_info("LootFilterHook: Hook injected successfully");
+        log_info("LootFilterHook: injected");
 
         Ok(())
     }
@@ -216,8 +195,6 @@ impl LootFilterHook {
         if !self.is_injected {
             return Err("Hook not injected".to_string());
         }
-
-        log_info("LootFilterHook: Ejecting hook...");
 
         // 1. Change memory protection to allow writing
         let mut old_protect = PAGE_PROTECTION_FLAGS(0);
@@ -255,7 +232,7 @@ impl LootFilterHook {
 
         self.is_injected = false;
 
-        log_info("LootFilterHook: Hook ejected successfully");
+        log_info("LootFilterHook: ejected");
 
         Ok(())
     }
@@ -352,6 +329,33 @@ impl LootFilterHook {
         ctx.process.write_buffer(self.g_hide_mask, &zeros)
     }
 
+    /// Add a unit_id to the show mask so the trampoline force-shows it
+    /// (returns AL=1 regardless of game's built-in filter decision).
+    pub fn add_shown_unit_id(&self, ctx: &D2Context, unit_id: u32) -> Result<(), String> {
+        if !self.is_injected {
+            return Err("Hook not injected".to_string());
+        }
+
+        let bit = (unit_id & 0x7FF) as usize;
+        let byte_index = bit / 8;
+        let bit_offset = bit % 8;
+
+        let addr = self.g_show_mask + byte_index;
+        let current = ctx.process.read_memory::<u8>(addr)?;
+        let new_byte = current | (1u8 << bit_offset);
+        ctx.process.write_buffer(addr, &[new_byte])
+    }
+
+    /// Clear the entire show mask (stop force-showing any items)
+    pub fn clear_shown_items(&self, ctx: &D2Context) -> Result<(), String> {
+        if !self.is_injected {
+            return Err("Hook not injected".to_string());
+        }
+
+        let zeros = vec![0u8; 256];
+        ctx.process.write_buffer(self.g_show_mask, &zeros)
+    }
+
     /// Allocate memory in remote process
     fn alloc_remote(&self, process: &ProcessHandle, size: usize) -> Result<usize, String> {
         let address = unsafe {
@@ -381,7 +385,8 @@ impl LootFilterHook {
     ///   if (!g_show_all_loot)           -> return 0 (hide everything)
     ///   if (pUnit == NULL)              -> original code
     ///   unit_id = [pUnit + 0x0C]
-    ///   if (bit set in g_hide_mask)     -> return 0 (hide)
+    ///   if (bit set in g_show_mask)     -> return 1 (force show, overrides game filter)
+    ///   if (bit set in g_hide_mask)     -> return 0 (force hide)
     ///   else                            -> original code
     fn generate_trampoline_code(&self) -> Vec<u8> {
         let mut code: Vec<u8> = Vec::new();
@@ -391,6 +396,7 @@ impl LootFilterHook {
         let addr_show_all = self.g_show_all_loot as u32;
         let addr_unit_id = self.g_last_unit_id as u32;
         let addr_hide_mask = self.g_hide_mask as u32;
+        let addr_show_mask = self.g_show_mask as u32;
         let original_continue = (self.hook_address + PATCH_SIZE) as u32;
 
         // inc dword ptr [g_call_counter]        ; FF 05 <addr>
@@ -442,6 +448,19 @@ impl LootFilterHook {
         code.push(0x25);
         code.extend_from_slice(&0x7FFu32.to_le_bytes());
 
+        // bt dword ptr [g_show_mask], eax       ; 0F A3 05 <addr>
+        // Tests bit EAX (0..2047) in the 256-byte array at g_show_mask.
+        // Sets CF=1 if bit is set (force-show overrides game filter).
+        code.push(0x0F);
+        code.push(0xA3);
+        code.push(0x05);
+        code.extend_from_slice(&addr_show_mask.to_le_bytes());
+
+        // jc return_show                        ; 72 <rel8>
+        code.push(0x72);
+        let patch_jc_show = code.len();
+        code.push(0x00);
+
         // bt dword ptr [g_hide_mask], eax       ; 0F A3 05 <addr>
         // Tests bit EAX (0..2047) in the 256-byte array at g_hide_mask.
         // Sets CF=1 if bit is set.
@@ -490,6 +509,15 @@ impl LootFilterHook {
         // ret                                   ; C3
         code.push(0xC3);
 
+        // return_show:
+        let return_show_offset = code.len();
+
+        // mov al, 1                             ; B0 01
+        code.push(0xB0);
+        code.push(0x01);
+        // ret                                   ; C3
+        code.push(0xC3);
+
         // Patch rel8 jumps now that label offsets are known
         let patch_rel8 = |code: &mut Vec<u8>, at: usize, target: usize| {
             let rel = target as i32 - (at as i32 + 1);
@@ -502,11 +530,12 @@ impl LootFilterHook {
         patch_rel8(&mut code, patch_je_filter, do_original_offset);
         patch_rel8(&mut code, patch_je_show_all, return_hide_offset);
         patch_rel8(&mut code, patch_je_null, do_original_offset);
+        patch_rel8(&mut code, patch_jc_show, return_show_offset);
         patch_rel8(&mut code, patch_jc_hide, return_hide_offset);
 
         log_info(&format!(
-            "LootFilterHook: Generated {} bytes of FULL trampoline (do_original=+{}, return_hide=+{})",
-            code.len(), do_original_offset, return_hide_offset
+            "LootFilterHook: Generated {} bytes of FULL trampoline (do_original=+{}, return_hide=+{}, return_show=+{})",
+            code.len(), do_original_offset, return_hide_offset, return_show_offset
         ));
 
         let debug_bytes: String = code
@@ -591,6 +620,18 @@ impl LootFilterHook {
     }
 
     pub fn clear_hidden_items(&self, _ctx: &crate::process::D2Context) -> Result<(), String> {
+        Err("Not supported on this OS".to_string())
+    }
+
+    pub fn add_shown_unit_id(
+        &self,
+        _ctx: &crate::process::D2Context,
+        _unit_id: u32,
+    ) -> Result<(), String> {
+        Err("Not supported on this OS".to_string())
+    }
+
+    pub fn clear_shown_items(&self, _ctx: &crate::process::D2Context) -> Result<(), String> {
         Err("Not supported on this OS".to_string())
     }
 }

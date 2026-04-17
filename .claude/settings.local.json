@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python3 -c \"import json,sys; p=json.load\\(sys.stdin\\); rules=p.get\\('rules',[]\\); print\\('total rules:',len\\(rules\\)\\); [print\\(r\\) for r in rules if 'quilt' in str\\(r\\).lower\\(\\) or r.get\\('color'\\)=='hide' or r.get\\('show_item'\\)==False][:10]\")",
-      "Bash(python3 -c ':*)"
+      "Bash(python3 -c ':*)",
+      "Bash(grep -E \"\\\\.rs$\")"
     ]
   }
 }

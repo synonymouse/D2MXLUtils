@@ -2,7 +2,7 @@
 //!
 //! This module implements the core NotifierMain logic from D2Stats.au3
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "windows")]
@@ -43,16 +43,14 @@ pub struct DropScanner {
     injector: D2Injector,
     /// Cache of already-seen item IDs (to avoid duplicate notifications)
     seen_items: HashSet<u32>,
-    /// One-shot debug flag to log pointer chain / counts once per game session
-    debug_logged_paths: bool,
-    /// Last call counter value (for debugging hook calls)
-    last_call_counter: u32,
     /// Optional filter config for automatic item filtering
     filter_config: Option<Arc<RwLock<FilterConfig>>>,
     /// Whether automatic filtering is enabled
     filter_enabled: bool,
     /// Loot filter hook for D2Sigma.dll
     loot_hook: LootFilterHook,
+    /// Resolved items by unit_id; reused on config change to avoid re-injection.
+    item_cache: HashMap<u32, ItemDropEvent>,
 }
 
 #[cfg(target_os = "windows")]
@@ -62,39 +60,43 @@ impl DropScanner {
         let ctx = D2Context::new()?;
         let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common)?;
 
-        log_info(&format!(
-            "DropScanner initialized: D2Client=0x{:08X}, D2Common=0x{:08X}, StringBuffer=0x{:08X}",
-            ctx.d2_client, ctx.d2_common, injector.string_buffer.address
-        ));
-
         // Initialize and inject the loot filter hook
         let mut loot_hook = LootFilterHook::new();
         if ctx.d2_sigma != 0 {
-            match loot_hook.inject(&ctx) {
-                Ok(()) => log_info("LootFilterHook injected successfully"),
-                Err(e) => log_error(&format!("Failed to inject LootFilterHook: {}", e)),
+            if let Err(e) = loot_hook.inject(&ctx) {
+                log_error(&format!("Failed to inject LootFilterHook: {}", e));
             }
-        } else {
-            log_info("D2Sigma.dll not found, loot filter hook disabled");
         }
 
         Ok(Self {
             ctx,
             injector,
             seen_items: HashSet::new(),
-            debug_logged_paths: false,
-            last_call_counter: 0,
             filter_config: None,
             filter_enabled: false,
             loot_hook,
+            item_cache: HashMap::new(),
         })
     }
 
     pub fn set_filter_config(&mut self, config: Arc<RwLock<FilterConfig>>) {
-        let was_none = self.filter_config.is_none();
         self.filter_config = Some(config);
-        if was_none {
-            log_info("DropScanner: Filter config set");
+    }
+
+    pub fn on_filter_config_changed(&mut self) {
+        if self.loot_hook.is_injected() {
+            if let Err(e) = self.loot_hook.clear_hidden_items(&self.ctx) {
+                log_error(&format!(
+                    "Failed to clear hide mask on config change: {}",
+                    e
+                ));
+            }
+            if let Err(e) = self.loot_hook.clear_shown_items(&self.ctx) {
+                log_error(&format!(
+                    "Failed to clear show mask on config change: {}",
+                    e
+                ));
+            }
         }
     }
 
@@ -112,11 +114,6 @@ impl DropScanner {
                 log_error(&format!("Failed to set hook filter_enabled: {}", e));
             }
         }
-
-        log_info(&format!(
-            "DropScanner: Filtering {}",
-            if enabled { "enabled" } else { "disabled" }
-        ));
     }
 
     /// Check if filtering is enabled
@@ -141,11 +138,13 @@ impl DropScanner {
     /// Clear the seen items cache (call when entering a new game)
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
-
-        // Also clear the hide mask so all items are shown initially
+        self.item_cache.clear();
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.clear_hidden_items(&self.ctx) {
                 log_error(&format!("Failed to clear hide mask: {}", e));
+            }
+            if let Err(e) = self.loot_hook.clear_shown_items(&self.ctx) {
+                log_error(&format!("Failed to clear show mask: {}", e));
             }
         }
     }
@@ -165,26 +164,16 @@ impl DropScanner {
         let value: u8 = if visible { 1 } else { 2 };
         let addr = p_unit_data as usize + item_data::EAR_LEVEL;
 
-        log_info(&format!(
-            "set_item_visibility: pUnitData=0x{:08X}, addr=0x{:08X}, value={} ({})",
-            p_unit_data,
-            addr,
-            value,
-            if visible { "SHOW" } else { "HIDE" }
-        ));
-
         // Write the value
         self.ctx.process.write_buffer(addr, &[value])?;
 
         // Verify the write
         let mut verify = [0u8; 1];
         if let Ok(()) = self.ctx.process.read_buffer_into(addr, &mut verify) {
-            if verify[0] == value {
-                log_info(&format!("  -> Write verified OK: read back {}", verify[0]));
-            } else {
+            if verify[0] != value {
                 log_error(&format!(
-                    "  -> Write FAILED! Wrote {} but read back {}",
-                    value, verify[0]
+                    "set_item_visibility: verify mismatch at 0x{:08X}: wrote {} but read back {}",
+                    addr, value, verify[0]
                 ));
             }
         }
@@ -245,16 +234,6 @@ impl DropScanner {
             _ => return events,
         };
 
-        // Log pointer chain once to help debug cases when no items are detected.
-        if !self.debug_logged_paths {
-            let msg = format!(
-                "Notifier debug: ptr1=0x{:08X}, ptr2=0x{:08X}, ptr3=0x{:08X}, p_paths=0x{:08X}, i_paths={}",
-                ptr1, ptr2, ptr3, p_paths, i_paths
-            );
-            log_info(&msg);
-            self.debug_logged_paths = true;
-        }
-
         // Iterate through each path/room
         for i in 0..i_paths {
             let p_path = match self.ctx.process.read_memory::<u32>(p_paths + 4 * i) {
@@ -276,40 +255,71 @@ impl DropScanner {
                 if let Some(scanned) = self.scan_unit(p_unit) {
                     let event = Self::to_event(scanned);
 
+                    // Cache the resolved event so later sweeps (e.g. after a
+                    // config change) can match name/stat rules against real
+                    // text instead of synthetic "Item#<class>" fallbacks.
+                    self.item_cache.insert(event.unit_id, event.clone());
+
                     // Apply filter if enabled
                     if self.filter_enabled {
                         if let Some(ref filter_arc) = self.filter_config {
                             if let Ok(filter) = filter_arc.read() {
                                 let ctx = MatchContext::new(&event);
 
-                                // DEBUG: list matching rules before picking action
-                                let matching: Vec<String> = filter
+                                let matched: Vec<String> = filter
                                     .rules
                                     .iter()
                                     .filter(|r| r.active && ctx.matches(r))
-                                    .map(|r| {
-                                        format!(
-                                            "pattern={:?} color={:?} show={}",
-                                            r.name_pattern, r.color, r.show_item
-                                        )
+                                    .map(|r| match &r.name_pattern {
+                                        Some(p) => format!("\"{}\"", p),
+                                        None => "<any>".to_string(),
                                     })
                                     .collect();
-                                log_info(&format!(
-                                    "Filter DEBUG: item='{}' quality='{}' class={} total_rules={} matching={}: {:?}",
-                                    event.name, event.quality, event.class,
-                                    filter.rules.len(), matching.len(), matching
-                                ));
 
                                 let action = filter.get_action(&ctx);
+                                let decision = if action.color.as_deref() == Some("show") {
+                                    "FORCE-SHOW"
+                                } else if !action.show_item {
+                                    "HIDE"
+                                } else {
+                                    "SHOW"
+                                };
+
+                                let reason = if matched.is_empty() {
+                                    format!(
+                                        "no rules matched, default={}",
+                                        if filter.default_show_items {
+                                            "Show All"
+                                        } else {
+                                            "Hide All"
+                                        }
+                                    )
+                                } else {
+                                    format!(
+                                        "matched {}/{}: {}",
+                                        matched.len(),
+                                        filter.rules.len(),
+                                        matched.join(", ")
+                                    )
+                                };
 
                                 log_info(&format!(
-                                    "Filter action for '{}': show_item={}",
-                                    event.name, action.show_item
+                                    "[Filter] \"{}\" ({}, class={}) -> {} | {}",
+                                    event.name, event.quality, event.class, decision, reason
                                 ));
 
-                                // Hide item by adding to bitmask (if filter says to hide)
-                                if !action.show_item {
-                                    if self.loot_hook.is_injected() {
+                                if self.loot_hook.is_injected() {
+                                    if action.color.as_deref() == Some("show") {
+                                        if let Err(e) = self
+                                            .loot_hook
+                                            .add_shown_unit_id(&self.ctx, event.unit_id)
+                                        {
+                                            log_error(&format!(
+                                                "Failed to force-show item {}: {}",
+                                                event.unit_id, e
+                                            ));
+                                        }
+                                    } else if !action.show_item {
                                         if let Err(e) = self
                                             .loot_hook
                                             .add_hidden_unit_id(&self.ctx, event.unit_id)
@@ -331,45 +341,40 @@ impl DropScanner {
                 // Move to next unit (use struct layout for safety instead of hardcoded offset)
                 let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
                     Ok(u) => u,
-                    Err(e) => {
-                        let msg = format!(
-                            "Notifier debug: failed to read UnitAny at 0x{:08X}: {}",
-                            p_unit, e
-                        );
-                        log_error(&msg);
-                        break;
-                    }
+                    Err(_) => break,
                 };
                 p_unit = unit.p_next_unit;
             }
         }
 
-        // Apply filter to ALL ground items (including already seen ones)
-        // This ensures newly spawned items are added to the hide mask
-        if self.filter_enabled {
-            if let Some(ref filter_arc) = self.filter_config {
-                if let Ok(filter) = filter_arc.read() {
-                    self.apply_filter_to_all_items(&filter, p_paths, i_paths);
-                }
-            }
-        }
-
-        // DEBUG: Log hook call counter and last checked unit_id
-        if self.loot_hook.is_injected() && !events.is_empty() {
-            if let Ok(counter) = self.loot_hook.get_call_counter(&self.ctx) {
-                log_info(&format!("DEBUG: Hook called {} times total", counter));
-            }
-            if let Ok(unit_id) = self.loot_hook.get_last_unit_id(&self.ctx) {
-                log_info(&format!("DEBUG: Last hook check: unit_id={}", unit_id));
-            }
+        // Apply filter to ALL ground items (including already seen ones).
+        // This ensures newly spawned items are added to the hide mask and,
+        // after a config change, already-cached items are re-evaluated.
+        // We clone the FilterConfig out of the lock so the sweep can take
+        // `&mut self` (needed to write into item_cache / log_next_sweep).
+        let filter_snapshot = if self.filter_enabled {
+            self.filter_config
+                .as_ref()
+                .and_then(|arc| arc.read().ok().map(|g| g.clone()))
+        } else {
+            None
+        };
+        if let Some(filter) = filter_snapshot {
+            self.apply_filter_to_all_items(&filter, p_paths, i_paths);
         }
 
         events
     }
 
-    /// Apply filter rules to all ground items (not just new ones)
-    /// This ensures items that should be hidden are in the bitmask
-    fn apply_filter_to_all_items(&self, filter: &FilterConfig, p_paths: usize, i_paths: usize) {
+    /// Apply filter rules to all ground items (not just new ones).
+    /// This ensures items that should be hidden end up in the bitmask,
+    /// including items already on the ground at config-change time.
+    fn apply_filter_to_all_items(
+        &mut self,
+        filter: &FilterConfig,
+        p_paths: usize,
+        i_paths: usize,
+    ) {
         if !self.loot_hook.is_injected() {
             return;
         }
@@ -398,39 +403,41 @@ impl DropScanner {
 
                 // Only process items
                 if unit.unit_type == unit_type::ITEM && unit.p_unit_data != 0 {
-                    // Read item data to get quality/flags for filtering
-                    if let Ok(idata) = self
+                    // Prefer the cached event (has real name/stats from injection).
+                    // Fall back to a synthetic event for items we haven't scanned yet.
+                    let event = if let Some(cached) = self.item_cache.get(&unit.unit_id) {
+                        cached.clone()
+                    } else if let Ok(idata) = self
                         .ctx
                         .process
                         .read_memory::<ItemData>(unit.p_unit_data as usize)
                     {
-                        // Get item name (simplified - just use class for now to avoid injection overhead)
                         let scanned = ScannedItem::from_unit(&unit, &idata, p_unit);
-
-                        // Try to get name from injection if possible, but don't fail
-                        let name = scanned
-                            .name
-                            .clone()
-                            .unwrap_or_else(|| format!("Item#{}", unit.class));
-
-                        let event = ItemDropEvent {
+                        ItemDropEvent {
                             unit_id: unit.unit_id,
                             class: unit.class,
                             quality: scanned.quality_name().to_string(),
-                            name,
+                            name: scanned
+                                .name
+                                .clone()
+                                .unwrap_or_else(|| format!("Item#{}", unit.class)),
                             stats: scanned.stats.clone().unwrap_or_default(),
                             is_ethereal: scanned.is_ethereal,
                             is_identified: scanned.is_identified,
                             p_unit_data: unit.p_unit_data,
-                        };
-
-                        let ctx = MatchContext::new(&event);
-                        let action = filter.get_action(&ctx);
-
-                        // Add to hide mask if filter says to hide (silently, no logging)
-                        if !action.show_item {
-                            let _ = self.loot_hook.add_hidden_unit_id(&self.ctx, unit.unit_id);
                         }
+                    } else {
+                        p_unit = unit.p_next_unit;
+                        continue;
+                    };
+
+                    let ctx = MatchContext::new(&event);
+                    let action = filter.get_action(&ctx);
+
+                    if action.color.as_deref() == Some("show") {
+                        let _ = self.loot_hook.add_shown_unit_id(&self.ctx, unit.unit_id);
+                    } else if !action.show_item {
+                        let _ = self.loot_hook.add_hidden_unit_id(&self.ctx, unit.unit_id);
                     }
                 }
 
@@ -465,57 +472,26 @@ impl DropScanner {
             .read_memory(unit.p_unit_data as usize)
             .ok()?;
 
-        // DEBUG: Log addresses for reverse engineering
-        log_info(&format!(
-            "DEBUG ITEM: pUnit=0x{:08X}, pUnitData=0x{:08X}, unitId={}, class={}",
-            p_unit, unit.p_unit_data, unit.unit_id, unit.class
-        ));
-
         // Create scanned item and try to enrich it using injected game functions.
         let mut scanned = ScannedItem::from_unit(&unit, &item_data, p_unit);
 
         // Try to resolve item name via injected GetItemName.
-        match self.injector.get_item_name(&self.ctx.process, p_unit) {
-            Ok(raw_name) => {
-                let cleaned = strip_color_codes(&raw_name);
+        if let Ok(raw_name) = self.injector.get_item_name(&self.ctx.process, p_unit) {
+            let cleaned = strip_color_codes(&raw_name);
 
-                // Use the last non-empty line as the display name (matches D2Stats behavior).
-                if let Some(last_line) = cleaned.lines().rev().find(|line| !line.trim().is_empty())
-                {
-                    scanned.name = Some(last_line.to_string());
-                } else if !cleaned.trim().is_empty() {
-                    scanned.name = Some(cleaned.trim().to_string());
-                } else {
-                    let msg = format!(
-                        "Notifier debug: empty item name after injection for unit {} (class {}), raw='{}'",
-                        unit.unit_id, unit.class, raw_name
-                    );
-                    log_info(&msg);
-                }
-            }
-            Err(e) => {
-                let msg = format!(
-                    "Notifier debug: get_item_name failed for unit {} (class {}): {}",
-                    unit.unit_id, unit.class, e
-                );
-                log_error(&msg);
+            // Use the last non-empty line as the display name (matches D2Stats behavior).
+            if let Some(last_line) = cleaned.lines().rev().find(|line| !line.trim().is_empty()) {
+                scanned.name = Some(last_line.to_string());
+            } else if !cleaned.trim().is_empty() {
+                scanned.name = Some(cleaned.trim().to_string());
             }
         }
 
         // Try to resolve item stats text via injected GetItemStats.
-        match self.injector.get_item_stats(&self.ctx.process, p_unit) {
-            Ok(raw_stats) => {
-                let cleaned = strip_color_codes(&raw_stats);
-                if !cleaned.trim().is_empty() {
-                    scanned.stats = Some(cleaned);
-                }
-            }
-            Err(e) => {
-                let msg = format!(
-                    "Notifier debug: get_item_stats failed for unit {} (class {}): {}",
-                    unit.unit_id, unit.class, e
-                );
-                log_error(&msg);
+        if let Ok(raw_stats) = self.injector.get_item_stats(&self.ctx.process, p_unit) {
+            let cleaned = strip_color_codes(&raw_stats);
+            if !cleaned.trim().is_empty() {
+                scanned.stats = Some(cleaned);
             }
         }
 
@@ -568,7 +544,6 @@ impl Drop for DropScanner {
     fn drop(&mut self) {
         // Eject the loot filter hook when scanner is destroyed
         if self.loot_hook.is_injected() {
-            log_info("DropScanner: Ejecting loot filter hook...");
             if let Err(e) = self.loot_hook.eject(&self.ctx) {
                 log_error(&format!("Failed to eject loot filter hook: {}", e));
             }
@@ -591,6 +566,8 @@ impl DropScanner {
     }
 
     pub fn set_filter_config(&mut self, _config: Arc<RwLock<FilterConfig>>) {}
+
+    pub fn on_filter_config_changed(&mut self) {}
 
     pub fn set_filter_enabled(&mut self, _enabled: bool) {}
 

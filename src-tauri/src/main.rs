@@ -12,7 +12,7 @@ mod profiles;
 mod rules;
 mod settings;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -61,6 +61,7 @@ struct AppState {
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     /// Whether filtering is enabled
     filter_enabled: Arc<AtomicBool>,
+    filter_config_generation: Arc<AtomicU64>,
 }
 
 /// Check if Diablo II window exists
@@ -85,6 +86,7 @@ fn start_scanner_internal(
     is_scanning: Arc<AtomicBool>,
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
+    filter_config_generation: Arc<AtomicU64>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -94,7 +96,6 @@ fn start_scanner_internal(
 
     // Set scanning flag
     is_scanning.store(true, Ordering::SeqCst);
-    log_info("Scanner starting...");
 
     // Emit status to frontend
     if let Err(e) = app_handle.emit("scanner-status", "starting") {
@@ -132,16 +133,14 @@ fn start_scanner_internal(
         };
 
         // Configure filter if available
+        let mut last_config_gen = filter_config_generation.load(Ordering::SeqCst);
         if let Ok(guard) = filter_config.read() {
             if let Some(ref config) = *guard {
                 scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
-                log_info("Scanner: Filter config loaded");
+                scanner.on_filter_config_changed();
             }
         }
         scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
-        if filter_enabled.load(Ordering::SeqCst) {
-            log_info("Scanner: Filtering enabled");
-        }
 
         let mut was_ingame = false;
 
@@ -157,23 +156,30 @@ fn start_scanner_internal(
 
             // Detect entering a new game
             if ingame && !was_ingame {
-                log_info("Entered game, clearing item cache");
+                log_info("Entered game");
                 scanner.clear_cache();
                 if let Err(e) = app_handle.emit("game-status", "ingame") {
                     log_error(&format!("Failed to emit event (ingame): {}", e));
                 }
             } else if !ingame && was_ingame {
-                log_info("Left game");
                 if let Err(e) = app_handle.emit("game-status", "menu") {
                     log_error(&format!("Failed to emit event (menu): {}", e));
                 }
             }
             was_ingame = ingame;
 
-            if let Ok(guard) = filter_config.read() {
-                if let Some(ref config) = *guard {
-                    scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+            // Only re-sync config when generation changed (user saved or toggled mode).
+            // This avoids reallocating Arcs every tick and also lets us trigger a
+            // full re-evaluation of ground items + hide-mask reset on change.
+            let current_gen = filter_config_generation.load(Ordering::SeqCst);
+            if current_gen != last_config_gen {
+                if let Ok(guard) = filter_config.read() {
+                    if let Some(ref config) = *guard {
+                        scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+                        scanner.on_filter_config_changed();
+                    }
                 }
+                last_config_gen = current_gen;
             }
 
             // Sync filter_enabled state from AppState
@@ -184,8 +190,6 @@ fn start_scanner_internal(
             if ingame {
                 let items = scanner.tick();
                 for item in items {
-                    log_info(&format!("Found item: {} ({})", item.name, item.quality));
-
                     // Emit item-drop event to frontend
                     if let Err(e) = app_handle.emit("item-drop", &item) {
                         log_error(&format!("Failed to emit item-drop event: {}", e));
@@ -197,7 +201,6 @@ fn start_scanner_internal(
         }
 
         is_scanning.store(false, Ordering::SeqCst);
-        log_info("Scanner thread stopped");
         if let Err(e) = app_handle.emit("scanner-status", "stopped") {
             log_error(&format!("Failed to emit event (stopped): {}", e));
         }
@@ -222,19 +225,18 @@ fn spawn_auto_scanner(
     should_auto_scan: Arc<AtomicBool>,
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
+    filter_config_generation: Arc<AtomicU64>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
-        log_info("Auto-scanner monitor started");
-
         while should_auto_scan.load(Ordering::SeqCst) {
             // If not currently scanning, check if D2 is running
             if !is_scanning.load(Ordering::SeqCst) && is_diablo2_running() {
-                log_info("Diablo II detected, auto-starting scanner");
                 start_scanner_internal(
                     is_scanning.clone(),
                     filter_config.clone(),
                     filter_enabled.clone(),
+                    filter_config_generation.clone(),
                     app_handle.clone(),
                 );
             }
@@ -242,8 +244,6 @@ fn spawn_auto_scanner(
             // Check every 2 seconds
             thread::sleep(Duration::from_secs(2));
         }
-
-        log_info("Auto-scanner monitor stopped");
     });
 }
 
@@ -257,6 +257,7 @@ fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
         state.is_scanning.clone(),
         state.filter_config.clone(),
         state.filter_enabled.clone(),
+        state.filter_config_generation.clone(),
         app,
     );
     "Scanner started".to_string()
@@ -270,7 +271,6 @@ fn stop_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
 
     // Signal the scanner to stop
     state.is_scanning.store(false, Ordering::SeqCst);
-    log_info("Scanner stop requested");
 
     if let Err(e) = app.emit("scanner-status", "stopping") {
         log_error(&format!("Failed to emit event (stopping): {}", e));
@@ -292,12 +292,18 @@ fn set_filter_config(
     config: rules::FilterConfig,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
-    let mut guard = state
-        .filter_config
-        .write()
-        .map_err(|e| format!("Failed to acquire lock: {}", e))?;
-    *guard = Some(config);
-    log_info("Filter config updated");
+    {
+        let mut guard = state
+            .filter_config
+            .write()
+            .map_err(|e| format!("Failed to acquire lock: {}", e))?;
+        *guard = Some(config);
+    }
+    // Bump generation so the scanner thread re-evaluates all ground items
+    // (clears hide mask, re-runs rule matching) on the next tick.
+    state
+        .filter_config_generation
+        .fetch_add(1, Ordering::SeqCst);
     Ok(())
 }
 
@@ -305,10 +311,6 @@ fn set_filter_config(
 #[tauri::command]
 fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
     state.filter_enabled.store(enabled, Ordering::SeqCst);
-    log_info(&format!(
-        "Filtering {}",
-        if enabled { "enabled" } else { "disabled" }
-    ));
 }
 
 /// Get current filter enabled status
@@ -526,8 +528,8 @@ fn enable_debug_privilege() {
         // We need both QUERY and ADJUST_PRIVILEGES to toggle SeDebugPrivilege.
         let desired_access = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
         if let Err(e) = OpenProcessToken(GetCurrentProcess(), desired_access, &mut token_handle) {
-            log_info(&format!(
-                "Failed to open process token for SeDebugPrivilege: {}",
+            log_error(&format!(
+                "SeDebugPrivilege: OpenProcessToken failed: {}",
                 e
             ));
             return;
@@ -536,8 +538,8 @@ fn enable_debug_privilege() {
         // Resolve the LUID for SeDebugPrivilege.
         let mut luid = LUID::default();
         if let Err(e) = LookupPrivilegeValueW(None, SE_DEBUG_NAME, &mut luid) {
-            log_info(&format!(
-                "LookupPrivilegeValueW(SeDebugPrivilege) failed: {}",
+            log_error(&format!(
+                "SeDebugPrivilege: LookupPrivilegeValueW failed: {}",
                 e
             ));
             let _ = CloseHandle(token_handle);
@@ -564,16 +566,11 @@ fn enable_debug_privilege() {
 
         let _ = CloseHandle(token_handle);
 
-        match result {
-            Ok(_) => {
-                log_info("SeDebugPrivilege enabled (or already enabled)");
-            }
-            Err(e) => {
-                log_info(&format!(
-                    "AdjustTokenPrivileges for SeDebugPrivilege failed: {}",
-                    e
-                ));
-            }
+        if let Err(e) = result {
+            log_error(&format!(
+                "SeDebugPrivilege: AdjustTokenPrivileges failed: {}",
+                e
+            ));
         }
     }
 }
@@ -596,8 +593,11 @@ fn setup_webview2_for_elevation() {
     unsafe {
         // Get the current process token
         let mut token_handle = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle).is_err() {
-            log_info("Failed to open process token, skipping elevation check");
+        if let Err(e) = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle) {
+            log_error(&format!(
+                "WebView2 setup: OpenProcessToken failed, skipping elevation check: {}",
+                e
+            ));
             return;
         }
 
@@ -613,8 +613,11 @@ fn setup_webview2_for_elevation() {
             &mut return_length,
         );
 
-        if result.is_err() {
-            log_info("Failed to get token elevation type");
+        if let Err(e) = result {
+            log_error(&format!(
+                "WebView2 setup: GetTokenInformation(TokenElevationType) failed: {}",
+                e
+            ));
             let _ = windows::Win32::Foundation::CloseHandle(token_handle);
             return;
         }
@@ -624,11 +627,8 @@ fn setup_webview2_for_elevation() {
         if elevation_type.0 != 2 {
             // Not elevated via UAC, no need to adjust WebView2 path
             let _ = windows::Win32::Foundation::CloseHandle(token_handle);
-            log_info("Process is not UAC-elevated, using default WebView2 data folder");
             return;
         }
-
-        log_info("Process is UAC-elevated, configuring WebView2 data folder for linked user");
 
         // Get the linked token (the non-elevated user token)
         let mut linked_token = TOKEN_LINKED_TOKEN::default();
@@ -644,8 +644,11 @@ fn setup_webview2_for_elevation() {
 
         let _ = windows::Win32::Foundation::CloseHandle(token_handle);
 
-        if result.is_err() {
-            log_info("Failed to get linked token, using default WebView2 data folder");
+        if let Err(e) = result {
+            log_error(&format!(
+                "WebView2 setup: GetTokenInformation(TokenLinkedToken) failed: {}",
+                e
+            ));
             return;
         }
 
@@ -667,18 +670,12 @@ fn setup_webview2_for_elevation() {
                 if !path_str.is_empty() {
                     // Construct WebView2 data folder path
                     let webview2_path = format!("{}\\D2MXLUtils\\WebView2", path_str);
-
-                    log_info(&format!(
-                        "Setting WEBVIEW2_USER_DATA_FOLDER to: {}",
-                        webview2_path
-                    ));
-
                     std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview2_path);
                 }
             }
             Err(e) => {
-                log_info(&format!(
-                    "Failed to get LocalAppData path for linked user: {:?}",
+                log_error(&format!(
+                    "WebView2 setup: SHGetKnownFolderPath(LocalAppData) failed: {:?}",
                     e
                 ));
             }
@@ -706,12 +703,14 @@ fn main() {
                 is_scanning: Arc::new(AtomicBool::new(false)),
                 should_auto_scan: Arc::new(AtomicBool::new(true)),
                 filter_config: Arc::new(RwLock::new(None)),
-                filter_enabled: Arc::new(AtomicBool::new(false)),
+                filter_enabled: Arc::new(AtomicBool::new(true)),
+                filter_config_generation: Arc::new(AtomicU64::new(0)),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
             let filter_config = state.filter_config.clone();
             let filter_enabled = state.filter_enabled.clone();
+            let filter_config_generation = state.filter_config_generation.clone();
             app.manage(state);
 
             // Initialize hotkey state
@@ -721,10 +720,6 @@ fn main() {
             let app_handle_for_hotkeys = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
                 Ok(loaded_settings) => {
-                    log_info(&format!(
-                        "Starting hotkey listener with: {}",
-                        loaded_settings.toggle_window_hotkey.display
-                    ));
                     hotkey_state
                         .start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
                 }
@@ -744,6 +739,7 @@ fn main() {
                 should_auto_scan.clone(),
                 filter_config.clone(),
                 filter_enabled.clone(),
+                filter_config_generation.clone(),
                 app_handle,
             );
 
@@ -755,9 +751,6 @@ fn main() {
                 let app_handle_clone = app.handle().clone();
                 main_window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        log_info(
-                            "Main window close requested, stopping scanner and closing overlay",
-                        );
                         // Stop auto-scanner monitor
                         should_auto_scan_clone.store(false, Ordering::SeqCst);
                         // Stop scanner loop

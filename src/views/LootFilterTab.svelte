@@ -36,43 +36,32 @@
   let ruleCount = $state(0);
   let isSaving = $state(false);
   let hasUnsavedChanges = $state(false);
-  let filterEnabled = $state(false);
-
-  // Load filter enabled state on mount
+  let showAllMode = $state(settingsStore.settings.defaultShowItems ?? true);
   onMount(async () => {
     try {
-      filterEnabled = await invoke<boolean>("get_filter_enabled");
+      await invoke("set_filter_enabled", { enabled: true });
     } catch (e) {
-      console.error("[LootFilterTab] Failed to get filter enabled state:", e);
+      console.error("[LootFilterTab] Failed to enable filter:", e);
     }
   });
 
-  /**
-   * Toggle filter enabled state
-   */
-  async function toggleFilter(enabled: boolean) {
-    try {
-      await invoke("set_filter_enabled", { enabled });
-      filterEnabled = enabled;
-      console.log("[LootFilterTab] Filter", enabled ? "enabled" : "disabled");
-    } catch (e) {
-      console.error("[LootFilterTab] Failed to toggle filter:", e);
-      // Revert UI state on error
-      filterEnabled = !enabled;
-    }
+ 
+  async function setGlobalMode(showAll: boolean) {
+    showAllMode = showAll;
+    settingsStore.set("defaultShowItems", showAll);
+    await syncFilterConfig();
   }
 
-  /**
-   * Send current filter config to backend
-   */
   async function syncFilterConfig() {
     if (validationStatus !== "valid") return;
 
     try {
-      const config = await invoke("parse_filter_dsl", { text: dslText });
+      const config = await invoke<any>("parse_filter_dsl", { text: dslText });
       if (config && !("errors" in config)) {
+        config.default_show_items = showAllMode;
         await invoke("set_filter_config", { config });
-        console.log("[LootFilterTab] Filter config synced to backend");
+        // Make sure filtering stays on so rules take effect without a manual toggle.
+        await invoke("set_filter_enabled", { enabled: true });
       }
     } catch (e) {
       console.error("[LootFilterTab] Failed to sync filter config:", e);
@@ -148,7 +137,6 @@
    */
   async function handleSaveComplete() {
     hasUnsavedChanges = false;
-    console.log("[LootFilterTab] Profile saved successfully");
 
     // Sync filter config to backend
     await syncFilterConfig();
@@ -191,19 +179,19 @@
       <div class="filter-mode-switch">
         <button
           class="mode-btn"
-          class:active={!filterEnabled}
-          onclick={() => toggleFilter(false)}
-          title="Show all items (filtering disabled)"
+          class:active={showAllMode}
+          onclick={() => setGlobalMode(true)}
+          title="Items not matching any rule are shown (rules can hide specific items)"
         >
           Show All
         </button>
         <button
           class="mode-btn"
-          class:active={filterEnabled}
-          onclick={() => toggleFilter(true)}
-          title="Apply filter rules to items"
+          class:active={!showAllMode}
+          onclick={() => setGlobalMode(false)}
+          title="Items not matching any rule are hidden (rules must explicitly show items)"
         >
-          Apply Rules
+          Hide All
         </button>
       </div>
       <ProfileSelector

@@ -77,8 +77,6 @@
       if (state.maximized) {
         await window.maximize();
       }
-
-      console.log('[MainWindow] Restored window state:', state);
     } catch (error) {
       console.error('[MainWindow] Failed to restore window state:', error);
     }
