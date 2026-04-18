@@ -14,7 +14,7 @@ use crate::logger::{error as log_error, info as log_info};
 #[cfg(target_os = "windows")]
 use crate::loot_filter_hook::LootFilterHook;
 #[cfg(target_os = "windows")]
-use crate::offsets::{d2client, item_data, paths, unit_type};
+use crate::offsets::{d2client, d2common, item_data, items_txt, paths, unit_type};
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
 #[cfg(target_os = "windows")]
@@ -65,6 +65,9 @@ pub struct DropScanner {
     loot_hook: LootFilterHook,
     /// Resolved items by unit_id; reused on config change to avoid re-injection.
     item_cache: HashMap<u32, ItemDropEvent>,
+    /// Per-class MedianXL tier cache, built lazily on first tick.
+    /// Indexed by `UnitAny.class` (items.txt row index).
+    tier_cache: Option<Vec<ItemTier>>,
 }
 
 #[cfg(target_os = "windows")]
@@ -72,7 +75,8 @@ impl DropScanner {
     /// Create a new scanner attached to the D2 process
     pub fn new() -> Result<Self, String> {
         let ctx = D2Context::new()?;
-        let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common)?;
+        let injector =
+            D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common, ctx.d2_lang)?;
 
         // Initialize and inject the loot filter hook
         let mut loot_hook = LootFilterHook::new();
@@ -90,6 +94,7 @@ impl DropScanner {
             filter_enabled: false,
             loot_hook,
             item_cache: HashMap::new(),
+            tier_cache: None,
         })
     }
 
@@ -203,6 +208,23 @@ impl DropScanner {
             return events;
         }
 
+        // Build the per-class tier cache lazily on the first in-game tick.
+        // Synchronous (~2-3s one-time cost per game session) — matches D2Stats
+        // behavior. Further ticks hit an O(1) Vec lookup.
+        if self.tier_cache.is_none() {
+            match self.build_tier_cache() {
+                Ok(cache) => {
+                    log_info(&format!("Tier cache built: {} classes", cache.len()));
+                    self.tier_cache = Some(cache);
+                }
+                Err(e) => {
+                    log_error(&format!("Failed to build tier cache: {}", e));
+                    // Install an empty cache so we don't keep retrying every tick.
+                    self.tier_cache = Some(Vec::new());
+                }
+            }
+        }
+
         // Read paths structure to iterate through rooms/units
         let base_ptr = self.ctx.d2_client + d2client::PLAYER_UNIT;
 
@@ -267,7 +289,7 @@ impl DropScanner {
             // Iterate through units in this room
             while p_unit != 0 {
                 if let Some(scanned) = self.scan_unit(p_unit) {
-                    let event = Self::to_event(scanned);
+                    let event = self.to_event(scanned);
 
                     // Cache the resolved event so later sweeps (e.g. after a
                     // config change) can match name/stat rules against real
@@ -437,7 +459,7 @@ impl DropScanner {
                             is_ethereal: scanned.is_ethereal,
                             is_identified: scanned.is_identified,
                             p_unit_data: unit.p_unit_data,
-                            tier: None,
+                            tier: self.class_tier(unit.class),
                             filter: None,
                         }
                     } else {
@@ -519,10 +541,11 @@ impl DropScanner {
     }
 
     /// Convert a scanned item into an event payload for the frontend.
-    fn to_event(scanned: ScannedItem) -> ItemDropEvent {
+    fn to_event(&self, scanned: ScannedItem) -> ItemDropEvent {
+        let class = scanned.class;
         ItemDropEvent {
             unit_id: scanned.unit_id,
-            class: scanned.class,
+            class,
             quality: scanned.quality_name().to_string(),
             // Fallback to a generic name if injection failed or returned empty text.
             name: scanned
@@ -532,11 +555,94 @@ impl DropScanner {
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
-            // TODO: surface MedianXL tier from the scanned item once we
-            // have a reliable way to detect it (stat text, class range, etc.).
-            tier: None,
+            tier: self.class_tier(class),
             filter: None,
         }
+    }
+
+    /// Look up the MedianXL tier for an item class via the cached table.
+    /// Returns `None` if the cache is not built yet or the class is out of range.
+    fn class_tier(&self, class: u32) -> Option<ItemTier> {
+        self.tier_cache
+            .as_ref()
+            .and_then(|cache| cache.get(class as usize))
+            .copied()
+    }
+
+    /// Walk items.txt once and derive a `Vec<ItemTier>` indexed by class.
+    ///
+    /// Port of `NotifierCache` in D2Stats.au3 (lines 697-750): for each item
+    /// class we read its base-name via D2Lang_GetStringById and, for weapon/armor
+    /// classes (those with `items_txt.MISC != 0`), scan the name for a tier
+    /// marker. Runes, gems, amulets, rings, etc. get `Tier0`.
+    fn build_tier_cache(&self) -> Result<Vec<ItemTier>, String> {
+        let count_addr = self.ctx.d2_common + d2common::ITEMS_TXT_COUNT;
+        let ptr_addr = self.ctx.d2_common + d2common::ITEMS_TXT;
+
+        let count = self.ctx.process.read_memory::<u32>(count_addr)? as usize;
+        let base_ptr = self.ctx.process.read_memory::<u32>(ptr_addr)? as usize;
+
+        if count == 0 || base_ptr == 0 {
+            return Err(format!(
+                "items.txt not available (count={}, ptr=0x{:X})",
+                count, base_ptr
+            ));
+        }
+
+        // Compile the tier regex once. `(?i)` for case-insensitive Angelic/Sacred/Mastercrafted.
+        // The digit class catches tiers 1-4; tier 0 is the fallback for weapon/armor
+        // without a visible marker.
+        let re = regex::Regex::new(r"(?i)\(Sacred\)|\(Angelic\)|\(Mastercrafted\)|[1-4]")
+            .map_err(|e| format!("tier regex compile failed: {}", e))?;
+
+        let mut cache = Vec::with_capacity(count);
+
+        for class in 0..count {
+            let record = base_ptr + class * items_txt::RECORD_SIZE;
+
+            // items_txt.MISC (0x84) — non-zero means weapon or armor (tier-eligible).
+            let misc = self
+                .ctx
+                .process
+                .read_memory::<u32>(record + items_txt::MISC)
+                .unwrap_or(0);
+
+            if misc == 0 {
+                cache.push(ItemTier::Tier0);
+                continue;
+            }
+
+            let name_id = self
+                .ctx
+                .process
+                .read_memory::<u16>(record + items_txt::NAME_ID)
+                .unwrap_or(0);
+
+            let name = match self.injector.get_string(&self.ctx.process, name_id, 100) {
+                Ok(s) => strip_color_codes(&s),
+                Err(_) => {
+                    cache.push(ItemTier::Tier0);
+                    continue;
+                }
+            };
+
+            let tier = match re.find(&name) {
+                Some(m) => match m.as_str().to_ascii_lowercase().as_str() {
+                    "(sacred)" => ItemTier::Sacred,
+                    "(angelic)" => ItemTier::Angelic,
+                    "(mastercrafted)" => ItemTier::Master,
+                    "1" => ItemTier::Tier1,
+                    "2" => ItemTier::Tier2,
+                    "3" => ItemTier::Tier3,
+                    "4" => ItemTier::Tier4,
+                    _ => ItemTier::Tier0,
+                },
+                None => ItemTier::Tier0,
+            };
+            cache.push(tier);
+        }
+
+        Ok(cache)
     }
 }
 

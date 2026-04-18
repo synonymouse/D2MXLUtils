@@ -36,14 +36,24 @@ pub mod d2client {
 
 /// D2Common.dll offsets
 pub mod d2common {
+    /// Number of records in Items.txt (dword, immediately before ITEMS_TXT pointer)
+    pub const ITEMS_TXT_COUNT: usize = 0x9FB94;
+
     /// Pointer to Items.txt data
     pub const ITEMS_TXT: usize = 0x9FB98;
-    
+
     /// GetUnitStat function
     pub const GET_UNIT_STAT: usize = 0x38B70;
-    
+
     /// D2Common_GetUnitStat injection offset (relative to D2Client inject base)
     pub const INJECT_GET_UNIT_STAT: usize = 0x54;
+}
+
+/// D2Lang.dll offsets
+pub mod d2lang {
+    /// GetStringById function — resolves a string-table ID to a wchar pointer.
+    /// Calling convention: ECX = iNameID, returns EAX = *const u16
+    pub const GET_STRING_BY_ID: usize = 0x9450;
 }
 
 /// Path/Room iteration offsets for finding ground items

@@ -14,7 +14,7 @@ use windows::Win32::System::Threading::{
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
 
-use crate::offsets::{d2client, d2common};
+use crate::offsets::{d2client, d2common, d2lang};
 use crate::process::ProcessHandle;
 
 /// Allocated memory region in the target process
@@ -118,6 +118,7 @@ impl D2Injector {
         process: &ProcessHandle,
         d2_client: usize,
         d2_common: usize,
+        d2_lang: usize,
     ) -> Result<Self, String> {
         // Allocate fresh buffers in the game process for this injector.
         // This avoids keeping stale addresses when the Diablo II process
@@ -142,7 +143,7 @@ impl D2Injector {
         };
 
         // Inject the code
-        injector.inject_functions(process, d2_client, d2_common)?;
+        injector.inject_functions(process, d2_client, d2_common, d2_lang)?;
 
         Ok(injector)
     }
@@ -153,17 +154,23 @@ impl D2Injector {
         process: &ProcessHandle,
         d2_client: usize,
         d2_common: usize,
+        d2_lang: usize,
     ) -> Result<(), String> {
         let inject_base = d2_client + d2client::INJECT_BASE;
         let string_addr = self.string_buffer.address as u32;
         let _params_addr = self.params_buffer.address as u32;
 
         // GetString injection (D2Lang_GetStringById)
-        // D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx
-        // D2Client.dll+CDE12 - E8 *                  - call D2Lang.dll+GetStringById
-        // D2Client.dll+CDE17 - C3                    - ret
-        // Note: This needs D2Lang address, simplified version stores result
-        let get_string_code: Vec<u8> = vec![0x8B, 0xCB, 0xC3]; // mov ecx,ebx; ret (simplified)
+        // From D2Stats.au3:2800-2806 — calls D2Lang.dll+0x9450 by absolute address.
+        //   D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx        ; iNameID
+        //   D2Client.dll+CDE12 - 31 C0                 - xor eax,eax
+        //   D2Client.dll+CDE14 - BB *                  - mov ebx,D2Lang+0x9450
+        //   D2Client.dll+CDE19 - FF D3                 - call ebx
+        //   D2Client.dll+CDE1B - C3                    - ret
+        let get_string_target = (d2_lang + d2lang::GET_STRING_BY_ID) as u32;
+        let mut get_string_code: Vec<u8> = vec![0x8B, 0xCB, 0x31, 0xC0, 0xBB];
+        get_string_code.extend_from_slice(&swap_endian(get_string_target));
+        get_string_code.extend_from_slice(&[0xFF, 0xD3, 0xC3]);
         process.write_buffer(self.inject_get_string, &get_string_code)?;
 
         // GetItemName injection
@@ -267,6 +274,35 @@ impl D2Injector {
             .take_while(|&c| c != 0)
             .collect();
         
+        Ok(String::from_utf16_lossy(&wide))
+    }
+
+    /// Resolve a string-table ID to a wide string by calling D2Lang_GetStringById.
+    /// Used to read base item names from items.txt during tier-cache construction.
+    ///
+    /// Returns at most `max_chars` wide characters (stops at the first NUL).
+    pub fn get_string(
+        &self,
+        process: &ProcessHandle,
+        name_id: u16,
+        max_chars: usize,
+    ) -> Result<String, String> {
+        // remote_thread returns the thread's exit code which is EAX from our
+        // shellcode — for GetStringById this is a pointer into the game's
+        // string table (UTF-16).
+        let str_ptr = remote_thread(process, self.inject_get_string, name_id as usize)? as usize;
+        if str_ptr == 0 {
+            return Ok(String::new());
+        }
+
+        let byte_len = max_chars.saturating_mul(2);
+        let buffer = process.read_buffer(str_ptr, byte_len)?;
+        let wide: Vec<u16> = buffer
+            .chunks_exact(2)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .take_while(|&c| c != 0)
+            .collect();
+
         Ok(String::from_utf16_lossy(&wide))
     }
 

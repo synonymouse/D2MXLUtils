@@ -48,29 +48,22 @@ interface ItemDrop {
 
 ---
 
-### C2. Сканер никогда не проставляет `tier` — правила с тиром мертвы
+### C2. Сканер никогда не проставляет `tier` — правила с тиром мертвы ✅ RESOLVED
 
-**Файл:** `src-tauri/src/notifier.rs`, строки 535–538 (`to_event`) и 440–441
-(`apply_filter_to_all_items`).
+**Fix:** реализована per-class tier-таблица, строится один раз при первом тике сканера
+из items.txt через инъекцию `D2Lang_GetStringById`. Подробности см. коммит и
+`src-tauri/src/notifier.rs::build_tier_cache`.
 
-```rust
-// TODO: surface MedianXL tier from the scanned item once we
-// have a reliable way to detect it (stat text, class range, etc.).
-tier: None,
-```
+- Shellcode `GetString` теперь реальный вызов `D2Lang+0x9450` (`src-tauri/src/injection.rs`)
+- `D2Injector::new` принимает `d2_lang` (`src-tauri/src/notifier.rs:75`)
+- `D2Injector::get_string` — публичный метод для чтения string-table записей
+- Константы `d2lang::GET_STRING_BY_ID`, `d2common::ITEMS_TXT_COUNT` в `offsets.rs`
+- `DropScanner.tier_cache: Option<Vec<ItemTier>>` + ленивый `build_tier_cache()`
+- `ItemDropEvent.tier` заполняется из `class_tier(class)` в `to_event` и `apply_filter_to_all_items`
+- Новый тест `tier_zero_matches_untiered_items` проверяет что рун/амулетов матчится keyword `0`
 
-`src-tauri/src/rules/matching.rs:60–68` (`tier_matches`) возвращает `false` когда
-`item.tier == None` и `rule.tier != Any`. Итог: **любое правило с тиром
-`0|1|2|3|4|sacred|angelic|master` не матчится ни на один реальный item**.
-
-Задеты раздел спеки "Tier (MedianXL)" и примеры с `sacred`, `angelic`, `master`.
-Дефолтный шаблон в `src/views/LootFilterTab.svelte:27` содержит мёртвое правило:
-`sacred eth gold notify sound1 name`.
-
-**Фикс (один из):**
-- (a) реализовать извлечение tier (по stat-тексту или class range)
-- (b) снять tier из спеки и DSL до имплементации
-- (c) оставить, но добавить в UI disclaimer и убрать tier-правила из дефолтного шаблона
+**Стоимость:** ~2-3 сек синхронной работы при первом тике после аттача к игре.
+После этого — O(1) lookup в `Vec`.
 
 ---
 
@@ -138,11 +131,10 @@ Warning `method to_hex is never used` — следствие того, что ф
 
 ---
 
-### M2. Дефолтный шаблон фильтра содержит мёртвое правило
+### M2. Дефолтный шаблон фильтра содержит мёртвое правило ✅ RESOLVED (via C2)
 
-**Файл:** `src/views/LootFilterTab.svelte` строка 27:
-`sacred eth gold notify sound1 name`. Пока tier не извлекается (C2), строка
-неактивна. Закомментировать или заменить на рабочий пример.
+После фикса C2 правило `sacred eth gold notify sound1 name` в
+`src/views/LootFilterTab.svelte:27` стало рабочим.
 
 ---
 

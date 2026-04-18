@@ -167,6 +167,26 @@ mod tests {
     }
 
     #[test]
+    fn tier_zero_matches_untiered_items() {
+        // Runes, gems, amulets etc. resolve to Tier0 in the class cache;
+        // the DSL keyword "0" must match these.
+        let mut it = item("Ist Rune", "Normal", "", false);
+        it.tier = Some(ItemTier::Tier0);
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            tier: ItemTier::Tier0,
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&r));
+
+        // And must NOT match a sacred-tier item.
+        let mut sacred = item("Sacred Axe", "Unique", "", false);
+        sacred.tier = Some(ItemTier::Sacred);
+        let sctx = MatchContext::new(&sacred);
+        assert!(!sctx.matches(&r));
+    }
+
+    #[test]
     fn stat_pattern_regex() {
         let it = item(
             "Ring",
