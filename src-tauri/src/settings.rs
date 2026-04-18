@@ -148,7 +148,6 @@ impl Default for WindowState {
 /// Load application settings from the store
 #[tauri::command]
 pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
-
     let store = app
         .store(SETTINGS_FILE)
         .map_err(|e| format!("Failed to open settings store: {}", e))?;
@@ -171,8 +170,6 @@ pub fn load_settings(app: AppHandle) -> Result<AppSettings, String> {
 /// Save application settings to the store
 #[tauri::command]
 pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String> {
-    log_info(&format!("Saving settings: theme={}", settings.theme));
-
     let store = app
         .store(SETTINGS_FILE)
         .map_err(|e| format!("Failed to open settings store: {}", e))?;
@@ -186,13 +183,15 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
         .save()
         .map_err(|e| format!("Failed to save settings to disk: {}", e))?;
 
-    log_info("Settings saved successfully");
     Ok(())
 }
 
 /// Load window state from the store
 #[tauri::command]
-pub fn get_window_state(app: AppHandle, window_label: String) -> Result<Option<WindowState>, String> {
+pub fn get_window_state(
+    app: AppHandle,
+    window_label: String,
+) -> Result<Option<WindowState>, String> {
     log_info(&format!("Loading window state for: {}", window_label));
 
     let store = app
@@ -200,7 +199,7 @@ pub fn get_window_state(app: AppHandle, window_label: String) -> Result<Option<W
         .map_err(|e| format!("Failed to open settings store: {}", e))?;
 
     let key = format!("window_{}", window_label);
-    
+
     let state: Option<WindowState> = match store.get(&key) {
         Some(value) => serde_json::from_value(value.clone()).ok(),
         None => None,
@@ -237,4 +236,3 @@ pub fn save_window_state(
 
     Ok(())
 }
-

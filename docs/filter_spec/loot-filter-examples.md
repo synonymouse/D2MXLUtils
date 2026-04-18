@@ -1,349 +1,297 @@
-# Loot Filter Examples and Complex Combinations
+# Loot Filter Examples
 
-This document analyzes various rule combinations and edge cases to understand the expected behavior of the loot filter system.
-
----
-
-## Test Scenarios
-
-### Scenario 1: Basic Priority Resolution
-
-**Rules:**
-```
-A: "." unique gold
-B: "Ring$" lime
-C: "Ring$" unique {Skills} red notify sound1
-```
-
-**Test Items:**
-
-| Item | Matches | Winner | Reason |
-|------|---------|--------|--------|
-| Unique Ring +Skills | A, B, C | **C** | Stat match = highest priority |
-| Unique Ring (no skills) | A, B | **A** | Both have color, A has more flags (2 vs 1) |
-| Rare Ring | B | **B** | Only B matches |
-| Unique Amulet | A | **A** | Only A matches |
+Scenarios illustrating last-match semantics, groups, and the Hide All checkbox.
 
 ---
 
-### Scenario 2: Stat Match Always Wins
+## Scenario 1 — Last-match wins
 
-**Rules:**
 ```
-A: "." unique gold notify sound1 name stat    # 5 flags, no stat pattern
-B: "Ring$" {Resist} lime                      # 2 flags, has stat pattern
+unique gold
+"Ring$" unique red notify
 ```
 
-**Test Items:**
+| Item | Matches | Winner | Result |
+|---|---|---|---|
+| Unique Amulet | line 1 | line 1 | gold, no notification |
+| Unique Ring | lines 1, 2 | line 2 | red + notify (last match) |
 
-| Item | Matches | Winner | Reason |
-|------|---------|--------|--------|
-| Unique Ring +Resist | A, B | **B** | Stat match beats flag count |
-| Unique Ring (no resist) | A | **A** | B's stat pattern fails |
-| Rare Ring +Resist | B | **B** | Only B matches |
+Swap the order to flip the outcome:
+
+```
+"Ring$" unique red notify
+unique gold
+```
+
+Now Unique Ring matches both, and the second line (`unique gold`) wins — all uniques end up gold with no notification.
+
+**Takeaway:** put general rules first, specific rules last.
 
 ---
 
-### Scenario 3: Color vs No Color
+## Scenario 2 — Stat filtering via regex
 
-**Rules:**
 ```
-A: "." unique                    # 1 flag, no color
-B: "Ring$" lime                  # 1 flag, has color
+rare {All Skills} purple notify stat
 ```
 
-**Test Items:**
+Matches any rare item whose stat text contains "All Skills". With `stat` flag, the notification includes the actual stat text.
 
-| Item | Matches | Winner | Reason |
-|------|---------|--------|--------|
-| Unique Ring | A, B | **B** | Color flag = priority level 2 |
-| Unique Amulet | A | **A** | Only A matches |
+Combining multiple conditions is a single regex:
+
+```
+rare {(All Skills).*(Faster Cast|Resist)} purple notify stat
+```
 
 ---
 
-### Scenario 4: Flag Count Tiebreaker
+## Scenario 3 — Hide All = off
 
-**Rules:**
-```
-A: "." unique gold               # 2 flags
-B: "." set gold                  # 2 flags
-C: "Ring$" unique gold notify    # 3 flags
-```
-
-**Test Items:**
-
-| Item | Matches | Winner | Reason |
-|------|---------|--------|--------|
-| Unique Ring | A, C | **C** | More flags (3 > 2) |
-| Unique Amulet | A | **A** | Only A matches |
-| Set Ring | B, (not C) | **B** | Only B matches for Set |
-
----
-
-### Scenario 5: Show/Hide with Global Modes
-
-**Global Mode: Show All**
+Game's built-in filter is in charge by default. Rules add highlights and override visibility only where needed.
 
 ```
-A: "." normal hide
-B: "." magic hide
-C: "." unique gold notify
-```
+# Highlight uniques and sets in-game
+unique gold
+set lime
 
-| Item | Action | Notification |
-|------|--------|--------------|
-| Normal Sword | Hidden | No |
-| Magic Ring | Hidden | No |
-| Unique Ring | Shown (gold) | Yes |
-| Rare Amulet | Shown (default) | No |
-
-**Global Mode: Hide All**
-
-```
-A: "." unique show gold notify
-B: "." sacred show lime notify
-C: "Rune$" show orange
-```
-
-| Item | Action | Notification |
-|------|--------|--------------|
-| Unique Ring | Shown (gold) | Yes |
-| Sacred Armor | Shown (lime) | Yes |
-| Ber Rune | Shown (orange) | No |
-| Magic Sword | Hidden (default) | No |
-| Normal Potion | Hidden (default) | No |
-
----
-
-### Scenario 6: Notify Independence
-
-**Rules:**
-```
-A: "." unique gold                  # color, NO notify
-B: "Jordan" unique gold notify      # color + notify
-C: "." set lime sound1              # color + sound, NO notify
-D: "." rare notify                  # notify only, no color
-```
-
-**Expected Behavior:**
-
-| Item | Color | Sound | Text Notify |
-|------|-------|-------|-------------|
-| Stone of Jordan | gold | - | Yes |
-| Other Unique | gold | - | **No** |
-| Set Item | lime | sound1 | **No** |
-| Rare Item | default | - | Yes |
-
-**Key insight:** Sound plays without text notification. Color displays without notification.
-
----
-
-### Scenario 7: Hide + Notify Combination
-
-**Rules:**
-```
-A: "." normal hide notify sound1
-B: "." magic hide
-```
-
-**Expected Behavior:**
-
-| Item | Visible | Notification | Sound |
-|------|---------|--------------|-------|
-| Normal Sword | No | Yes | Yes |
-| Magic Ring | No | No | No |
-
-**Use case:** Player wants to hide low-value items but still be alerted when they drop (e.g., for gambling materials).
-
----
-
-### Scenario 8: Multiple Stat Patterns (Future Feature)
-
-If we support multiple stat patterns, they should ALL match:
-
-**Rules:**
-```
-A: "Ring$" {All Skills} {Faster Cast}    # Both patterns must match
-B: "Ring$" {All Skills}                   # Single pattern
-```
-
-**Test Items:**
-
-| Item | Stats | Matches |
-|------|-------|---------|
-| Ring +Skills +FCR | Has both | A, B both match, A more specific |
-| Ring +Skills only | Has one | Only B matches |
-
----
-
-## Complex Filter Examples
-
-### Example 1: Farming Filter
-
-```
-# Top tier - always notify with fanfare
-"Jordan" unique gold notify sound1 name stat
-"Tyrael" unique gold notify sound1 name stat
-"Windforce" unique gold notify sound1 name stat
-
-# Uniques - show with color, notify selectively
-"." unique {All Skills} gold notify sound2 stat
-"." unique gold
-
-# Sets - show, notify on good ones
-"." set {All Skills} lime notify stat
-"." set lime
-
-# High runes
-"Ber|Jah|Lo|Ohm|Vex|Sur" show orange notify sound2
-
-# Rares with good stats
-"Ring$|Amulet" rare {All Skills} purple notify stat
-"Circlet" rare {All Skills} purple notify stat
-
-# Cleanup - hide junk
-"." magic hide
-"." normal hide
-"." low hide
-```
-
-### Example 2: Leveling Filter
-
-```
-# Progression uniques
-"." unique sacred show gold notify sound1
-"." unique angelic show gold notify sound1
-
-# Any unique visible
-"." unique gold
-
-# Sacred items worth checking
-"." sacred eth lime notify
-
-# Runes for runewords
-"Rune$" show orange notify
-
-# Hide clutter
-"Potion$" normal hide
-"." normal hide
-"." low hide
-```
-
-### Example 3: Minimal Notification Filter
-
-```
-# Only notify on the best items
+# Notify on the best drops
 "Jordan|Tyrael|Windforce" unique gold notify sound1 name stat
 
-# Show uniques with color (no notification spam)
-"." unique gold
+# Hide trash the game would otherwise show
+normal hide
+low hide
+```
 
-# Show sets with color (no notification)
-"." set lime
+Unmatched items follow the game's decision.
 
-# Hide everything else
-"." magic hide
-"." normal hide
-"." low hide
+---
+
+## Scenario 4 — Hide All = on
+
+Only items whose winning rule has `show` are visible. Everything else is hidden.
+
+```
+unique show gold notify sound1
+set show lime notify
+"Rune$" show orange
+```
+
+Unique Ring → shown gold with notification.
+Magic Sword → no match → hidden.
+Any Rune → shown orange, no notification.
+
+---
+
+## Scenario 5 — Notify independence
+
+```
+unique gold                        # color only, no notification
+set lime sound1                    # color + sound, no notification
+rare notify                        # notification with defaults
+"Jordan" unique gold notify sound1 # color + sound + notification
+```
+
+| Item | Color shown | Sound plays | Notification text |
+|---|---|---|---|
+| Unique Boots | gold | — | — |
+| Set Armor | lime | — | — |
+| Rare Ring | default | — | yes (default color, silent) |
+| Stone of Jordan | gold | yes | yes |
+
+`color` and `sound` never auto-enable `notify`.
+
+---
+
+## Scenario 6 — Hide but notify
+
+```
+normal hide notify sound3
+```
+
+Normal items are hidden on the ground, but a notification fires when they drop. Useful for gambling or crafting bases.
+
+---
+
+## Scenario 7 — Groups
+
+### Shared highlight for named uniques
+
+```
+[unique gold notify sound1 name] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+  "^Griffon"
+  "Mara"
+}
+```
+
+### Group with stat filter
+
+```
+[unique {All Skills} red notify stat] {
+  "Ring$"
+  "Amulet"
+  "Circlet"
+}
+```
+
+Applies to unique rings / amulets / circlets that roll +All Skills.
+
+### Override inside group
+
+```
+[hide] {
+  normal
+  low
+  superior
+  unique show gold notify    # unique quality overrides hide -> show gold
+}
+```
+
+Order still matters for last-match: a later rule outside the group can still override.
+
+```
+[hide] {
+  normal
+  low
+}
+"Scroll of Town Portal" show    # shown even though hidden by group above? See note.
+```
+
+**Note:** the "Scroll of Town Portal" rule does not match `normal` or `low` quality keywords (it has no quality attribute), so it is independent. If you need truly overlapping rules, rely on source order.
+
+---
+
+## Scenario 8 — General-then-specific ordering
+
+Canonical structure of a filter:
+
+```
+# 1. Broad defaults
+magic hide
+normal hide
+low hide
+
+# 2. Quality-wide highlights
+unique gold
+set lime
+rare orange
+
+# 3. Tier-based specialization
+[unique sacred gold notify sound2] {
+  "Ring$"
+  "Amulet"
+  "Circlet"
+}
+
+# 4. Stat-specific callouts
+unique {All Skills} red notify sound1 stat
+
+# 5. Specific named items (highest priority via being last)
+[unique gold notify sound1 name stat] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}
+
+# 6. Runes (shown, separate colors)
+"^(El|Eld|Tir|Nef|Eth|Ith|Tal|Ral|Ort|Thul)$" white
+"^(Amn|Sol|Shael|Dol|Hel|Io|Lum|Ko|Fal|Lem)$" yellow
+"^(Pul|Um|Mal|Ist|Gul|Vex|Ohm|Lo|Sur|Ber|Jah|Cham|Zod)$" orange notify sound1
 ```
 
 ---
 
-## Edge Cases to Consider
-
-### 1. Empty Pattern
+## Complete Filter — leveling
 
 ```
-"" unique gold    # What does this match?
-```
+# Defaults: hide junk
+magic hide
+normal hide
+low hide
 
-**Recommendation:** Treat as invalid or match nothing.
+# Uniques / sets visible
+unique gold
+set lime
 
-### 2. Conflicting Show/Hide
+# Sacred uniques get extra fanfare
+unique sacred gold notify sound2
 
-```
-A: "Ring$" show
-B: "Ring$" hide
-```
+# Ethereal sacred for rerolls
+eth sacred lime notify
 
-**Resolution:** Priority system determines winner. If equal, order matters? Or error?
+# Runes worth grabbing
+"^(Pul|Um|Mal|Ist|Gul|Vex|Ohm|Lo|Sur|Ber|Jah|Cham|Zod)$" orange notify sound1
 
-**Recommendation:** Priority system handles it. Document that show/hide are mutually exclusive per rule.
-
-### 3. No Flags
-
-```
-"Ring$"    # Pattern only, no flags
-```
-
-**Behavior:** Matches rings, uses global default for show/hide, no notification.
-
-### 4. Case Sensitivity
-
-```
-"RING"   # Should match "Ring"?
-```
-
-**Current:** Case-insensitive matching (confirmed in code).
-
-### 5. Regex Errors
-
-```
-"Ring[" unique    # Invalid regex
-```
-
-**Current:** Falls back to substring match (confirmed in code).
-
----
-
-## Priority Algorithm Pseudocode
-
-```python
-def get_winning_rule(item, rules):
-    matching_rules = []
-
-    for rule in rules:
-        if matches(item, rule):
-            stat_matched = False
-            if rule.stat_pattern:
-                stat_matched = regex_match(item.stats, rule.stat_pattern)
-            matching_rules.append({
-                'rule': rule,
-                'stat_matched': stat_matched,
-                'has_color': rule.color is not None,
-                'flag_count': count_flags(rule)
-            })
-
-    if not matching_rules:
-        return None  # Use global default
-
-    # Priority 1: Stat match
-    stat_matches = [r for r in matching_rules if r['stat_matched']]
-    if stat_matches:
-        return max(stat_matches, key=lambda r: r['flag_count'])['rule']
-
-    # Priority 2: Color flag
-    color_matches = [r for r in matching_rules if r['has_color']]
-    if color_matches:
-        return max(color_matches, key=lambda r: r['flag_count'])['rule']
-
-    # Priority 3: Flag count
-    return max(matching_rules, key=lambda r: r['flag_count'])['rule']
+# Named drops are always announced
+[unique gold notify sound1 name stat] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+  "Mara"
+  "Shako"
+}
 ```
 
 ---
 
-## Summary
+## Complete Filter — Hide All mode (white-list)
 
-| Priority | Criterion | Notes |
-|----------|-----------|-------|
-| 1 (Highest) | Stat pattern match | `{pattern}` must match item stats |
-| 2 | Color flag present | Any color keyword |
-| 3 (Lowest) | Flag count | More flags = more specific |
+Enable the Hide All checkbox in the UI, then:
 
-| Flag Type | Independence | Notes |
-|-----------|--------------|-------|
-| `notify` | Independent | Does NOT auto-enable with color/sound |
-| `sound` | Independent | Plays without text notification |
-| `color` | Independent | Displays without notification |
-| `show`/`hide` | Overrides global | Explicit visibility control |
+```
+# White-list: everything else is hidden
+unique show gold notify sound1
+set show lime notify sound2
+
+# Stat-gated rares
+rare {All Skills} show purple notify stat
+
+# All runes
+"Rune$" show orange
+
+# Specific items with full notification
+[unique show gold notify sound1 name stat] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}
+```
+
+---
+
+## Edge Cases
+
+### No attributes
+
+```
+normal
+```
+
+Matches any normal item. Produces no action. Valid syntax, no-op.
+
+### Empty rule `.`
+
+```
+. gold notify
+```
+
+Equivalent to `gold notify` without a name pattern.
+
+### Invalid regex
+
+```
+"Ring[" unique gold
+```
+
+Falls back to substring matching against "Ring[".
+
+### Conflicting rules for the same item
+
+```
+unique gold
+unique hide
+```
+
+Unique items end up hidden — the second rule is the last match. Reorder to flip.

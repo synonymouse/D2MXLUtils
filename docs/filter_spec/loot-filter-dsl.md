@@ -1,31 +1,59 @@
 # Loot Filter DSL Syntax
 
-## Basic Format
+## Grammar
 
 ```
-"<name_pattern>" [quality] [tier] [eth] [{stat_pattern}] [color] [sound] [notify] [name] [stat]
+filter      := line*
+line        := blank | comment | rule | group_open | group_close
+comment     := '#' any*
+rule        := [name] attr*
+group_open  := '[' attr* ']' '{'
+group_close := '}'
+name        := '"' regex '"'
+attr        := quality
+             | tier
+             | 'eth'
+             | stat_pattern
+             | color
+             | visibility
+             | sound
+             | 'notify'
+             | 'name'
+             | 'stat'
+stat_pattern := '{' regex '}'
 ```
 
-All components except the quoted pattern are optional.
+Groups cannot be nested.
 
-## Components
+---
 
-### 1. Name Pattern (Required)
+## Rule Components
 
-A regex pattern in quotes that matches item names.
+### Name pattern (optional)
+
+Regex in double quotes, matched case-insensitively against the item name.
 
 ```
-"Ring$"          # Items ending with "Ring"
-"Stone of"       # Items containing "Stone of"
-"."              # Match ALL items (dot = any character)
-"Rune$"          # Items ending with "Rune"
-"^Ber"           # Items starting with "Ber"
+"Ring$" unique gold
+"Stone of Jordan" notify
+"^(Ber|Jah|Sur|Lo|Ohm|Vex)$" orange
 ```
 
-### 2. Quality Flags
+Omit the quotes to match any name:
 
-| Flag | Quality |
-|------|---------|
+```
+unique gold
+set lime notify
+```
+
+`"."` is equivalent to omitting the pattern.
+
+---
+
+### Quality
+
+| Keyword | Quality |
+|---|---|
 | `low` | Inferior |
 | `normal` | Normal |
 | `superior` | Superior |
@@ -36,193 +64,173 @@ A regex pattern in quotes that matches item names.
 | `craft` | Crafted |
 | `honor` | Honorific |
 
-### 3. Tier Flags (MedianXL)
+---
 
-| Flag | Tier |
-|------|------|
-| `0`, `1`, `2`, `3`, `4` | Normal tiers |
+### Tier (MedianXL)
+
+| Keyword | Tier |
+|---|---|
+| `0`, `1`, `2`, `3`, `4` | normal tiers |
 | `sacred` | Sacred |
 | `angelic` | Angelic |
 | `master` | Mastercrafted |
 
-### 4. Ethereal Flag
+---
+
+### Ethereal
 
 ```
-eth    # Only match ethereal items
+eth     # only ethereal items
 ```
 
-### 5. Stat Pattern
+---
 
-Regex pattern in braces that matches item stats.
+### Stat pattern
 
-```
-{Skills}                    # Has "Skills" in stats
-{[3-5] to All Skills}       # Has +3 to +5 All Skills
-{\+\d+ to (Fire|Cold|Lightning)} # Has +X to elemental skills
-```
-
-**Note:** Stat patterns give rules **highest priority** in conflict resolution.
-
-### 6. Color Flags
-
-| Flag | Color | Hex |
-|------|-------|-----|
-| `transparent` | Transparent | #00000000 |
-| `white` | White | #FFFFFF |
-| `red` | Red | #FF0000 |
-| `lime` | Lime | #15FF00 |
-| `blue` | Blue | #7878F5 |
-| `gold` | Gold | #F0CD8C |
-| `grey` | Grey | #9D9D9D |
-| `black` | Black | #000000 |
-| `pink` | Pink | #FF00FF |
-| `orange` | Orange | #FFBF00 |
-| `yellow` | Yellow | #FFFF00 |
-| `green` | Green | #008000 |
-| `purple` | Purple | #9D00FF |
-
-### 7. Visibility Flags
-
-| Flag | Effect |
-|------|--------|
-| `show` | Force show item (overrides global hide mode) |
-| `hide` | Force hide item (overrides global show mode) |
-
-### 8. Sound Flags
-
-| Flag | Sound |
-|------|-------|
-| `sound1` - `sound6` | Play sound 1-6 |
-| `sound_none` | Explicitly no sound |
-
-### 9. Notification Flag
+Regex in braces, matched case-insensitively against the item's stat text.
 
 ```
-notify    # Show overlay notification for this item
+{All Skills}
+{\+[3-5] to All Skills}
+{(Fire|Cold|Lightning) Resist}
 ```
 
-**Important:** `notify` is independent. Color and sound do NOT auto-enable it.
+---
 
-### 10. Display Flags
+### Color
 
-| Flag | Effect |
-|------|--------|
-| `name` | Include item name in notification |
-| `stat` | Include item stats in notification |
+One of:
+
+`transparent`, `white`, `red`, `lime`, `blue`, `gold`, `grey`, `black`, `pink`, `orange`, `yellow`, `green`, `purple`.
+
+Color alone does not produce a notification. Pair with `notify` to emit one.
+
+---
+
+### Visibility
+
+| Keyword | Effect |
+|---|---|
+| `show` | force show this item (overrides Hide All and game's built-in hide) |
+| `hide` | force hide this item |
+
+Absent → default visibility applies (game decides, or Hide All applies).
+
+---
+
+### Sound
+
+| Keyword | Effect |
+|---|---|
+| `sound1`–`sound6` | sound index used by notification |
+| `sound_none` | explicit silence |
+
+Sound alone does not produce a notification. Pair with `notify`.
+
+---
+
+### Notify
+
+```
+notify    # emit an overlay notification for this item
+```
+
+Independent from color and sound. Required for any notification to fire.
+
+---
+
+### Display flags
+
+| Keyword | Effect |
+|---|---|
+| `name` | include item name in the notification |
+| `stat` | include item stats in the notification |
+
+---
+
+## Groups
+
+```
+[shared-attrs] {
+  rule1
+  rule2
+  ...
+}
+```
+
+- Header accepts all rule attributes **except a name pattern**.
+- Each rule in the body absorbs the header attributes.
+- Rule-level attributes override the group's for the same field.
+- Groups cannot be nested.
+- A rule inside a group is evaluated in its file position (groups are flattened, order preserved).
+
+### Example: shared highlight
+
+```
+[unique gold notify sound1 name] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}
+```
+
+Flattens to:
+
+```
+"Jordan" unique gold notify sound1 name
+"Tyrael" unique gold notify sound1 name
+"Windforce" unique gold notify sound1 name
+```
+
+### Example: shared stat filter
+
+```
+[unique {All Skills} red notify stat] {
+  "Ring$"
+  "Amulet"
+  "Circlet"
+}
+```
+
+### Example: override inside group
+
+```
+[hide] {
+  normal
+  low
+  superior
+  unique show gold notify    # show overrides hide from group
+}
+```
 
 ---
 
 ## Comments
 
-Lines starting with `#` are comments:
-
 ```
-# This is a comment
-"Ring$" unique gold notify    # Inline comments also work
+# Full-line comment
+unique gold notify    # Inline comment
 ```
 
 ---
 
-## Examples
+## Evaluation
 
-### Basic Rules
-
-```
-# Notify on all unique items with gold color
-"." unique gold notify sound1
-
-# Hide all normal quality items
-"." normal hide
-
-# Show sacred items with lime color
-"." sacred lime notify
-
-# Ethereal unique items
-"." unique eth gold notify sound1
-```
-
-### Stat-Based Rules
-
-```
-# Rings with +All Skills (highest priority due to stat match)
-"Ring$" {All Skills} red notify stat
-
-# Amulets with +3 or more to All Skills
-"Amulet" {[3-9] to All Skills} purple notify sound2 stat
-
-# Items with Cannot Be Frozen
-"." {Cannot Be Frozen} lime notify
-```
-
-### Complex Combinations
-
-```
-# Show unique items with color, but NO notification
-"." unique gold
-
-# Show AND notify about Stone of Jordan
-"Jordan" unique gold notify sound1 name stat
-
-# Hide normal items, but still get notified (sound only)
-"." normal hide sound1
-
-# Ethereal sacred weapons with damage stats
-"." sacred eth {Damage} red notify sound2 name stat
-```
-
-### Typical Filter Setup
-
-```
-# High priority: specific valuable items
-"Jordan" unique gold notify sound1 name stat
-"Tyrael" unique gold notify sound1 name stat
-
-# Medium priority: quality-based
-"." unique gold notify sound2
-"." set lime notify sound3
-"." rare orange
-
-# Low priority: cleanup
-"." magic hide
-"." normal hide
-"." low hide
-```
+Rules (including those expanded from groups) are processed in source order for every dropped item. The **last rule that matches** determines the outcome. See `loot-filter-spec.md` for full semantics.
 
 ---
 
-## Priority System
-
-When multiple rules match, priority determines the winner:
-
-1. **Stat Match (Highest):** Rules with `{stat_pattern}` that successfully match
-2. **Color Flag:** Rules with explicit color
-3. **Flag Count (Lowest):** Rules with more flags
-
-### Example Priority Resolution
+## Quick Reference
 
 ```
-Rule A: "." unique gold                    # 2 flags
-Rule B: "Ring$" lime                       # 1 flag
-Rule C: "Ring$" unique {Skills} red notify # 4 flags + stat pattern
+# General form
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [name] [stat]
+
+# Atoms
+quality    := low | normal | superior | magic | set | rare | unique | craft | honor
+tier       := 0 | 1 | 2 | 3 | 4 | sacred | angelic | master
+color      := transparent | white | red | lime | blue | gold | grey | black
+            | pink | orange | yellow | green | purple
+visibility := show | hide
+sound      := sound1 | sound2 | sound3 | sound4 | sound5 | sound6 | sound_none
 ```
-
-**For Unique Ring with +Skills:**
-- All three rules match
-- Rule C has stat match -> **Rule C wins**
-
-**For Unique Ring without +Skills:**
-- Rules A and B match (C's stat pattern fails)
-- Both have color, A has more flags -> **Rule A wins**
-
----
-
-## Global Mode
-
-The editor UI provides a toggle for global filtering mode:
-
-| Mode | Behavior |
-|------|----------|
-| **Show All** (default) | Items visible unless `hide` flag matches |
-| **Hide All** | Items hidden unless `show` flag matches |
-
-Rules with explicit `show`/`hide` flags override the global mode.

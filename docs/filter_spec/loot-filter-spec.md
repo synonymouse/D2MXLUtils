@@ -2,207 +2,192 @@
 
 ## Overview
 
-D2MXLUtils provides a loot filtering system that controls visibility and notifications for dropped items. This document describes the desired behavior and architecture.
+D2MXLUtils provides a loot filter that controls two things for every ground item:
+
+1. **Visibility** — whether the tooltip is drawn on the ground.
+2. **Notification** — whether an overlay alert (text, color, sound) is emitted.
+
+These two decisions are independent. Filter behavior is described by a text DSL (see `loot-filter-dsl.md`).
+
+---
 
 ## Core Concepts
 
-### Global Filter Mode
+### Hide All checkbox
 
-A toggle in the editor UI controls the default behavior for items that don't match any rule:
+A single checkbox in the editor UI controls the default visibility for items that are not forced by a rule:
 
-| Mode | `default_show_items` | Behavior |
-|------|---------------------|----------|
-| Show All | `true` | All items visible by default, rules can hide specific items |
-| Hide All | `false` | All items hidden by default, rules must explicitly show items |
+| Hide All | Default visibility | Meaning |
+|---|---|---|
+| off | inherited from game | Game's built-in loot filter decides. Rules can override with `show` or `hide`. |
+| on  | hidden              | Only rules with `show` reveal items. Rules without `show` do not reveal. |
 
-### Rule Actions (Flags)
+There is no separate "Show All" mode — it is just "Hide All = off".
 
-Each rule can specify independent actions:
+### Last-match wins
 
-| Flag | Purpose | Default |
-|------|---------|---------|
-| `show` | Display item on ground (overrides global hide) | inherited from global |
-| `hide` | Hide item from ground (overrides global show) | inherited from global |
-| `notify` | Show overlay notification about item drop | `false` |
-| `sound` | Play sound (sound1-sound6) | none |
-| `color` | Notification text color | default |
-| `name` | Include item name in notification | `false` |
-| `stat` | Include item stats in notification | `false` |
+When several rules match the same item, the **last matching rule in source order** wins. The winning rule provides the complete outcome (visibility + notification attributes). Rules are not merged across matches.
 
-**Key principle:** `notify` is an **independent flag**. Color and sound do NOT auto-enable notifications.
+There is no priority system based on flag count, color presence, or stat-match. Order rules from general to specific, top-down.
 
-### Flag Independence
+### Groups
+
+Rules can share attributes through a group block:
 
 ```
-"Ring" gold         -> show_item=true, notify=false (color only, no notification)
-"Ring" gold notify  -> show_item=true, notify=true  (color + notification)
-"Ring" sound1       -> show_item=true, notify=false (sound only, no text notification)
-"Ring" notify       -> show_item=true, notify=true  (text notification, no color/sound)
-"Ring" hide notify  -> show_item=false, notify=true (hidden but notified)
+[unique gold notify sound1] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}
 ```
+
+At parse time, group attributes are merged into each contained rule. Rule-level attributes override the group's attributes for the same field. Groups cannot be nested.
+
+A group header accepts all rule attributes **except a name pattern**. Name patterns stay per-rule.
 
 ---
 
-## Priority System (D2Stats-style)
-
-When multiple rules match an item, the system uses a **three-level priority** to determine which rule wins:
-
-### Priority Levels (Highest to Lowest)
-
-| Level | Criterion | Description |
-|-------|-----------|-------------|
-| 1 | **Stat Match** | Rule has `{stat_pattern}` AND pattern matches item stats |
-| 2 | **Color Flag** | Rule specifies a color (gold, lime, red, etc.) |
-| 3 | **Flag Count** | Rule with more flags is more specific |
-
-### Algorithm
+## Rule Anatomy
 
 ```
-1. Collect ALL rules that match the item (name, quality, tier, ethereal checks)
-2. For each matching rule, check if stat pattern matches (if present)
-3. Prioritize:
-   a. If any rule has successful stat match -> that rule WINS
-   b. Else if any rule has color flag -> that rule WINS
-   c. Else rule with most flags WINS
-4. Execute winning rule's action
-5. If no rules match -> use global default (show_all/hide_all)
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [name] [stat]
 ```
 
-### Examples
-
-Given item: "Stone of Jordan" (Unique Ring, +1 to All Skills)
-
-```
-Rule A: "." unique gold              # matches: unique, has color
-Rule B: "Ring$" lime                 # matches: name pattern, has color
-Rule C: "Ring$" unique {Skills} red  # matches: name, quality, AND stat pattern
-```
-
-**Result:** Rule C wins (stat match = highest priority)
-
----
-
-Given item: "Unique Ring" (no +Skills)
-
-```
-Rule A: "." unique gold              # matches, 2 flags (unique, gold)
-Rule B: "Ring$" lime                 # matches, 1 flag (lime)
-Rule C: "Ring$" unique {Skills} red  # does NOT match (no Skills stat)
-```
-
-**Result:** Rule A wins (more flags than B, C doesn't match)
+All components are optional. A line with zero attributes is valid but is a no-op (matches everything, does nothing).
 
 ---
 
 ## Matching Criteria
 
-Rules can filter items by:
+A rule matches an item when **all** specified criteria are satisfied.
 
-| Criterion | DSL Syntax | Description |
-|-----------|------------|-------------|
-| Name pattern | `"pattern"` | Regex match against item name |
-| Stat pattern | `{pattern}` | Regex match against item stats |
-| Quality | `unique`, `set`, `rare`, etc. | Item quality level |
-| Tier | `sacred`, `angelic`, `master`, `0-4` | MedianXL item tier |
-| Ethereal | `eth` | Only ethereal items |
+| Criterion | DSL | Condition |
+|---|---|---|
+| Name | `"regex"` | item name matches regex, case-insensitive |
+| Stat | `{regex}` | item stat text matches regex, case-insensitive |
+| Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals keyword |
+| Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals keyword |
+| Ethereal | `eth` | item is ethereal |
 
-### Quality Values
-
-| Keyword | Value | D2 Quality |
-|---------|-------|------------|
-| `low` | 1 | Inferior |
-| `normal` | 2 | Normal |
-| `superior` | 3 | Superior |
-| `magic` | 4 | Magic |
-| `set` | 5 | Set |
-| `rare` | 6 | Rare |
-| `unique` | 7 | Unique |
-| `craft` | 8 | Crafted |
-| `honor` | 9 | Honorific |
-
-### Tier Values (MedianXL)
-
-| Keyword | Value | Description |
-|---------|-------|-------------|
-| `0`-`4` | 0-4 | Normal tiers |
-| `sacred` | 5 | Sacred items |
-| `angelic` | 6 | Angelic items |
-| `master` | 7 | Mastercrafted items |
+Invalid regex falls back to plain substring matching.
 
 ---
 
-## Implementation Status
+## Visibility
 
-### Completed
+The winning rule's visibility flag plus the Hide All checkbox determine the outcome:
 
-- [x] DSL parsing (`rules/dsl.rs`)
-- [x] Name pattern matching (regex)
-- [x] Stat pattern matching (regex)
-- [x] Quality matching
-- [x] Ethereal matching
-- [x] Color definitions
-- [x] Sound flags (sound1-6)
-- [x] Display flags (name, stat)
-- [x] Profile management
+| Hide All | Winner flag | Result |
+|---|---|---|
+| off | none  | game decides |
+| off | `show` | shown (overrides game's hide) |
+| off | `hide` | hidden |
+| on  | none  | hidden |
+| on  | `show` | shown |
+| on  | `hide` | hidden |
 
-### Required Changes
-
-- [ ] **Explicit `notify` flag** - Add to DSL parser, remove auto-enable logic
-- [ ] **Priority system** - Implement multi-level priority in `get_action()`
-- [ ] **Global mode toggle** - Add UI control, connect to `default_show_items`
-- [ ] **Sound independence** - Sound should not auto-enable notify
-
-### Files to Modify
-
-| File | Changes |
-|------|---------|
-| `src-tauri/src/rules/dsl.rs` | Add `notify` flag parsing, remove auto-enable |
-| `src-tauri/src/rules/mod.rs` | Implement priority algorithm in `get_action()` |
-| `src-tauri/src/rules/matching.rs` | Add stat match result tracking |
-| `src/views/LootFilterTab.svelte` | Add global mode toggle UI |
+If no rule matches:
+- Hide All off → game decides.
+- Hide All on  → hidden.
 
 ---
 
-## Architecture Notes
+## Notification
 
-### Data Flow
+Notifications fire **only** when the winning rule has the `notify` flag.
+
+A fired notification uses the winning rule's:
+
+- `color` — text color (or default if absent)
+- `sound` — sound index 1–6 (silent if absent)
+- `name` — include item name if set
+- `stat` — include item stats if set
+
+`color`, `sound`, `name`, `stat` alone do **not** imply `notify`.
+
+| Rule | Visibility | Notification |
+|---|---|---|
+| `unique gold` | game decides | none |
+| `unique gold notify` | game decides | gold text |
+| `unique gold sound1` | game decides | none |
+| `unique gold notify sound1` | game decides | gold text + sound |
+| `normal hide` | hidden | none |
+| `normal hide notify sound1` | hidden | text + sound |
+
+---
+
+## Evaluation Algorithm
 
 ```
-DSL Text -> parse_dsl() -> FilterConfig -> MatchContext -> RuleAction
-                                              ^
-                                              |
-                                         ItemDropEvent (from notifier)
+decide(item, rules, hide_all):
+    winner = None
+    for rule in rules:            # rules are already flattened from groups
+        if rule.matches(item):
+            winner = rule         # last match wins
+
+    if winner is None:
+        visibility = HIDDEN if hide_all else GAME_DEFAULT
+        notification = None
+        return (visibility, notification)
+
+    visibility = resolve_visibility(winner.visibility, hide_all)
+    notification = build_notification(winner) if winner.notify else None
+    return (visibility, notification)
 ```
 
-### FilterConfig Structure
+---
+
+## Data Structures
 
 ```rust
 FilterConfig {
     name: String,
-    default_show_items: bool,  // Global mode toggle
-    default_notify: bool,      // (likely remove, notify should be explicit)
-    rules: Vec<Rule>,
+    hide_all: bool,
+    rules: Vec<Rule>,          // flattened, groups expanded
     dsl_source: Option<String>,
 }
-```
 
-### Rule Structure
+enum Visibility { Default, Show, Hide }
 
-```rust
 Rule {
-    // Matching
+    // matching
     name_pattern: Option<String>,
     stat_pattern: Option<String>,
-    item_quality: i32,
-    tier: Option<i32>,
-    ethereal: i32,
+    quality:      Option<Quality>,
+    tier:         Option<Tier>,
+    ethereal:     bool,
 
-    // Actions
-    show_item: bool,
-    notify: bool,        // MUST be explicit, not auto-enabled
-    color: Option<String>,
-    sound: Option<u8>,
-    display_name: bool,
+    // actions
+    visibility:    Visibility,
+    color:         Option<Color>,
+    sound:         Option<u8>,
+    notify:        bool,
+    display_name:  bool,
     display_stats: bool,
+
+    source_line: Option<String>,
 }
 ```
+
+---
+
+## Group Merge Rules
+
+When flattening a group into its rules, for each contained rule:
+
+1. Each field not set on the rule takes the group's value.
+2. Each field set on the rule keeps the rule's value (overrides group).
+3. `visibility` is one field — `show` on a rule replaces `hide` from a group, and vice versa.
+4. `stat_pattern` on a rule replaces the group's `stat_pattern` entirely (no AND-merge). Combine via regex if needed.
+
+After flattening, rules keep their original source-order position for the last-match algorithm.
+
+---
+
+## Out of Scope
+
+- Ethereal "forbidden" mode (only `eth` = required is supported).
+- Item level (`ilvl`) and character level (`clvl`) filtering.
+- Multiple stat patterns per rule (use one regex with alternation).
+- Nested groups.
