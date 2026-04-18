@@ -18,9 +18,15 @@ use crate::offsets::{d2client, item_data, paths, unit_type};
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
 #[cfg(target_os = "windows")]
-use crate::rules::{FilterConfig, MatchContext};
+use crate::rules::{FilterConfig, MatchContext, Visibility};
+use crate::rules::{ItemTier, Notification};
 
-/// Payload sent to frontend when an item is found
+/// Payload sent to frontend when an item fires a notification.
+///
+/// The `filter` field carries the winning rule's notification attributes
+/// (color, sound, and whether to display name / stats). When `filter` is
+/// `Some`, the overlay is expected to render the notification. The scanner
+/// only emits this event when the winning rule opted in via `notify`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemDropEvent {
     pub unit_id: u32,
@@ -32,6 +38,14 @@ pub struct ItemDropEvent {
     pub is_identified: bool,
     /// Pointer to ItemData structure (for set_item_visibility)
     pub p_unit_data: u32,
+    /// MedianXL tier when the scanner can infer it; `None` otherwise.
+    /// Rules that use a tier keyword will not match items whose tier is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<ItemTier>,
+    /// Notification attributes from the winning rule. `None` means no
+    /// rule with `notify` matched — the event should not produce an overlay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Notification>,
 }
 
 /// Drop scanner that iterates through ground items
@@ -261,81 +275,79 @@ impl DropScanner {
                     self.item_cache.insert(event.unit_id, event.clone());
 
                     // Apply filter if enabled
+                    let mut event = event;
+                    let mut should_emit = true;
                     if self.filter_enabled {
                         if let Some(ref filter_arc) = self.filter_config {
                             if let Ok(filter) = filter_arc.read() {
                                 let ctx = MatchContext::new(&event);
+                                let decision = filter.decide(&ctx);
 
-                                let matched: Vec<String> = filter
-                                    .rules
-                                    .iter()
-                                    .filter(|r| r.active && ctx.matches(r))
-                                    .map(|r| match &r.name_pattern {
-                                        Some(p) => format!("\"{}\"", p),
-                                        None => "<any>".to_string(),
-                                    })
-                                    .collect();
-
-                                let action = filter.get_action(&ctx);
-                                let decision = if action.color.as_deref() == Some("show") {
-                                    "FORCE-SHOW"
-                                } else if !action.show_item {
-                                    "HIDE"
-                                } else {
-                                    "SHOW"
+                                let winner = filter.rules.iter().rev().find(|r| ctx.matches(r));
+                                let reason = match winner {
+                                    Some(r) => format!(
+                                        "winner={}",
+                                        r.name_pattern.as_deref().unwrap_or("<any>")
+                                    ),
+                                    None => format!(
+                                        "no rule matched (hide_all={})",
+                                        filter.hide_all
+                                    ),
                                 };
-
-                                let reason = if matched.is_empty() {
-                                    format!(
-                                        "no rules matched, default={}",
-                                        if filter.default_show_items {
-                                            "Show All"
-                                        } else {
-                                            "Hide All"
-                                        }
-                                    )
-                                } else {
-                                    format!(
-                                        "matched {}/{}: {}",
-                                        matched.len(),
-                                        filter.rules.len(),
-                                        matched.join(", ")
-                                    )
+                                let vis_label = match decision.visibility {
+                                    Visibility::Show => "SHOW",
+                                    Visibility::Hide => "HIDE",
+                                    Visibility::Default => "DEFAULT",
                                 };
-
                                 log_info(&format!(
-                                    "[Filter] \"{}\" ({}, class={}) -> {} | {}",
-                                    event.name, event.quality, event.class, decision, reason
+                                    "[Filter] \"{}\" ({}, class={}) -> {} notify={} | {}",
+                                    event.name,
+                                    event.quality,
+                                    event.class,
+                                    vis_label,
+                                    decision.notification.is_some(),
+                                    reason
                                 ));
 
                                 if self.loot_hook.is_injected() {
-                                    if action.color.as_deref() == Some("show") {
-                                        if let Err(e) = self
-                                            .loot_hook
-                                            .add_shown_unit_id(&self.ctx, event.unit_id)
-                                        {
-                                            log_error(&format!(
-                                                "Failed to force-show item {}: {}",
-                                                event.unit_id, e
-                                            ));
+                                    match decision.visibility {
+                                        Visibility::Show => {
+                                            if let Err(e) = self
+                                                .loot_hook
+                                                .add_shown_unit_id(&self.ctx, event.unit_id)
+                                            {
+                                                log_error(&format!(
+                                                    "Failed to force-show item {}: {}",
+                                                    event.unit_id, e
+                                                ));
+                                            }
                                         }
-                                    } else if !action.show_item {
-                                        if let Err(e) = self
-                                            .loot_hook
-                                            .add_hidden_unit_id(&self.ctx, event.unit_id)
-                                        {
-                                            log_error(&format!(
-                                                "Failed to hide item {}: {}",
-                                                event.unit_id, e
-                                            ));
+                                        Visibility::Hide => {
+                                            if let Err(e) = self
+                                                .loot_hook
+                                                .add_hidden_unit_id(&self.ctx, event.unit_id)
+                                            {
+                                                log_error(&format!(
+                                                    "Failed to hide item {}: {}",
+                                                    event.unit_id, e
+                                                ));
+                                            }
                                         }
+                                        Visibility::Default => {}
                                     }
+                                }
+
+                                match decision.notification {
+                                    Some(n) => event.filter = Some(n),
+                                    None => should_emit = false,
                                 }
                             }
                         }
                     }
 
-                    events.push(event);
+                    if should_emit {
+                        events.push(event);
+                    }
                 }
 
                 // Move to next unit (use struct layout for safety instead of hardcoded offset)
@@ -425,6 +437,8 @@ impl DropScanner {
                             is_ethereal: scanned.is_ethereal,
                             is_identified: scanned.is_identified,
                             p_unit_data: unit.p_unit_data,
+                            tier: None,
+                            filter: None,
                         }
                     } else {
                         p_unit = unit.p_next_unit;
@@ -432,12 +446,15 @@ impl DropScanner {
                     };
 
                     let ctx = MatchContext::new(&event);
-                    let action = filter.get_action(&ctx);
-
-                    if action.color.as_deref() == Some("show") {
-                        let _ = self.loot_hook.add_shown_unit_id(&self.ctx, unit.unit_id);
-                    } else if !action.show_item {
-                        let _ = self.loot_hook.add_hidden_unit_id(&self.ctx, unit.unit_id);
+                    let decision = filter.decide(&ctx);
+                    match decision.visibility {
+                        Visibility::Show => {
+                            let _ = self.loot_hook.add_shown_unit_id(&self.ctx, unit.unit_id);
+                        }
+                        Visibility::Hide => {
+                            let _ = self.loot_hook.add_hidden_unit_id(&self.ctx, unit.unit_id);
+                        }
+                        Visibility::Default => {}
                     }
                 }
 
@@ -515,6 +532,10 @@ impl DropScanner {
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
+            // TODO: surface MedianXL tier from the scanned item once we
+            // have a reliable way to detect it (stat text, class range, etc.).
+            tier: None,
+            filter: None,
         }
     }
 }

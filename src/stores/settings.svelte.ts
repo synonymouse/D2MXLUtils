@@ -41,8 +41,6 @@ export interface AppSettings {
   notificationY: number;
   /** Hotkey configuration for toggling main window */
   toggleWindowHotkey: HotkeyConfig;
-  /** Global loot filter mode: true = Show All (default_show_items), false = Hide All */
-  defaultShowItems: boolean;
 }
 
 /** Window state interface */
@@ -74,7 +72,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   notificationX: 2.0,
   notificationY: 50.0,
   toggleWindowHotkey: DEFAULT_HOTKEY,
-  defaultShowItems: true,
 };
 
 /** Settings store singleton */

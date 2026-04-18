@@ -3,27 +3,46 @@
 ## Grammar
 
 ```
-filter      := line*
-line        := blank | comment | rule | group_open | group_close
-comment     := '#' any*
-rule        := [name] attr*
-group_open  := '[' attr* ']' '{'
-group_close := '}'
-name        := '"' regex '"'
-attr        := quality
-             | tier
-             | 'eth'
-             | stat_pattern
-             | color
-             | visibility
-             | sound
-             | 'notify'
-             | 'name'
-             | 'stat'
-stat_pattern := '{' regex '}'
+filter        := line*
+line          := blank | comment | default_mode | rule | group_open | group_close
+comment       := '#' any*
+default_mode  := ('hide' | 'show') 'default'
+rule          := [name] attr*
+group_open    := '[' attr* ']' '{'
+group_close   := '}'
+name          := '"' regex '"'
+attr          := quality
+               | tier
+               | 'eth'
+               | stat_pattern
+               | color
+               | visibility
+               | sound
+               | 'notify'
+               | 'name'
+               | 'stat'
+stat_pattern  := '{' regex '}'
 ```
 
-Groups cannot be nested.
+Groups cannot be nested. The `default_mode` directive is only valid at file scope and may appear at most once per file.
+
+---
+
+## Default mode directive
+
+A single file-scope directive controls how unmatched items are treated.
+
+```
+hide default      # hide all items unless a rule explicitly shows them
+show default      # show items per the game's built-in filter (this is the default)
+```
+
+- Allowed only at file scope — never inside a `[...] { ... }` group.
+- At most **one** occurrence per file. Duplicates are a parse error.
+- Absent → equivalent to `show default`.
+- Position in the file is free (top, bottom, middle). Convention: first non-comment line.
+
+With `hide default`, only rules with an explicit `show` flag reveal items. Without it, the game's built-in filter decides whatever no rule forces.
 
 ---
 
@@ -111,10 +130,10 @@ Color alone does not produce a notification. Pair with `notify` to emit one.
 
 | Keyword | Effect |
 |---|---|
-| `show` | force show this item (overrides Hide All and game's built-in hide) |
+| `show` | force show this item (overrides `hide default` and the game's built-in hide) |
 | `hide` | force hide this item |
 
-Absent → default visibility applies (game decides, or Hide All applies).
+Absent → default visibility applies (game decides, or `hide default` applies).
 
 ---
 
@@ -223,7 +242,11 @@ Rules (including those expanded from groups) are processed in source order for e
 ## Quick Reference
 
 ```
-# General form
+# File-scope directive (at most one, optional)
+hide default      # hide unmatched items
+show default      # show unmatched items (implicit default)
+
+# General rule form
 [name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [name] [stat]
 
 # Atoms

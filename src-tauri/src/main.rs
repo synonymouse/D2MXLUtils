@@ -327,12 +327,6 @@ fn parse_filter_dsl(text: String) -> Result<rules::FilterConfig, Vec<rules::Pars
     rules::parse_dsl(&text)
 }
 
-/// Convert FilterConfig to DSL text
-#[tauri::command]
-fn filter_to_dsl(config: rules::FilterConfig) -> String {
-    rules::to_dsl(&config)
-}
-
 /// Validate DSL text and return errors/warnings
 #[tauri::command]
 fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
@@ -373,15 +367,17 @@ fn apply_item_filter(p_unit_data: u32, visible: bool) -> Result<(), String> {
     }
 }
 
-/// Get the action for an item based on filter rules
+/// Resolve the filter decision for a hypothetical item. Used by the UI
+/// to preview what the current filter would do without actually dropping
+/// anything in-game.
 #[tauri::command]
 fn get_item_filter_action(
     config: rules::FilterConfig,
     item: notifier::ItemDropEvent,
-) -> rules::RuleAction {
+) -> rules::FilterDecision {
     use crate::rules::MatchContext;
     let ctx = MatchContext::new(&item);
-    config.get_action(&ctx)
+    config.decide(&ctx)
 }
 
 /// Sync the transparent overlay window with the Diablo II game window.
@@ -781,7 +777,6 @@ fn main() {
             get_filter_enabled,
             sync_overlay_with_game,
             parse_filter_dsl,
-            filter_to_dsl,
             validate_filter_dsl,
             apply_item_filter,
             get_item_filter_action,

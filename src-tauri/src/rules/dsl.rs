@@ -1,32 +1,28 @@
-//! DSL parser for D2Stats-style rule format
+//! DSL parser and serializer for the loot filter.
 //!
-//! # Syntax
-//!
-//! ```text
-//! # Comment
-//! "Item Pattern" [quality] [tier] [eth] [{stat pattern}] [color] [sound] [name] [stat]
-//! ```
-//!
-//! ## Examples
+//! Grammar (see `docs/filter_spec/loot-filter-dsl.md`):
 //!
 //! ```text
-//! # Notify on all unique items
-//! "." unique gold sound1
-//!
-//! # Hide normal items
-//! "." normal hide
-//!
-//! # Notify on rings with +skills
-//! "Ring$" unique {Skills} gold sound1 stat
-//!
-//! # Ethereal sacred items
-//! "." sacred eth gold sound1
+//! filter      := line*
+//! line        := blank | comment | rule | group_open | group_close
+//! comment     := '#' any*
+//! rule        := [name] attr*
+//! group_open  := '[' attr* ']' '{'
+//! group_close := '}'
+//! name        := '"' regex '"'
 //! ```
+//!
+//! The parser is intentionally lenient: unknown tokens produce a
+//! [`ValidationError::Warning`] but do not abort parsing, so an editor can
+//! still render and reason about partially-typed rules.
 
-use super::{FilterConfig, ItemQuality, ItemTier, NotifyColor, Rule};
+use super::{FilterConfig, ItemQuality, ItemTier, NotifyColor, Rule, Visibility};
 use serde::{Deserialize, Serialize};
 
-/// Error that occurred during DSL parsing
+// =====================================================================
+// Error types
+// =====================================================================
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseError {
     pub line: usize,
@@ -40,7 +36,6 @@ impl std::fmt::Display for ParseError {
     }
 }
 
-/// Validation error (less severe than parse error)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationError {
     pub line: usize,
@@ -49,7 +44,7 @@ pub struct ValidationError {
     pub severity: ValidationSeverity,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ValidationSeverity {
     Error,
@@ -57,24 +52,203 @@ pub enum ValidationSeverity {
     Info,
 }
 
-/// Parse DSL text into FilterConfig
+// =====================================================================
+// Shared attribute bag
+// =====================================================================
+
+/// Parsed set of attributes (everything except the name pattern).
+/// Used both for rules and for group headers. Fields stay `Option`
+/// so we can tell "not set" apart from "explicitly set" when merging
+/// a group header into a contained rule.
+#[derive(Debug, Clone, Default)]
+struct Attrs {
+    stat_pattern: Option<String>,
+    quality: Option<ItemQuality>,
+    tier: Option<ItemTier>,
+    ethereal: Option<bool>,
+    visibility: Option<Visibility>,
+    color: Option<NotifyColor>,
+    sound: Option<u8>,
+    notify: Option<bool>,
+    display_name: Option<bool>,
+    display_stats: Option<bool>,
+}
+
+impl Attrs {
+    fn apply_to(&self, rule: &mut Rule) {
+        if let Some(ref s) = self.stat_pattern {
+            rule.stat_pattern = Some(s.clone());
+        }
+        if let Some(q) = self.quality {
+            rule.quality = q;
+        }
+        if let Some(t) = self.tier {
+            rule.tier = t;
+        }
+        if let Some(e) = self.ethereal {
+            rule.ethereal = e;
+        }
+        if let Some(v) = self.visibility {
+            rule.visibility = v;
+        }
+        if let Some(c) = self.color {
+            rule.color = Some(c);
+        }
+        if let Some(s) = self.sound {
+            rule.sound = Some(s);
+        }
+        if let Some(n) = self.notify {
+            rule.notify = n;
+        }
+        if let Some(dn) = self.display_name {
+            rule.display_name = dn;
+        }
+        if let Some(ds) = self.display_stats {
+            rule.display_stats = ds;
+        }
+    }
+
+    /// Merge `group` into `self` only where `self` is unset. Used to flatten
+    /// `[header] { rule }` bodies: rule-level values win over the header.
+    fn fill_from_group(&mut self, group: &Attrs) {
+        if self.stat_pattern.is_none() {
+            self.stat_pattern = group.stat_pattern.clone();
+        }
+        if self.quality.is_none() {
+            self.quality = group.quality;
+        }
+        if self.tier.is_none() {
+            self.tier = group.tier;
+        }
+        if self.ethereal.is_none() {
+            self.ethereal = group.ethereal;
+        }
+        if self.visibility.is_none() {
+            self.visibility = group.visibility;
+        }
+        if self.color.is_none() {
+            self.color = group.color;
+        }
+        if self.sound.is_none() {
+            self.sound = group.sound;
+        }
+        if self.notify.is_none() {
+            self.notify = group.notify;
+        }
+        if self.display_name.is_none() {
+            self.display_name = group.display_name;
+        }
+        if self.display_stats.is_none() {
+            self.display_stats = group.display_stats;
+        }
+    }
+}
+
+// =====================================================================
+// Public API
+// =====================================================================
+
+/// Parse DSL text into a [`FilterConfig`].
+///
+/// Returns the flattened rule list (groups already expanded, source order
+/// preserved). Parse errors abort; unknown tokens become warnings but still
+/// produce a rule so the editor stays responsive.
 pub fn parse_dsl(text: &str) -> Result<FilterConfig, Vec<ParseError>> {
-    let mut rules = Vec::new();
-    let mut errors = Vec::new();
+    let mut rules: Vec<Rule> = Vec::new();
+    let mut errors: Vec<ParseError> = Vec::new();
+    let mut current_group: Option<(Attrs, usize)> = None;
+    let mut hide_all = false;
+    let mut default_mode_line: Option<usize> = None;
 
-    for (line_num, line) in text.lines().enumerate() {
-        let line_num = line_num + 1; // 1-indexed
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx + 1;
+        let trimmed = strip_inline_comment(line).trim();
 
-        // Skip empty lines and comments
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() {
             continue;
         }
 
-        match parse_line(trimmed, line_num) {
-            Ok(rule) => rules.push(rule),
+        // Group closer
+        if trimmed == "}" {
+            if current_group.is_none() {
+                errors.push(ParseError {
+                    line: line_num,
+                    column: 0,
+                    message: "Unexpected '}' outside of a group".to_string(),
+                });
+            }
+            current_group = None;
+            continue;
+        }
+
+        // File-scope directive: `hide default` / `show default`.
+        if let Some(mode) = parse_default_mode(trimmed) {
+            if current_group.is_some() {
+                errors.push(ParseError {
+                    line: line_num,
+                    column: 0,
+                    message: "'hide default' / 'show default' cannot appear inside a group"
+                        .to_string(),
+                });
+                continue;
+            }
+            if default_mode_line.is_some() {
+                errors.push(ParseError {
+                    line: line_num,
+                    column: 0,
+                    message: "Duplicate 'hide default' / 'show default' directive".to_string(),
+                });
+                continue;
+            }
+            hide_all = mode;
+            default_mode_line = Some(line_num);
+            continue;
+        }
+
+        // Group opener: [attrs] {
+        if let Some(header_src) = parse_group_open(trimmed) {
+            if current_group.is_some() {
+                errors.push(ParseError {
+                    line: line_num,
+                    column: 0,
+                    message: "Nested groups are not allowed".to_string(),
+                });
+                continue;
+            }
+            let mut attrs = Attrs::default();
+            parse_attrs_into(header_src, &mut attrs, /*in_group_header=*/ true, line_num, &mut errors);
+            current_group = Some((attrs, line_num));
+            continue;
+        }
+
+        // Regular rule line
+        match parse_rule_line(trimmed, line_num) {
+            Ok(mut rule) => {
+                if let Some((ref group_attrs, _)) = current_group {
+                    // The rule's Attrs representation is whatever it set
+                    // during parsing. We need to merge the group over the
+                    // un-set fields. Easiest: build an Attrs from the rule,
+                    // fill from group, then re-apply to a fresh rule.
+                    let mut merged = attrs_from_rule(&rule);
+                    merged.fill_from_group(group_attrs);
+                    let mut fresh = Rule::default();
+                    fresh.name_pattern = rule.name_pattern.take();
+                    merged.apply_to(&mut fresh);
+                    rules.push(fresh);
+                } else {
+                    rules.push(rule);
+                }
+            }
             Err(e) => errors.push(e),
         }
+    }
+
+    if let Some((_, opened_line)) = current_group {
+        errors.push(ParseError {
+            line: opened_line,
+            column: 0,
+            message: "Unterminated group (missing '}')".to_string(),
+        });
     }
 
     if !errors.is_empty() {
@@ -83,300 +257,81 @@ pub fn parse_dsl(text: &str) -> Result<FilterConfig, Vec<ParseError>> {
 
     Ok(FilterConfig {
         name: "Parsed Filter".to_string(),
-        default_show_items: true,
-        default_notify: false,
+        hide_all,
         rules,
-        dsl_source: Some(text.to_string()),
     })
 }
 
-/// Parse a single DSL line into a Rule
-fn parse_line(line: &str, line_num: usize) -> Result<Rule, ParseError> {
-    let mut rule = Rule::default();
-    rule.source_line = Some(line.to_string());
-
-    let mut chars = line.chars().peekable();
-    let mut pos = 0;
-
-    // Skip leading whitespace
-    while chars.peek().map(|c| c.is_whitespace()).unwrap_or(false) {
-        chars.next();
-        pos += 1;
-    }
-
-    // Parse item name pattern (in quotes)
-    if chars.peek() == Some(&'"') {
-        chars.next(); // consume opening quote
-        pos += 1;
-
-        let mut pattern = String::new();
-        let mut found_closing = false;
-
-        while let Some(c) = chars.next() {
-            pos += 1;
-            if c == '"' {
-                found_closing = true;
-                break;
-            }
-            pattern.push(c);
-        }
-
-        if !found_closing {
-            return Err(ParseError {
-                line: line_num,
-                column: pos,
-                message: "Unclosed quote in item pattern".to_string(),
-            });
-        }
-
-        if !pattern.is_empty() && pattern != "." {
-            rule.name_pattern = Some(pattern);
-        }
-    }
-
-    // Parse flags and stat patterns
-    let remaining: String = chars.collect();
-    let mut stat_pattern: Option<String> = None;
-
-    // Extract stat pattern from {braces}
-    let remaining = extract_stat_pattern(&remaining, &mut stat_pattern);
-    rule.stat_pattern = stat_pattern;
-
-    // Parse remaining tokens
-    for token in remaining.split_whitespace() {
-        let token_lower = token.to_lowercase();
-
-        // Quality flags
-        if let Some(quality) = ItemQuality::from_str(&token_lower) {
-            rule.item_quality = quality as i32;
-            continue;
-        }
-
-        // Tier flags
-        if let Some(tier) = ItemTier::from_str(&token_lower) {
-            rule.tier = Some(tier as i32);
-            continue;
-        }
-
-        // Color flags
-        if let Some(color) = NotifyColor::from_str(&token_lower) {
-            match color {
-                NotifyColor::Hide => {
-                    rule.show_item = false;
-                    rule.color = Some("hide".to_string());
-                }
-                NotifyColor::Show => {
-                    rule.show_item = true;
-                    rule.color = Some("show".to_string());
-                }
-                _ => {
-                    rule.color = color.to_dsl_str().map(|s| s.to_string());
-                }
-            }
-            continue;
-        }
-
-        // Ethereal flag
-        if token_lower == "eth" {
-            rule.ethereal = 1; // Required
-            continue;
-        }
-
-        // Sound flags (sound1, sound2, ... sound6, sound_none)
-        if token_lower == "sound_none" {
-            rule.sound = Some(0);
-            continue;
-        }
-        if token_lower.starts_with("sound") {
-            if let Ok(num) = token_lower[5..].parse::<u8>() {
-                if (1..=6).contains(&num) {
-                    rule.sound = Some(num);
-                    rule.notify = true; // Sound implies notify
-                }
-            }
-            continue;
-        }
-
-        // Display flags
-        if token_lower == "name" {
-            rule.display_name = true;
-            continue;
-        }
-        if token_lower == "stat" {
-            rule.display_stats = true;
-            continue;
-        }
-
-        // Unknown token - could be a warning but we'll be lenient
-    }
-
-    // If we have a sound or explicit notify color, enable notify
-    if rule.sound.is_some() || rule.color.as_ref().map(|c| c != "hide").unwrap_or(false) {
-        rule.notify = true;
-    }
-
-    Ok(rule)
-}
-
-/// Extract stat pattern from {braces} and return remaining string
-fn extract_stat_pattern(s: &str, pattern: &mut Option<String>) -> String {
-    let mut result = String::new();
-    let mut chars = s.chars().peekable();
-    let mut in_braces = false;
-    let mut brace_content = String::new();
-
-    while let Some(c) = chars.next() {
-        if c == '{' && !in_braces {
-            in_braces = true;
-            brace_content.clear();
-        } else if c == '\\' && in_braces {
-            // Handle escape sequences inside braces - include the backslash and next char
-            brace_content.push(c);
-            if let Some(next) = chars.next() {
-                brace_content.push(next);
-            }
-        } else if c == '}' && in_braces {
-            in_braces = false;
-            if !brace_content.trim().is_empty() {
-                *pattern = Some(brace_content.trim().to_string());
-            }
-            brace_content.clear();
-        } else if in_braces {
-            brace_content.push(c);
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
-}
-
-/// Convert FilterConfig back to DSL text
-pub fn to_dsl(config: &FilterConfig) -> String {
-    // If we have the original source, return it
-    if let Some(ref source) = config.dsl_source {
-        return source.clone();
-    }
-
-    let mut lines = Vec::new();
-
-    // Add header comment
-    lines.push(format!("# {}", config.name));
-    lines.push(String::new());
-
-    for rule in &config.rules {
-        if !rule.active {
-            continue;
-        }
-
-        let line = rule_to_dsl(rule);
-        lines.push(line);
-    }
-
-    lines.join("\n")
-}
-
-/// Convert a single Rule to DSL line
-fn rule_to_dsl(rule: &Rule) -> String {
-    // If we have the original source line, use it
-    if let Some(ref source) = rule.source_line {
-        return source.clone();
-    }
-
-    let mut parts = Vec::new();
-
-    // Name pattern
-    let pattern = rule.name_pattern.as_deref().unwrap_or(".");
-    parts.push(format!("\"{}\"", pattern));
-
-    // Quality
-    if rule.item_quality > 0 {
-        let quality = match rule.item_quality {
-            1 => "low",
-            2 => "normal",
-            3 => "superior",
-            4 => "magic",
-            5 => "set",
-            6 => "rare",
-            7 => "unique",
-            8 => "craft",
-            9 => "honor",
-            _ => "",
-        };
-        if !quality.is_empty() {
-            parts.push(quality.to_string());
-        }
-    }
-
-    // Tier
-    if let Some(tier) = rule.tier {
-        let tier_str = match tier {
-            0 => "0",
-            1 => "1",
-            2 => "2",
-            3 => "3",
-            4 => "4",
-            5 => "sacred",
-            6 => "angelic",
-            7 => "master",
-            _ => "",
-        };
-        if !tier_str.is_empty() {
-            parts.push(tier_str.to_string());
-        }
-    }
-
-    // Ethereal
-    if rule.ethereal == 1 {
-        parts.push("eth".to_string());
-    }
-
-    // Stat pattern
-    if let Some(ref stat_pattern) = rule.stat_pattern {
-        parts.push(format!("{{{}}}", stat_pattern));
-    }
-
-    // Color
-    if let Some(ref color) = rule.color {
-        parts.push(color.clone());
-    } else if !rule.show_item {
-        parts.push("hide".to_string());
-    }
-
-    // Sound
-    if let Some(sound) = rule.sound {
-        if sound == 0 {
-            parts.push("sound_none".to_string());
-        } else if sound <= 6 {
-            parts.push(format!("sound{}", sound));
-        }
-    }
-
-    // Display flags
-    if rule.display_name {
-        parts.push("name".to_string());
-    }
-    if rule.display_stats {
-        parts.push("stat".to_string());
-    }
-
-    parts.join(" ")
-}
-
-/// Validate DSL without full parsing (for editor feedback)
+/// Validate DSL text without building a FilterConfig. Produces warnings for
+/// unknown tokens, bracket mismatches, and common mistakes (e.g. color/sound
+/// without `notify`).
 pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
     let mut errors = Vec::new();
+    let mut in_group = false;
+    let mut group_open_line = 0usize;
+    let mut default_mode_line: Option<usize> = None;
 
-    for (line_num, line) in text.lines().enumerate() {
-        let line_num = line_num + 1;
-        let trimmed = line.trim();
-
-        // Skip empty lines and comments
-        if trimmed.is_empty() || trimmed.starts_with('#') {
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx + 1;
+        let trimmed = strip_inline_comment(line).trim();
+        if trimmed.is_empty() {
             continue;
         }
 
-        // Check for unclosed quotes
+        if trimmed == "}" {
+            if !in_group {
+                errors.push(ValidationError {
+                    line: line_num,
+                    column: 0,
+                    message: "Unexpected '}' outside of a group".to_string(),
+                    severity: ValidationSeverity::Error,
+                });
+            }
+            in_group = false;
+            continue;
+        }
+
+        // File-scope directive: `hide default` / `show default`.
+        if parse_default_mode(trimmed).is_some() {
+            if in_group {
+                errors.push(ValidationError {
+                    line: line_num,
+                    column: 0,
+                    message: "'hide default' / 'show default' cannot appear inside a group"
+                        .to_string(),
+                    severity: ValidationSeverity::Error,
+                });
+                continue;
+            }
+            if default_mode_line.is_some() {
+                errors.push(ValidationError {
+                    line: line_num,
+                    column: 0,
+                    message: "Duplicate 'hide default' / 'show default' directive".to_string(),
+                    severity: ValidationSeverity::Error,
+                });
+                continue;
+            }
+            default_mode_line = Some(line_num);
+            continue;
+        }
+
+        if let Some(header) = parse_group_open(trimmed) {
+            if in_group {
+                errors.push(ValidationError {
+                    line: line_num,
+                    column: 0,
+                    message: "Nested groups are not allowed".to_string(),
+                    severity: ValidationSeverity::Error,
+                });
+            }
+            in_group = true;
+            group_open_line = line_num;
+            validate_tokens(header, line_num, /*in_group_header=*/ true, &mut errors);
+            continue;
+        }
+
+        // Basic lexical sanity on the line.
         let quote_count = trimmed.chars().filter(|&c| c == '"').count();
         if quote_count % 2 != 0 {
             errors.push(ValidationError {
@@ -385,12 +340,12 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
                 message: "Unclosed quote".to_string(),
                 severity: ValidationSeverity::Error,
             });
+            continue;
         }
 
-        // Check for unclosed braces
-        let open_braces = trimmed.chars().filter(|&c| c == '{').count();
-        let close_braces = trimmed.chars().filter(|&c| c == '}').count();
-        if open_braces != close_braces {
+        let opens = trimmed.chars().filter(|&c| c == '{').count();
+        let closes = trimmed.chars().filter(|&c| c == '}').count();
+        if opens != closes {
             errors.push(ValidationError {
                 line: line_num,
                 column: 0,
@@ -399,196 +354,538 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
             });
         }
 
-        // Check for unknown flags
-        let remaining = extract_stat_pattern(trimmed, &mut None);
-        // Remove the quoted part
-        let remaining = if let Some(start) = remaining.find('"') {
-            if let Some(end) = remaining[start + 1..].find('"') {
-                format!("{}{}", &remaining[..start], &remaining[start + end + 2..])
-            } else {
-                remaining
-            }
-        } else {
-            remaining
-        };
+        // Strip quoted name pattern and stat-pattern braces, then scan flags.
+        let (after_name, _name_ok) = strip_leading_name(trimmed);
+        let after_braces = strip_stat_brace(after_name);
+        validate_tokens(&after_braces, line_num, false, &mut errors);
 
-        for token in remaining.split_whitespace() {
-            let token_lower = token.to_lowercase();
+        // Info: color/sound present without notify is legal but usually a mistake.
+        info_warn_notify_independence(&after_braces, line_num, &mut errors);
+    }
 
-            // Skip known tokens
-            if ItemQuality::from_str(&token_lower).is_some()
-                || ItemTier::from_str(&token_lower).is_some()
-                || NotifyColor::from_str(&token_lower).is_some()
-                || token_lower == "eth"
-                || token_lower == "name"
-                || token_lower == "stat"
-                || token_lower == "sound_none"
-                || (token_lower.starts_with("sound") && token_lower[5..].parse::<u8>().is_ok())
-            {
-                continue;
-            }
-
-            // Unknown token
-            errors.push(ValidationError {
-                line: line_num,
-                column: 0,
-                message: format!("Unknown flag: {}", token),
-                severity: ValidationSeverity::Error,
-            });
-        }
+    if in_group {
+        errors.push(ValidationError {
+            line: group_open_line,
+            column: 0,
+            message: "Unterminated group (missing '}')".to_string(),
+            severity: ValidationSeverity::Error,
+        });
     }
 
     errors
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// =====================================================================
+// Line-level parsing
+// =====================================================================
 
-    #[test]
-    fn test_parse_simple_rule() {
-        let dsl = r#""Ring$" unique gold sound1"#;
-        let config = parse_dsl(dsl).unwrap();
+fn parse_rule_line(trimmed: &str, line_num: usize) -> Result<Rule, ParseError> {
+    let mut rule = Rule::default();
 
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        assert_eq!(rule.name_pattern, Some("Ring$".to_string()));
-        assert_eq!(rule.item_quality, 7); // Unique
-        assert_eq!(rule.color, Some("gold".to_string()));
-        assert_eq!(rule.sound, Some(1));
-        assert!(rule.notify);
+    let (after_name, name_pattern) = extract_name_pattern(trimmed, line_num)?;
+    rule.name_pattern = name_pattern;
+
+    let mut attrs = Attrs::default();
+    let mut errors = Vec::new();
+    parse_attrs_into(&after_name, &mut attrs, false, line_num, &mut errors);
+    if let Some(first) = errors.into_iter().next() {
+        return Err(first);
+    }
+    attrs.apply_to(&mut rule);
+    Ok(rule)
+}
+
+/// Split `"name" rest` into `(rest, Some(pattern))`. A `.` pattern means
+/// "match any" and is treated as if omitted. Returns the whole string as
+/// `rest` when no quoted prefix is present.
+fn extract_name_pattern(s: &str, line_num: usize) -> Result<(String, Option<String>), ParseError> {
+    let s = s.trim_start();
+    if !s.starts_with('"') {
+        return Ok((s.to_string(), None));
+    }
+    let after_open = &s[1..];
+    let close = after_open.find('"').ok_or_else(|| ParseError {
+        line: line_num,
+        column: 0,
+        message: "Unclosed quote in item pattern".to_string(),
+    })?;
+    let pattern = &after_open[..close];
+    let rest = &after_open[close + 1..];
+    let name = if pattern.is_empty() || pattern == "." {
+        None
+    } else {
+        Some(pattern.to_string())
+    };
+    Ok((rest.to_string(), name))
+}
+
+fn parse_attrs_into(
+    src: &str,
+    attrs: &mut Attrs,
+    in_group_header: bool,
+    line_num: usize,
+    errors: &mut Vec<ParseError>,
+) {
+    // Pull out stat pattern from any {...} occurrence.
+    let (remainder, stat) = extract_stat_pattern(src);
+    if let Some(s) = stat {
+        attrs.stat_pattern = Some(s);
     }
 
-    #[test]
-    fn test_parse_with_stat_pattern() {
-        let dsl = r#""Amulet" rare {[3-5] to All Skills}"#;
-        let config = parse_dsl(dsl).unwrap();
+    for token in remainder.split_whitespace() {
+        let lower = token.to_lowercase();
 
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        assert_eq!(rule.name_pattern, Some("Amulet".to_string()));
-        assert_eq!(rule.item_quality, 6); // Rare
-        assert_eq!(rule.stat_pattern, Some("[3-5] to All Skills".to_string()));
-    }
-
-    #[test]
-    fn test_parse_hide_rule() {
-        let dsl = r#""." normal hide"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        assert_eq!(rule.name_pattern, None); // "." means match all
-        assert_eq!(rule.item_quality, 2); // Normal
-        assert!(!rule.show_item);
-    }
-
-    #[test]
-    fn test_parse_ethereal_sacred() {
-        let dsl = r#""." sacred eth gold sound1"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        let rule = &config.rules[0];
-        assert_eq!(rule.tier, Some(5)); // Sacred
-        assert_eq!(rule.ethereal, 1); // Required
-        assert_eq!(rule.color, Some("gold".to_string()));
-    }
-
-    #[test]
-    fn test_parse_with_comments() {
-        let dsl = r#"
-# This is a comment
-"Ring$" unique gold sound1
-
-# Another comment
-"Amulet" set lime sound2
-"#;
-        let config = parse_dsl(dsl).unwrap();
-        assert_eq!(config.rules.len(), 2);
-    }
-
-    #[test]
-    fn test_parse_display_flags() {
-        let dsl = r#""." unique gold name stat"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        let rule = &config.rules[0];
-        assert!(rule.display_name);
-        assert!(rule.display_stats);
-    }
-
-    #[test]
-    fn test_to_dsl_roundtrip() {
-        let original = r#"# Parsed Filter
-
-"Ring$" unique {Skills} gold sound1
-"." normal hide"#;
-
-        let config = parse_dsl(original).unwrap();
-        let regenerated = to_dsl(&config);
-
-        // Should preserve original source
-        assert_eq!(regenerated, original);
-    }
-
-    #[test]
-    fn test_validate_unclosed_quote() {
-        let dsl = r#""Ring$ unique"#;
-        let errors = validate_dsl(dsl);
-        assert!(!errors.is_empty());
-        assert!(errors.iter().any(|e| e.message.contains("quote")));
-    }
-
-    #[test]
-    fn test_validate_mismatched_braces() {
-        let dsl = r#""Ring" {Skills"#;
-        let errors = validate_dsl(dsl);
-        assert!(!errors.is_empty());
-        assert!(errors.iter().any(|e| e.message.contains("braces")));
-    }
-
-    #[test]
-    fn test_validate_unknown_flag() {
-        let dsl = r#""Ring" unique unknownflag gold"#;
-        let errors = validate_dsl(dsl);
-        assert!(errors.iter().any(|e| e.message.contains("Unknown")));
-    }
-
-    #[test]
-    fn test_parse_stat_pattern_with_escaped_brace() {
-        // Test that escaped closing braces don't terminate the pattern prematurely
-        let dsl = r#""Ring" rare {test\}pattern}"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        assert_eq!(rule.stat_pattern, Some(r"test\}pattern".to_string()));
-    }
-
-    #[test]
-    fn test_parse_stat_pattern_with_multiple_escaped_braces() {
-        // Test multiple escaped braces in a pattern
-        let dsl = r#""Amulet" unique {\{start\} middle \{end\}}"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        assert_eq!(
-            rule.stat_pattern,
-            Some(r"\{start\} middle \{end\}".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_stat_pattern_with_escaped_backslash() {
-        // Test escaped backslash followed by closing brace
-        let dsl = r#""Ring" rare {pattern\\}"#;
-        let config = parse_dsl(dsl).unwrap();
-
-        assert_eq!(config.rules.len(), 1);
-        let rule = &config.rules[0];
-        // The \\ should be preserved and } should terminate the pattern
-        assert_eq!(rule.stat_pattern, Some(r"pattern\\".to_string()));
+        if let Some(q) = ItemQuality::from_str(&lower) {
+            attrs.quality = Some(q);
+            continue;
+        }
+        if let Some(t) = ItemTier::from_str(&lower) {
+            attrs.tier = Some(t);
+            continue;
+        }
+        match lower.as_str() {
+            "eth" => {
+                attrs.ethereal = Some(true);
+                continue;
+            }
+            "show" => {
+                attrs.visibility = Some(Visibility::Show);
+                continue;
+            }
+            "hide" => {
+                attrs.visibility = Some(Visibility::Hide);
+                continue;
+            }
+            "notify" => {
+                attrs.notify = Some(true);
+                continue;
+            }
+            "name" => {
+                attrs.display_name = Some(true);
+                continue;
+            }
+            "stat" => {
+                attrs.display_stats = Some(true);
+                continue;
+            }
+            "sound_none" => {
+                attrs.sound = Some(0);
+                continue;
+            }
+            _ => {}
+        }
+        if let Some(c) = NotifyColor::from_str(&lower) {
+            attrs.color = Some(c);
+            continue;
+        }
+        if let Some(num) = parse_sound_keyword(&lower) {
+            attrs.sound = Some(num);
+            continue;
+        }
+        if in_group_header && lower.starts_with('"') {
+            errors.push(ParseError {
+                line: line_num,
+                column: 0,
+                message: "Group headers cannot contain a name pattern".to_string(),
+            });
+            continue;
+        }
+        // Unknown tokens are lenient — see `validate_dsl` for warnings.
     }
 }
 
+fn parse_sound_keyword(lower: &str) -> Option<u8> {
+    if !lower.starts_with("sound") {
+        return None;
+    }
+    let suffix = &lower[5..];
+    let n: u8 = suffix.parse().ok()?;
+    if (1..=6).contains(&n) {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn parse_group_open(trimmed: &str) -> Option<&str> {
+    // Shape: `[ ... ] {`   (trailing `{` required)
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let close = trimmed.find(']')?;
+    let after = trimmed[close + 1..].trim_start();
+    if after != "{" {
+        return None;
+    }
+    Some(trimmed[1..close].trim())
+}
+
+fn strip_inline_comment(line: &str) -> &str {
+    // Simple rule: `#` only starts a comment when it's not inside quotes or braces.
+    let mut in_quote = false;
+    let mut in_brace = false;
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'"' if !in_brace => in_quote = !in_quote,
+            b'{' if !in_quote => in_brace = true,
+            b'}' if !in_quote => in_brace = false,
+            b'#' if !in_quote && !in_brace => return &line[..i],
+            _ => {}
+        }
+        i += 1;
+    }
+    line
+}
+
+/// Extract the FIRST `{...}` from `s` and return `(remainder, content)`.
+/// Supports `\{`, `\}`, `\\` escapes inside the braces.
+fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
+    let mut remainder = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    let mut pattern = None;
+    let mut captured = false;
+
+    while let Some(c) = chars.next() {
+        if c == '{' && !captured {
+            let mut inner = String::new();
+            while let Some(nc) = chars.next() {
+                if nc == '\\' {
+                    inner.push(nc);
+                    if let Some(escaped) = chars.next() {
+                        inner.push(escaped);
+                    }
+                    continue;
+                }
+                if nc == '}' {
+                    if !inner.trim().is_empty() {
+                        pattern = Some(inner.trim().to_string());
+                    }
+                    break;
+                }
+                inner.push(nc);
+            }
+            captured = true;
+        } else {
+            remainder.push(c);
+        }
+    }
+
+    (remainder, pattern)
+}
+
+fn strip_leading_name(s: &str) -> (String, bool) {
+    let s = s.trim_start();
+    if !s.starts_with('"') {
+        return (s.to_string(), true);
+    }
+    if let Some(end) = s[1..].find('"') {
+        return (s[end + 2..].to_string(), true);
+    }
+    (s.to_string(), false)
+}
+
+fn strip_stat_brace(s: String) -> String {
+    let (rest, _) = extract_stat_pattern(&s);
+    rest
+}
+
+fn attrs_from_rule(rule: &Rule) -> Attrs {
+    Attrs {
+        stat_pattern: rule.stat_pattern.clone(),
+        quality: if rule.quality == ItemQuality::Any {
+            None
+        } else {
+            Some(rule.quality)
+        },
+        tier: if rule.tier == ItemTier::Any {
+            None
+        } else {
+            Some(rule.tier)
+        },
+        ethereal: if rule.ethereal { Some(true) } else { None },
+        visibility: if rule.visibility == Visibility::Default {
+            None
+        } else {
+            Some(rule.visibility)
+        },
+        color: rule.color,
+        sound: rule.sound,
+        notify: if rule.notify { Some(true) } else { None },
+        display_name: if rule.display_name { Some(true) } else { None },
+        display_stats: if rule.display_stats { Some(true) } else { None },
+    }
+}
+
+// =====================================================================
+// Validation helpers
+// =====================================================================
+
+fn validate_tokens(src: &str, line_num: usize, in_group_header: bool, errors: &mut Vec<ValidationError>) {
+    let (remainder, _) = extract_stat_pattern(src);
+    for token in remainder.split_whitespace() {
+        let lower = token.to_lowercase();
+        if is_known_token(&lower) {
+            continue;
+        }
+        if in_group_header && lower.starts_with('"') {
+            errors.push(ValidationError {
+                line: line_num,
+                column: 0,
+                message: "Group headers cannot contain a name pattern".to_string(),
+                severity: ValidationSeverity::Error,
+            });
+            continue;
+        }
+        errors.push(ValidationError {
+            line: line_num,
+            column: 0,
+            message: format!("Unknown flag: {}", token),
+            severity: ValidationSeverity::Warning,
+        });
+    }
+}
+
+fn is_known_token(lower: &str) -> bool {
+    if ItemQuality::from_str(lower).is_some()
+        || ItemTier::from_str(lower).is_some()
+        || NotifyColor::from_str(lower).is_some()
+    {
+        return true;
+    }
+    matches!(
+        lower,
+        "eth" | "show" | "hide" | "notify" | "name" | "stat" | "sound_none"
+    ) || parse_sound_keyword(lower).is_some()
+}
+
+fn info_warn_notify_independence(src: &str, line_num: usize, errors: &mut Vec<ValidationError>) {
+    let (remainder, _) = extract_stat_pattern(src);
+    let mut has_color = false;
+    let mut has_sound = false;
+    let mut has_notify = false;
+    for token in remainder.split_whitespace() {
+        let lower = token.to_lowercase();
+        if NotifyColor::from_str(&lower).is_some() {
+            has_color = true;
+        } else if lower == "sound_none" || parse_sound_keyword(&lower).is_some() {
+            has_sound = true;
+        } else if lower == "notify" {
+            has_notify = true;
+        }
+    }
+    if (has_color || has_sound) && !has_notify {
+        errors.push(ValidationError {
+            line: line_num,
+            column: 0,
+            message: "color/sound without 'notify' produces no notification".to_string(),
+            severity: ValidationSeverity::Info,
+        });
+    }
+}
+
+// =====================================================================
+// Directive parsing
+// =====================================================================
+
+/// Parse a bare `hide default` / `show default` directive.
+///
+/// Returns `Some(true)` for `hide default` (hide unmatched items),
+/// `Some(false)` for `show default`, and `None` if the line isn't a
+/// default-mode directive.
+fn parse_default_mode(trimmed: &str) -> Option<bool> {
+    let lowered = trimmed.to_ascii_lowercase();
+    let mut tokens = lowered.split_whitespace();
+    let first = tokens.next()?;
+    let second = tokens.next()?;
+    if tokens.next().is_some() {
+        return None;
+    }
+    if second != "default" {
+        return None;
+    }
+    match first {
+        "hide" => Some(true),
+        "show" => Some(false),
+        _ => None,
+    }
+}
+
+// =====================================================================
+// Tests
+// =====================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::Visibility;
+
+    #[test]
+    fn parses_bare_quality_rule_without_quotes() {
+        let cfg = parse_dsl("unique gold").unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        let r = &cfg.rules[0];
+        assert_eq!(r.name_pattern, None);
+        assert_eq!(r.quality, ItemQuality::Unique);
+        assert_eq!(r.color, Some(NotifyColor::Gold));
+        assert!(!r.notify);
+    }
+
+    #[test]
+    fn notify_is_not_auto_set_from_color_or_sound() {
+        let cfg = parse_dsl("\"Ring$\" unique gold sound1").unwrap();
+        assert!(!cfg.rules[0].notify);
+        assert_eq!(cfg.rules[0].color, Some(NotifyColor::Gold));
+        assert_eq!(cfg.rules[0].sound, Some(1));
+    }
+
+    #[test]
+    fn explicit_notify_sets_flag() {
+        let cfg = parse_dsl("\"Ring$\" unique gold notify sound1").unwrap();
+        assert!(cfg.rules[0].notify);
+    }
+
+    #[test]
+    fn hide_show_goes_to_visibility_not_color() {
+        let cfg = parse_dsl("normal hide").unwrap();
+        let r = &cfg.rules[0];
+        assert_eq!(r.visibility, Visibility::Hide);
+        assert!(r.color.is_none());
+
+        let cfg = parse_dsl("unique show gold").unwrap();
+        let r = &cfg.rules[0];
+        assert_eq!(r.visibility, Visibility::Show);
+        assert_eq!(r.color, Some(NotifyColor::Gold));
+    }
+
+    #[test]
+    fn group_flattens_and_merges_header_into_rules() {
+        let src = r#"[unique gold notify sound1] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}"#;
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(cfg.rules.len(), 3);
+        for r in &cfg.rules {
+            assert_eq!(r.quality, ItemQuality::Unique);
+            assert_eq!(r.color, Some(NotifyColor::Gold));
+            assert_eq!(r.sound, Some(1));
+            assert!(r.notify);
+        }
+        assert_eq!(cfg.rules[0].name_pattern.as_deref(), Some("Jordan"));
+        assert_eq!(cfg.rules[2].name_pattern.as_deref(), Some("Windforce"));
+    }
+
+    #[test]
+    fn rule_overrides_group_visibility() {
+        let src = r#"[hide] {
+  normal
+  unique show gold notify
+}"#;
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+        assert_eq!(cfg.rules[1].visibility, Visibility::Show);
+        assert_eq!(cfg.rules[1].color, Some(NotifyColor::Gold));
+    }
+
+    #[test]
+    fn nested_groups_rejected() {
+        let src = r#"[unique] {
+  [gold] {
+    "X"
+  }
+}"#;
+        assert!(parse_dsl(src).is_err());
+    }
+
+    #[test]
+    fn unterminated_group_rejected() {
+        let src = r#"[unique gold] {
+  "Jordan"
+"#;
+        assert!(parse_dsl(src).is_err());
+    }
+
+    #[test]
+    fn empty_dot_name_is_match_all() {
+        let cfg = parse_dsl("\".\" gold notify").unwrap();
+        assert_eq!(cfg.rules[0].name_pattern, None);
+    }
+
+    #[test]
+    fn inline_comment_stripped() {
+        let cfg = parse_dsl("unique gold notify  # highlight").unwrap();
+        assert!(cfg.rules[0].notify);
+    }
+
+    #[test]
+    fn validator_warns_on_unknown_flag() {
+        let errors = validate_dsl("unique wat");
+        assert!(errors.iter().any(|e| e.message.contains("Unknown flag")));
+    }
+
+    #[test]
+    fn validator_info_on_color_without_notify() {
+        let errors = validate_dsl("unique gold");
+        assert!(errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::Info && e.message.contains("notify")));
+    }
+
+    #[test]
+    fn stat_pattern_extraction_handles_escapes() {
+        let cfg = parse_dsl("rare {test\\}inside}").unwrap();
+        assert_eq!(cfg.rules[0].stat_pattern.as_deref(), Some("test\\}inside"));
+    }
+
+    #[test]
+    fn parses_hide_default_directive() {
+        let cfg = parse_dsl("hide default\nunique gold notify").unwrap();
+        assert!(cfg.hide_all);
+        assert_eq!(cfg.rules.len(), 1);
+    }
+
+    #[test]
+    fn parses_show_default_directive() {
+        let cfg = parse_dsl("show default\nunique gold notify").unwrap();
+        assert!(!cfg.hide_all);
+        assert_eq!(cfg.rules.len(), 1);
+    }
+
+    #[test]
+    fn absent_directive_defaults_to_show() {
+        let cfg = parse_dsl("unique gold notify").unwrap();
+        assert!(!cfg.hide_all);
+    }
+
+    #[test]
+    fn directive_position_in_file_is_free() {
+        let cfg = parse_dsl("unique gold notify\nhide default\nrare lime notify").unwrap();
+        assert!(cfg.hide_all);
+        assert_eq!(cfg.rules.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_default_directive_is_error() {
+        let errs = parse_dsl("hide default\nshow default").unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("Duplicate")));
+    }
+
+    #[test]
+    fn directive_inside_group_is_error() {
+        let src = "[unique] {\n  hide default\n  \"X\"\n}";
+        let errs = parse_dsl(src).unwrap_err();
+        assert!(errs.iter().any(|e| e.message.contains("inside a group")));
+    }
+
+    #[test]
+    fn validator_flags_duplicate_directive() {
+        let errors = validate_dsl("hide default\nshow default");
+        assert!(errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::Error && e.message.contains("Duplicate")));
+    }
+}

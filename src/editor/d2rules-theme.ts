@@ -24,10 +24,15 @@ const colors = {
   string: "#e09956", // Orange (item patterns)
   regex: "#56d364", // Green (stat patterns)
   color: "#ff79c6", // Pink (color keywords)
+  visibility: "#ff6b6b", // Red-ish (show/hide)
+  directive: "#ffb86c", // Warm orange (hide default / show default — file-scope)
+  notify: "#f1fa8c", // Yellow (notify — spec-critical keyword)
   sound: "#8be9fd", // Cyan (sound keywords)
   tier: "#bd93f9", // Purple (tier keywords)
   modifier: "#c7b377", // Gold italic (eth)
   display: "#aaaaaa", // Light gray (name/stat)
+  groupBracket: "#8899aa", // Muted blue-grey for [] {} in groups
+  invalid: "#cc0000",
   unknown: "#888888", // Unknown tokens (gray)
 };
 
@@ -183,9 +188,18 @@ export const qualityHighlighting = EditorView.baseTheme({
   // Other keyword types
   ".tok-tier": { color: colors.tier },
   ".tok-color": { color: colors.color },
+  ".tok-visibility": { color: colors.visibility, fontWeight: "600" },
+  ".tok-directive": {
+    color: colors.directive,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+  },
+  ".tok-notify": { color: colors.notify, fontWeight: "600" },
   ".tok-sound": { color: colors.sound },
   ".tok-modifier": { color: colors.modifier, fontStyle: "italic" },
   ".tok-display": { color: colors.display },
+  ".tok-groupBracket": { color: colors.groupBracket, fontWeight: "700" },
 
   // Invalid tokens
   ".tok-invalid": {

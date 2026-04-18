@@ -5,28 +5,36 @@
   import { Button, ProfileSelector } from "../components";
   import { settingsStore } from "../stores";
 
-  // Default example filter for new/empty profiles
+  // Default example filter for new/empty profiles. Spec-aligned:
+  // `notify` is now explicit — color/sound alone do not alert.
   const DEFAULT_FILTER = `# D2MXLUtils Loot Filter
-# Lines starting with # are comments
+# Lines starting with # are comments. Rules match last-wins.
+# Uncomment the next line to hide unmatched items by default:
+# hide default
 
-# Notify on unique items with gold color and sound
-"." unique gold sound1
+# Hide trash on the ground
+normal hide
+low hide
 
-# Notify on set items with green color
-"." set lime sound2
+# Highlight uniques and sets in-game (silent)
+unique gold
+set lime
 
-# Hide normal/low quality items
-"." normal hide
-"." low hide
+# Announce rare rings with +skills
+"Ring$" rare {Skills} lime notify sound2 stat
 
-# Rings with +skills - show stats
-"Ring$" rare {Skills} lime sound2 stat
-
-# Ethereal sacred items
-"." sacred eth gold sound1 name
+# Ethereal sacred items get the full treatment
+sacred eth gold notify sound1 name
 
 # All runes
-"Rune$" gold sound3 name
+"Rune$" gold notify sound3 name
+
+# Group: always call out the named uniques
+[unique gold notify sound1 name stat] {
+  "Jordan"
+  "Tyrael"
+  "Windforce"
+}
 `;
 
   let dslText = $state(DEFAULT_FILTER);
@@ -36,7 +44,9 @@
   let ruleCount = $state(0);
   let isSaving = $state(false);
   let hasUnsavedChanges = $state(false);
-  let showAllMode = $state(settingsStore.settings.defaultShowItems ?? true);
+  // Default-mode state derived from the parsed DSL (mirrors FilterConfig.hide_all).
+  let hideAll = $state(false);
+
   onMount(async () => {
     try {
       await invoke("set_filter_enabled", { enabled: true });
@@ -45,20 +55,13 @@
     }
   });
 
- 
-  async function setGlobalMode(showAll: boolean) {
-    showAllMode = showAll;
-    settingsStore.set("defaultShowItems", showAll);
-    await syncFilterConfig();
-  }
-
   async function syncFilterConfig() {
     if (validationStatus !== "valid") return;
 
     try {
       const config = await invoke<any>("parse_filter_dsl", { text: dslText });
       if (config && !("errors" in config)) {
-        config.default_show_items = showAllMode;
+        hideAll = !!config.hide_all;
         await invoke("set_filter_config", { config });
         // Make sure filtering stays on so rules take effect without a manual toggle.
         await invoke("set_filter_enabled", { enabled: true });
@@ -69,12 +72,14 @@
   }
 
   /**
-   * Handle validation results from the editor's linter
+   * Handle validation results from the editor's linter.
+   * Only hard errors block sync; warnings/info are advisory.
    */
   function handleValidation(result: ValidationResult) {
-    if (result.errors.length > 0) {
+    const hardErrors = result.errors.filter((e) => e.severity === "error");
+    if (hardErrors.length > 0) {
       validationStatus = "error";
-      errorCount = result.errors.length;
+      errorCount = hardErrors.length;
     } else {
       validationStatus = "valid";
       ruleCount = result.ruleCount;
@@ -103,8 +108,8 @@
   /**
    * Handle profile load from ProfileSelector
    */
-  async function handleProfileLoad(name: string, dslSource: string) {
-    dslText = dslSource || DEFAULT_FILTER;
+  async function handleProfileLoad(name: string, rulesText: string) {
+    dslText = rulesText || DEFAULT_FILTER;
     selectedProfile = name;
     hasUnsavedChanges = false;
     validationStatus = "idle";
@@ -115,6 +120,7 @@
     }
 
     // Sync filter config to backend after a short delay for validation
+    // (this also refreshes the default-mode indicator from the parsed config).
     setTimeout(() => syncFilterConfig(), 600);
   }
 
@@ -170,30 +176,19 @@
           —
         {/if}
       </span>
+      <span
+        class="default-mode-badge"
+        class:hide={hideAll}
+        title="Add 'hide default' at the top of the file to hide all unmatched items by default."
+      >
+        Default: {hideAll ? "hide" : "show"} unmatched
+      </span>
       {#if hasUnsavedChanges}
         <span class="unsaved-indicator" title="Unsaved changes">●</span>
       {/if}
     </div>
 
     <div class="header-actions">
-      <div class="filter-mode-switch">
-        <button
-          class="mode-btn"
-          class:active={showAllMode}
-          onclick={() => setGlobalMode(true)}
-          title="Items not matching any rule are shown (rules can hide specific items)"
-        >
-          Show All
-        </button>
-        <button
-          class="mode-btn"
-          class:active={!showAllMode}
-          onclick={() => setGlobalMode(false)}
-          title="Items not matching any rule are hidden (rules must explicitly show items)"
-        >
-          Hide All
-        </button>
-      </div>
       <ProfileSelector
         bind:selectedProfile
         onselect={handleProfileSelect}
@@ -226,8 +221,8 @@
     <details>
       <summary>Syntax Reference</summary>
       <div class="help-content">
-        <p>Each line follows the format:</p>
-        <code>"Pattern" [quality] [tier] [eth] &#123;stat&#125; [color] [sound] [name] [stat]</code>
+        <p>Rule format (all parts optional — rules are matched last-wins):</p>
+        <code>["name"] [quality] [tier] [eth] &#123;stat&#125; [color] [show|hide] [sound] [notify] [name] [stat]</code>
 
         <div class="help-columns">
           <div class="help-column">
@@ -236,7 +231,7 @@
               <li><span class="kw-unique">unique</span></li>
               <li><span class="kw-set">set</span></li>
               <li><span class="kw-rare">rare</span></li>
-              <li><span class="kw-magic">magic</span>, craft</li>
+              <li><span class="kw-magic">magic</span>, craft, honor</li>
               <li>normal, low, superior</li>
             </ul>
           </div>
@@ -254,7 +249,15 @@
             <ul>
               <li><span class="kw-color">gold</span>, lime, red, blue</li>
               <li>white, yellow, orange, pink</li>
-              <li>hide, show</li>
+              <li>grey, black, purple, green</li>
+            </ul>
+          </div>
+
+          <div class="help-column">
+            <h4>Visibility / Notify</h4>
+            <ul>
+              <li><span class="kw-visibility">show</span>, <span class="kw-visibility">hide</span></li>
+              <li><span class="kw-notify">notify</span> (required for alerts)</li>
             </ul>
           </div>
 
@@ -268,10 +271,11 @@
         </div>
 
         <p class="help-note">
-          <strong>eth</strong> - match ethereal items only<br />
-          <strong>name</strong> - display item name<br />
-          <strong>stat</strong> - display item stats<br />
-          <strong>&#123;pattern&#125;</strong> - match stat text (regex)
+          <strong>eth</strong> — match ethereal items only<br />
+          <strong>name</strong> / <strong>stat</strong> — include item name / stats in the notification<br />
+          <strong>&#123;pattern&#125;</strong> — regex match on stat text<br />
+          <strong>Groups:</strong> <code class="inline-code">[unique gold notify] &#123; "Jordan" "Mara" &#125;</code> — shared attributes for each rule inside<br />
+          <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-visibility">show</span> reveal items.
         </p>
       </div>
     </details>
@@ -316,36 +320,22 @@
     gap: var(--space-2, 8px);
   }
 
-  .filter-mode-switch {
-    display: flex;
-    background: var(--bg-tertiary, #12121a);
-    border: 1px solid var(--border, #2a2a35);
-    border-radius: var(--radius-md, 8px);
-    padding: 2px;
-    gap: 2px;
-  }
-
-  .mode-btn {
-    padding: 6px 12px;
-    font-size: var(--text-sm, 13px);
+  .default-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: var(--radius-full, 9999px);
+    font-size: var(--text-xs, 12px);
     font-weight: 500;
-    border: none;
-    border-radius: var(--radius-sm, 6px);
-    background: transparent;
+    background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
     color: var(--text-secondary);
-    cursor: pointer;
-    transition: all 0.15s ease;
+    cursor: help;
+    user-select: none;
   }
 
-  .mode-btn:hover:not(.active) {
-    color: var(--text-primary);
-    background: var(--bg-secondary);
-  }
-
-  .mode-btn.active {
-    background: var(--accent, #c7b377);
-    color: var(--bg-primary, #0a0a0f);
-    font-weight: 600;
+  .default-mode-badge.hide {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent);
   }
 
   .status-badge {
@@ -486,6 +476,24 @@
 
   .kw-sound {
     color: #8be9fd;
+  }
+
+  .kw-visibility {
+    color: #ff6b6b;
+    font-weight: 600;
+  }
+
+  .kw-notify {
+    color: #f1fa8c;
+    font-weight: 600;
+  }
+
+  .inline-code {
+    display: inline;
+    padding: 1px 4px;
+    font-family: var(--font-mono);
+    background: var(--bg-secondary, #1a1a1f);
+    border-radius: var(--radius-sm, 3px);
   }
 
   .help-note {

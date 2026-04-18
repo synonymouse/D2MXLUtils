@@ -16,8 +16,8 @@
     canSave?: boolean;
     /** Callback when profile selection changes */
     onselect?: (profile: ProfileInfo | null) => void;
-    /** Callback when profile is loaded (with DSL content) */
-    onload?: (name: string, dslSource: string) => void;
+    /** Callback when profile is loaded (with raw DSL text) */
+    onload?: (name: string, rulesText: string) => void;
     /** Callback to get current DSL for saving */
     getCurrentDsl?: () => string;
     /** Callback when save is completed */
@@ -85,10 +85,8 @@
 
   async function loadProfileContent(name: string) {
     try {
-      const result = await invoke<{ name: string; dslSource: string }>("load_profile", { 
-        name 
-      });
-      onload?.(result.name, result.dslSource);
+      const rulesText = await invoke<string>("load_profile", { name });
+      onload?.(name, rulesText);
     } catch (e) {
       console.error(`[ProfileSelector] Failed to load content for ${name}:`, e);
       error = String(e);
@@ -120,13 +118,15 @@
 
   async function saveCurrentProfile() {
     if (!selectedProfile || !getCurrentDsl || !canSave) return;
-    
+
     isLoading = true;
     error = null;
-    
+
     try {
-      const dsl = getCurrentDsl();
-      await invoke("save_profile", { name: selectedProfile, dslSource: dsl });
+      await invoke("save_profile", {
+        name: selectedProfile,
+        rulesText: getCurrentDsl(),
+      });
       await loadProfiles(); // Reload to update rule count/modified time
       onsave?.();
     } catch (e) {

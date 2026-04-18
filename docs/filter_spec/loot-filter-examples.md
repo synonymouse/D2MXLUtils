@@ -1,6 +1,6 @@
 # Loot Filter Examples
 
-Scenarios illustrating last-match semantics, groups, and the Hide All checkbox.
+Scenarios illustrating last-match semantics, groups, and the `hide default` / `show default` directive.
 
 ---
 
@@ -45,9 +45,9 @@ rare {(All Skills).*(Faster Cast|Resist)} purple notify stat
 
 ---
 
-## Scenario 3 — Hide All = off
+## Scenario 3 — `show default` (implicit)
 
-Game's built-in filter is in charge by default. Rules add highlights and override visibility only where needed.
+Game's built-in filter is in charge by default. Rules add highlights and override visibility only where needed. No directive needed — `show default` is implicit.
 
 ```
 # Highlight uniques and sets in-game
@@ -66,11 +66,13 @@ Unmatched items follow the game's decision.
 
 ---
 
-## Scenario 4 — Hide All = on
+## Scenario 4 — `hide default`
 
 Only items whose winning rule has `show` are visible. Everything else is hidden.
 
 ```
+hide default
+
 unique show gold notify sound1
 set show lime notify
 "Rune$" show orange
@@ -236,11 +238,13 @@ eth sacred lime notify
 
 ---
 
-## Complete Filter — Hide All mode (white-list)
+## Complete Filter — white-list (`hide default`)
 
-Enable the Hide All checkbox in the UI, then:
+Put `hide default` at the top of the file; everything unmatched is hidden.
 
 ```
+hide default
+
 # White-list: everything else is hidden
 unique show gold notify sound1
 set show lime notify sound2

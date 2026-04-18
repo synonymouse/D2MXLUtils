@@ -30,7 +30,7 @@ const TIER_KEYWORDS = [
   "4",
 ];
 
-// Color keywords
+// Color keywords (no longer include show/hide — those are visibility)
 const COLOR_KEYWORDS = [
   "transparent",
   "white",
@@ -46,9 +46,13 @@ const COLOR_KEYWORDS = [
   "yellow",
   "green",
   "purple",
-  "hide",
-  "show",
 ];
+
+// Visibility keywords
+const VISIBILITY_KEYWORDS = ["show", "hide"];
+
+// Notify keyword (required to fire an overlay notification)
+const NOTIFY_KEYWORDS = ["notify"];
 
 // Sound keywords
 const SOUND_KEYWORDS = [
@@ -104,22 +108,58 @@ const d2rulesLanguage = StreamLanguage.define({
       return "string";
     }
 
-    // Stat patterns in braces: {stat pattern}
+    // Stat patterns in braces: {stat pattern}. Group body { ... } is handled
+    // separately: a lone `{` or `}` on a line is recognised as a groupBracket.
     if (stream.peek() === "{") {
-      stream.next(); // consume opening brace
+      // A bare `{` at end-of-visible-content is a group opener — don't consume
+      // what follows as a stat pattern.
+      const pos = stream.pos;
+      stream.next();
+      const rest = stream.string.slice(stream.pos).trim();
+      if (rest === "" || rest.startsWith("#")) {
+        return "bracket groupBracket";
+      }
+      // Otherwise treat as a stat pattern up to the matching `}`.
       while (!stream.eol()) {
         const ch = stream.next();
         if (ch === "}") {
           return "regexp";
         }
       }
-      // Unclosed brace
+      // Unclosed — fall through as regexp so the linter can flag it.
+      void pos;
       return "regexp";
+    }
+
+    if (stream.peek() === "}") {
+      stream.next();
+      return "bracket groupBracket";
+    }
+
+    // Group header bracket: `[` ... `]` { ... }
+    if (stream.peek() === "[") {
+      stream.next();
+      return "bracket groupBracket";
+    }
+    if (stream.peek() === "]") {
+      stream.next();
+      return "bracket groupBracket";
     }
 
     // Words (keywords or unknown)
     if (stream.match(/^\w+/)) {
       const word = stream.current().toLowerCase();
+
+      // File-scope directive `hide default` / `show default`: both tokens get
+      // the `directive` style when the line consists of exactly those two
+      // words (ignoring trailing comments).
+      if (word === "default") {
+        const prefix = stream.string.slice(0, stream.start).trim().toLowerCase();
+        if (prefix === "hide" || prefix === "show") {
+          return "keyword directive";
+        }
+        return "keyword unknown";
+      }
 
       // Quality keywords with specific styling
       if (word === "unique") return "keyword qualityUnique";
@@ -130,6 +170,21 @@ const d2rulesLanguage = StreamLanguage.define({
 
       // Tier keywords
       if (TIER_KEYWORDS.includes(word)) return "keyword tier";
+
+      // Visibility (show / hide) — distinct from color. When the line is the
+      // `hide default` / `show default` file-scope directive, emit the
+      // `directive` style instead.
+      if (VISIBILITY_KEYWORDS.includes(word)) {
+        const prefix = stream.string.slice(0, stream.start).trim();
+        const rest = stream.string.slice(stream.pos).replace(/#.*/, "").trim().toLowerCase();
+        if (prefix === "" && rest === "default") {
+          return "keyword directive";
+        }
+        return "keyword visibility";
+      }
+
+      // Notify — the only thing that gates a notification.
+      if (NOTIFY_KEYWORDS.includes(word)) return "keyword notify";
 
       // Color keywords
       if (COLOR_KEYWORDS.includes(word)) return "keyword color";

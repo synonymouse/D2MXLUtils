@@ -1,12 +1,14 @@
-//! Rule matching logic
+//! Rule matching against a single scanned item.
+//!
+//! A [`MatchContext`] caches lowercase copies of the item's name/stats so
+//! rules with regexes don't redo the work. Matching is pure: no per-item
+//! state mutates between rules.
 
 use regex::Regex;
 
-use super::{EtherealMode, Rule};
+use super::{ItemQuality, ItemTier, Rule};
 use crate::notifier::ItemDropEvent;
 
-/// Context for matching rules against items
-/// Holds compiled regex patterns for efficient repeated matching
 pub struct MatchContext<'a> {
     pub item: &'a ItemDropEvent,
     name_lower: String,
@@ -22,255 +24,161 @@ impl<'a> MatchContext<'a> {
         }
     }
 
-    /// Check if a rule matches the item in this context
     pub fn matches(&self, rule: &Rule) -> bool {
-        if !rule.active {
+        if !self.quality_matches(rule.quality) {
             return false;
         }
-
-        // Check quality
-        if rule.item_quality > 0 {
-            let required_quality = match rule.item_quality {
-                1 => "Inferior",
-                2 => "Normal",
-                3 => "Superior",
-                4 => "Magic",
-                5 => "Set",
-                6 => "Rare",
-                7 => "Unique",
-                8 => "Crafted",
-                9 => "Honorific",
-                _ => "",
-            };
-            if !required_quality.is_empty()
-                && !self.item.quality.eq_ignore_ascii_case(required_quality)
-            {
+        if !self.tier_matches(rule.tier) {
+            return false;
+        }
+        if rule.ethereal && !self.item.is_ethereal {
+            return false;
+        }
+        if let Some(ref pattern) = rule.name_pattern {
+            if !pattern_matches(pattern, &self.name_lower) {
                 return false;
             }
         }
-
-        // Check ethereal
-        let eth_mode = EtherealMode::from(rule.ethereal);
-        match eth_mode {
-            EtherealMode::Required if !self.item.is_ethereal => return false,
-            EtherealMode::Forbidden if self.item.is_ethereal => return false,
-            _ => {}
-        }
-
-        // Check name pattern (regex)
-        if let Some(ref pattern) = rule.name_pattern {
-            match Regex::new(&format!("(?i){}", pattern)) {
-                Ok(re) => {
-                    if !re.is_match(&self.name_lower) {
-                        return false;
-                    }
-                }
-                Err(_) => {
-                    // Invalid regex, try simple substring match
-                    if !self.name_lower.contains(&pattern.to_lowercase()) {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        // Check stat pattern (regex)
         if let Some(ref pattern) = rule.stat_pattern {
-            match Regex::new(&format!("(?i){}", pattern)) {
-                Ok(re) => {
-                    if !re.is_match(&self.stats_lower) {
-                        return false;
-                    }
-                }
-                Err(_) => {
-                    // Invalid regex, try simple substring match
-                    if !self.stats_lower.contains(&pattern.to_lowercase()) {
-                        return false;
-                    }
-                }
+            if !pattern_matches(pattern, &self.stats_lower) {
+                return false;
             }
         }
-
-        // Check legacy rule types for backwards compatibility
-        match rule.rule_type {
-            0 => {
-                // RuleType::Class - match by item class
-                if let Some(class) = rule.params.class {
-                    if self.item.class != class {
-                        return false;
-                    }
-                }
-            }
-            2 => {
-                // RuleType::Name - match by name substring (legacy)
-                if let Some(ref name_substr) = rule.params.name {
-                    if !self.name_lower.contains(&name_substr.to_lowercase()) {
-                        return false;
-                    }
-                }
-            }
-            3 => {
-                // RuleType::All - matches everything (other checks already done)
-            }
-            _ => {}
-        }
-
-        // TODO: Check tier when we have tier info from items
-        // TODO: Check ilvl/clvl when we have that info
-
         true
     }
 
-    /// Check if a rule's stat_pattern matches the item stats
-    /// Used for priority calculation (stat match = highest priority)
-    pub fn stat_pattern_matched(&self, rule: &Rule) -> bool {
-        if let Some(ref pattern) = rule.stat_pattern {
-            match Regex::new(&format!("(?i){}", pattern)) {
-                Ok(re) => re.is_match(&self.stats_lower),
-                Err(_) => {
-                    // Invalid regex, try simple substring match
-                    self.stats_lower.contains(&pattern.to_lowercase())
-                }
-            }
-        } else {
-            false
+    fn quality_matches(&self, rule_quality: ItemQuality) -> bool {
+        if rule_quality == ItemQuality::Any {
+            return true;
+        }
+        match rule_quality.d2_quality_name() {
+            Some(expected) => self.item.quality.eq_ignore_ascii_case(expected),
+            None => true,
+        }
+    }
+
+    fn tier_matches(&self, rule_tier: ItemTier) -> bool {
+        if rule_tier == ItemTier::Any {
+            return true;
+        }
+        match self.item.tier {
+            Some(item_tier) => item_tier == rule_tier,
+            None => false,
         }
     }
 }
 
-/// Compile a regex pattern, returning None if invalid
-pub fn compile_pattern(pattern: &str) -> Option<Regex> {
-    Regex::new(&format!("(?i){}", pattern)).ok()
+fn pattern_matches(pattern: &str, haystack_lower: &str) -> bool {
+    match Regex::new(&format!("(?i){}", pattern)) {
+        Ok(re) => re.is_match(haystack_lower),
+        Err(_) => haystack_lower.contains(&pattern.to_lowercase()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn make_item(name: &str, quality: &str, stats: &str, ethereal: bool) -> ItemDropEvent {
+    fn item(name: &str, quality: &str, stats: &str, eth: bool) -> ItemDropEvent {
         ItemDropEvent {
             unit_id: 1,
             class: 25,
             quality: quality.to_string(),
             name: name.to_string(),
             stats: stats.to_string(),
-            is_ethereal: ethereal,
+            is_ethereal: eth,
             is_identified: true,
             p_unit_data: 0,
+            tier: None,
+            filter: None,
         }
     }
 
     #[test]
-    fn test_name_pattern_matching() {
-        let item = make_item("Stone of Jordan", "Unique", "+1 to All Skills", false);
-        let ctx = MatchContext::new(&item);
+    fn name_pattern_regex_and_substring_fallback() {
+        let it = item("Stone of Jordan", "Unique", "", false);
+        let ctx = MatchContext::new(&it);
 
         let rule = Rule {
-            name_pattern: Some("Jordan$".to_string()),
-            ..Default::default()
+            name_pattern: Some("Jordan$".into()),
+            ..Rule::default()
         };
         assert!(ctx.matches(&rule));
 
-        let rule = Rule {
-            name_pattern: Some("Ring$".to_string()),
-            ..Default::default()
+        let bad = Rule {
+            name_pattern: Some("Ring[".into()),
+            ..Rule::default()
         };
-        assert!(!ctx.matches(&rule));
+        assert!(!ctx.matches(&bad));
     }
 
     #[test]
-    fn test_quality_matching() {
-        let item = make_item("Test Ring", "Unique", "", false);
-        let ctx = MatchContext::new(&item);
-
-        let rule = Rule {
-            item_quality: 7, // Unique
-            ..Default::default()
+    fn quality_match_uses_item_quality_name() {
+        let it = item("X", "Unique", "", false);
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            quality: ItemQuality::Unique,
+            ..Rule::default()
         };
-        assert!(ctx.matches(&rule));
-
-        let rule = Rule {
-            item_quality: 6, // Rare
-            ..Default::default()
+        assert!(ctx.matches(&r));
+        let r = Rule {
+            quality: ItemQuality::Rare,
+            ..Rule::default()
         };
-        assert!(!ctx.matches(&rule));
+        assert!(!ctx.matches(&r));
     }
 
     #[test]
-    fn test_stat_pattern_matching() {
-        let item = make_item("Ring", "Unique", "+3 to All Skills\n+15% Faster Cast Rate", false);
-        let ctx = MatchContext::new(&item);
-
-        let rule = Rule {
-            stat_pattern: Some("All Skills".to_string()),
-            ..Default::default()
+    fn ethereal_only_required_mode() {
+        let eth_it = item("X", "Unique", "", true);
+        let ctx = MatchContext::new(&eth_it);
+        let r = Rule {
+            ethereal: true,
+            ..Rule::default()
         };
-        assert!(ctx.matches(&rule));
+        assert!(ctx.matches(&r));
 
-        let rule = Rule {
-            stat_pattern: Some(r"\+\d+ to All Skills".to_string()),
-            ..Default::default()
-        };
-        assert!(ctx.matches(&rule));
-
-        let rule = Rule {
-            stat_pattern: Some("Life Stolen".to_string()),
-            ..Default::default()
-        };
-        assert!(!ctx.matches(&rule));
+        let norm_it = item("X", "Unique", "", false);
+        let ctx = MatchContext::new(&norm_it);
+        assert!(!ctx.matches(&r));
     }
 
     #[test]
-    fn test_ethereal_matching() {
-        let eth_item = make_item("Eth Sword", "Unique", "", true);
-        let normal_item = make_item("Sword", "Unique", "", false);
-
-        let eth_ctx = MatchContext::new(&eth_item);
-        let normal_ctx = MatchContext::new(&normal_item);
-
-        // eth required
-        let rule = Rule {
-            ethereal: 1,
-            ..Default::default()
+    fn tier_rule_fails_when_item_tier_unknown() {
+        let it = item("X", "Unique", "", false);
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            tier: ItemTier::Sacred,
+            ..Rule::default()
         };
-        assert!(eth_ctx.matches(&rule));
-        assert!(!normal_ctx.matches(&rule));
-
-        // eth forbidden
-        let rule = Rule {
-            ethereal: 2,
-            ..Default::default()
-        };
-        assert!(!eth_ctx.matches(&rule));
-        assert!(normal_ctx.matches(&rule));
+        assert!(!ctx.matches(&r));
     }
 
     #[test]
-    fn test_combined_matching() {
-        let item = make_item(
-            "Stone of Jordan",
+    fn tier_rule_passes_when_item_tier_matches() {
+        let mut it = item("X", "Unique", "", false);
+        it.tier = Some(ItemTier::Sacred);
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            tier: ItemTier::Sacred,
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&r));
+    }
+
+    #[test]
+    fn stat_pattern_regex() {
+        let it = item(
+            "Ring",
             "Unique",
-            "+1 to All Skills\n+25% Lightning Resist",
+            "+3 to All Skills\n+15% Faster Cast Rate",
             false,
         );
-        let ctx = MatchContext::new(&item);
-
-        let rule = Rule {
-            name_pattern: Some("Jordan".to_string()),
-            item_quality: 7,
-            stat_pattern: Some("Skills".to_string()),
-            ..Default::default()
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            stat_pattern: Some(r"\+\d+ to All Skills".into()),
+            ..Rule::default()
         };
-        assert!(ctx.matches(&rule));
-
-        // Fail on quality
-        let rule = Rule {
-            name_pattern: Some("Jordan".to_string()),
-            item_quality: 6, // Rare, but item is Unique
-            stat_pattern: Some("Skills".to_string()),
-            ..Default::default()
-        };
-        assert!(!ctx.matches(&rule));
+        assert!(ctx.matches(&r));
     }
 }
-

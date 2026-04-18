@@ -13,16 +13,21 @@ These two decisions are independent. Filter behavior is described by a text DSL 
 
 ## Core Concepts
 
-### Hide All checkbox
+### Default mode directive
 
-A single checkbox in the editor UI controls the default visibility for items that are not forced by a rule:
+A file-scope directive controls the default visibility for items that are not forced by a rule:
 
-| Hide All | Default visibility | Meaning |
+```
+hide default      # hide unmatched items
+show default      # show unmatched items (implicit default if the directive is absent)
+```
+
+| Directive | Default visibility | Meaning |
 |---|---|---|
-| off | inherited from game | Game's built-in loot filter decides. Rules can override with `show` or `hide`. |
-| on  | hidden              | Only rules with `show` reveal items. Rules without `show` do not reveal. |
+| `show default` (or absent) | inherited from game | Game's built-in loot filter decides. Rules can override with `show` or `hide`. |
+| `hide default`             | hidden              | Only rules with `show` reveal items. Rules without `show` do not reveal. |
 
-There is no separate "Show All" mode — it is just "Hide All = off".
+The directive may appear at most once per file, at file scope only (never inside a group). The editor shows a read-only indicator reflecting the current mode.
 
 ### Last-match wins
 
@@ -76,20 +81,20 @@ Invalid regex falls back to plain substring matching.
 
 ## Visibility
 
-The winning rule's visibility flag plus the Hide All checkbox determine the outcome:
+The winning rule's visibility flag plus the default-mode directive determine the outcome:
 
-| Hide All | Winner flag | Result |
+| Default mode    | Winner flag | Result |
 |---|---|---|
-| off | none  | game decides |
-| off | `show` | shown (overrides game's hide) |
-| off | `hide` | hidden |
-| on  | none  | hidden |
-| on  | `show` | shown |
-| on  | `hide` | hidden |
+| `show default`  | none   | game decides |
+| `show default`  | `show` | shown (overrides game's hide) |
+| `show default`  | `hide` | hidden |
+| `hide default`  | none   | hidden |
+| `hide default`  | `show` | shown |
+| `hide default`  | `hide` | hidden |
 
 If no rule matches:
-- Hide All off → game decides.
-- Hide All on  → hidden.
+- `show default` (or absent directive) → game decides.
+- `hide default` → hidden.
 
 ---
 
@@ -142,10 +147,9 @@ decide(item, rules, hide_all):
 
 ```rust
 FilterConfig {
-    name: String,
-    hide_all: bool,
-    rules: Vec<Rule>,          // flattened, groups expanded
-    dsl_source: Option<String>,
+    name: String,       // runtime-only, derived from profile filename
+    hide_all: bool,     // set by the `hide default` / `show default` directive
+    rules: Vec<Rule>,   // flattened, groups expanded
 }
 
 enum Visibility { Default, Show, Hide }
@@ -165,10 +169,10 @@ Rule {
     notify:        bool,
     display_name:  bool,
     display_stats: bool,
-
-    source_line: Option<String>,
 }
 ```
+
+Profiles are persisted as plain `.rules` DSL text — there is no intermediate JSON form. The filename stem is the profile name.
 
 ---
 
