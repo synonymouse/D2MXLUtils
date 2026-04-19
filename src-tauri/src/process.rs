@@ -200,8 +200,10 @@ impl ProcessHandle {
                 }
             }
 
-            // Move forward (overlap by pattern length to catch patterns at chunk boundaries)
-            offset += read_size.saturating_sub(pattern.len());
+            // Overlap by pattern length at chunk boundaries; .max(1) guarantees
+            // forward progress at the tail where read_size < pattern.len() would
+            // otherwise yield 0 and loop forever.
+            offset += read_size.saturating_sub(pattern.len()).max(1);
         }
 
         None
