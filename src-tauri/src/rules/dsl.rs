@@ -56,15 +56,12 @@ pub enum ValidationSeverity {
 // Shared attribute bag
 // =====================================================================
 
-/// Parsed set of attributes (everything except the name pattern).
-/// Used both for rules and for group headers. Fields stay `Option`
-/// so we can tell "not set" apart from "explicitly set" when merging
-/// a group header into a contained rule.
+/// `Option` distinguishes "unset" (inherit from group) from "explicitly set".
 #[derive(Debug, Clone, Default)]
 struct Attrs {
     stat_pattern: Option<String>,
-    quality: Option<ItemQuality>,
-    tier: Option<ItemTier>,
+    qualities: Option<Vec<ItemQuality>>,
+    tiers: Option<Vec<ItemTier>>,
     ethereal: Option<bool>,
     visibility: Option<Visibility>,
     color: Option<NotifyColor>,
@@ -79,11 +76,11 @@ impl Attrs {
         if let Some(ref s) = self.stat_pattern {
             rule.stat_pattern = Some(s.clone());
         }
-        if let Some(q) = self.quality {
-            rule.quality = q;
+        if let Some(ref q) = self.qualities {
+            rule.qualities = q.clone();
         }
-        if let Some(t) = self.tier {
-            rule.tier = t;
+        if let Some(ref t) = self.tiers {
+            rule.tiers = t.clone();
         }
         if let Some(e) = self.ethereal {
             rule.ethereal = e;
@@ -114,11 +111,11 @@ impl Attrs {
         if self.stat_pattern.is_none() {
             self.stat_pattern = group.stat_pattern.clone();
         }
-        if self.quality.is_none() {
-            self.quality = group.quality;
+        if self.qualities.is_none() {
+            self.qualities = group.qualities.clone();
         }
-        if self.tier.is_none() {
-            self.tier = group.tier;
+        if self.tiers.is_none() {
+            self.tiers = group.tiers.clone();
         }
         if self.ethereal.is_none() {
             self.ethereal = group.ethereal;
@@ -436,11 +433,17 @@ fn parse_attrs_into(
         let lower = token.to_lowercase();
 
         if let Some(q) = ItemQuality::from_str(&lower) {
-            attrs.quality = Some(q);
+            let set = attrs.qualities.get_or_insert_with(Vec::new);
+            if !set.contains(&q) {
+                set.push(q);
+            }
             continue;
         }
         if let Some(t) = ItemTier::from_str(&lower) {
-            attrs.tier = Some(t);
+            let set = attrs.tiers.get_or_insert_with(Vec::new);
+            if !set.contains(&t) {
+                set.push(t);
+            }
             continue;
         }
         match lower.as_str() {
@@ -595,15 +598,15 @@ fn strip_stat_brace(s: String) -> String {
 fn attrs_from_rule(rule: &Rule) -> Attrs {
     Attrs {
         stat_pattern: rule.stat_pattern.clone(),
-        quality: if rule.quality == ItemQuality::Any {
+        qualities: if rule.qualities.is_empty() {
             None
         } else {
-            Some(rule.quality)
+            Some(rule.qualities.clone())
         },
-        tier: if rule.tier == ItemTier::Any {
+        tiers: if rule.tiers.is_empty() {
             None
         } else {
-            Some(rule.tier)
+            Some(rule.tiers.clone())
         },
         ethereal: if rule.ethereal { Some(true) } else { None },
         visibility: if rule.visibility == Visibility::Default {
@@ -728,7 +731,7 @@ mod tests {
         assert_eq!(cfg.rules.len(), 1);
         let r = &cfg.rules[0];
         assert_eq!(r.name_pattern, None);
-        assert_eq!(r.quality, ItemQuality::Unique);
+        assert_eq!(r.qualities, vec![ItemQuality::Unique]);
         assert_eq!(r.color, Some(NotifyColor::Gold));
         assert!(!r.notify);
     }
@@ -770,7 +773,7 @@ mod tests {
         let cfg = parse_dsl(src).unwrap();
         assert_eq!(cfg.rules.len(), 3);
         for r in &cfg.rules {
-            assert_eq!(r.quality, ItemQuality::Unique);
+            assert_eq!(r.qualities, vec![ItemQuality::Unique]);
             assert_eq!(r.color, Some(NotifyColor::Gold));
             assert_eq!(r.sound, Some(1));
             assert!(r.notify);
@@ -887,5 +890,54 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.severity == ValidationSeverity::Error && e.message.contains("Duplicate")));
+    }
+
+    #[test]
+    fn multi_tier_tokens_accumulate_into_set() {
+        let cfg = parse_dsl("1 2 3 4 hide").unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        assert_eq!(
+            cfg.rules[0].tiers,
+            vec![
+                ItemTier::Tier1,
+                ItemTier::Tier2,
+                ItemTier::Tier3,
+                ItemTier::Tier4,
+            ]
+        );
+        assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+        assert!(cfg.rules[0].qualities.is_empty());
+    }
+
+    #[test]
+    fn multi_quality_tokens_accumulate_into_set() {
+        let cfg = parse_dsl("magic rare unique hide").unwrap();
+        assert_eq!(
+            cfg.rules[0].qualities,
+            vec![ItemQuality::Magic, ItemQuality::Rare, ItemQuality::Unique]
+        );
+        assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn mixed_multi_tier_and_quality_rule() {
+        let cfg = parse_dsl("1 2 3 4 unique hide").unwrap();
+        assert_eq!(
+            cfg.rules[0].tiers,
+            vec![
+                ItemTier::Tier1,
+                ItemTier::Tier2,
+                ItemTier::Tier3,
+                ItemTier::Tier4,
+            ]
+        );
+        assert_eq!(cfg.rules[0].qualities, vec![ItemQuality::Unique]);
+        assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn duplicate_tier_tokens_are_deduplicated() {
+        let cfg = parse_dsl("1 1 2 2 hide").unwrap();
+        assert_eq!(cfg.rules[0].tiers, vec![ItemTier::Tier1, ItemTier::Tier2]);
     }
 }

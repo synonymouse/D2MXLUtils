@@ -104,6 +104,25 @@ rare notify                        # notification with defaults
 
 ---
 
+## Scenario 5b — Multi-tier / multi-quality rules (OR-match)
+
+```
+# Hide every non-sacred equipment drop (tiers 1-4) regardless of quality
+1 2 3 4 hide
+
+# Narrower: hide only tier 1-4 uniques, keep tier 1-4 magic/rare visible
+1 2 3 4 unique hide
+
+# Hide all non-rare low-quality junk in one line
+normal low magic hide
+```
+
+Multiple quality or tier keywords on one rule are OR-combined. A rule with
+both qualities and tiers intersects them: `1 2 3 4 unique hide` matches an
+item that is (tier 1 OR 2 OR 3 OR 4) AND unique.
+
+---
+
 ## Scenario 6 — Hide but notify
 
 ```

@@ -54,6 +54,13 @@ The backend handles all low-level Windows operations:
 
 ## Important Conventions
 
+### Git Commits
+
+**Never run `git commit` without an explicit request from the user in the current turn.**
+Staging, reviewing diffs, and writing commit messages are fine — but the actual
+`git commit` must wait for the user to say "commit", "закоммить", or equivalent.
+A previous approval does not carry over: each commit needs its own green light.
+
 ### Logging in Rust Backend
 
 **Do NOT use `println!` / `eprintln!` in production code.** Use the logger module:

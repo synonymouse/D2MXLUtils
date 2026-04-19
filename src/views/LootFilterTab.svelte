@@ -56,11 +56,6 @@ sacred eth gold notify sound1 name
   });
 
   async function syncFilterConfig() {
-    // Parse server-side: backend is authoritative. If the DSL has hard errors
-    // parse_filter_dsl will reject — we log and leave the previous config
-    // active. We intentionally do NOT gate on `validationStatus` because
-    // the editor-side linter is debounced and may lag the actual text,
-    // causing the config to silently stop syncing after profile-load/save.
     try {
       const config = await invoke<any>("parse_filter_dsl", { text: dslText });
       hideAll = !!config.hide_all;

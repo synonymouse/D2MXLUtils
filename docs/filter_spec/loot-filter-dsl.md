@@ -50,7 +50,11 @@ With `hide default`, only rules with an explicit `show` flag reveal items. Witho
 
 ### Name pattern (optional)
 
-Regex in double quotes, matched case-insensitively against the item name.
+Regex in double quotes, matched case-insensitively. The rule matches if the
+regex hits **either** the item's runtime display name (e.g. the rare affix
+`"Rune Turn"` or the unique name `"Stone of Jordan"`) **or** the items.txt
+base type name (e.g. `"Ring"`, `"Amulet"`, `"Great Axe"`). So `"Ring$"` will
+match any ring regardless of quality or generated affix.
 
 ```
 "Ring$" unique gold
@@ -83,6 +87,10 @@ set lime notify
 | `craft` | Crafted |
 | `honor` | Honorific |
 
+Multiple quality keywords on one rule **OR together** — the rule matches if the
+item's quality is any of the listed ones. Example: `magic rare unique hide`
+hides magic, rare, and unique items. Duplicates are collapsed.
+
 ---
 
 ### Tier (MedianXL)
@@ -93,6 +101,11 @@ set lime notify
 | `sacred` | Sacred |
 | `angelic` | Angelic |
 | `master` | Mastercrafted |
+
+Multiple tier keywords on one rule **OR together** — the rule matches if the
+item's tier is any of the listed ones. Example: `1 2 3 4 hide` hides
+tier 1–4 items. Combine with a quality to intersect: `1 2 3 4 unique hide`
+hides only tier 1–4 uniques.
 
 ---
 

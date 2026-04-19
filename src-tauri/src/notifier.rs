@@ -2,7 +2,7 @@
 //!
 //! This module implements the core NotifierMain logic from D2Stats.au3
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "windows")]
@@ -21,29 +21,20 @@ use crate::process::D2Context;
 use crate::rules::{FilterConfig, MatchContext, Visibility};
 use crate::rules::{ItemTier, Notification};
 
-/// Payload sent to frontend when an item fires a notification.
-///
-/// The `filter` field carries the winning rule's notification attributes
-/// (color, sound, and whether to display name / stats). When `filter` is
-/// `Some`, the overlay is expected to render the notification. The scanner
-/// only emits this event when the winning rule opted in via `notify`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemDropEvent {
     pub unit_id: u32,
     pub class: u32,
     pub quality: String,
     pub name: String,
+    #[serde(default)]
+    pub base_name: String,
     pub stats: String,
     pub is_ethereal: bool,
     pub is_identified: bool,
-    /// Pointer to ItemData structure (for set_item_visibility)
     pub p_unit_data: u32,
-    /// MedianXL tier when the scanner can infer it; `None` otherwise.
-    /// Rules that use a tier keyword will not match items whose tier is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ItemTier>,
-    /// Notification attributes from the winning rule. `None` means no
-    /// rule with `notify` matched — the event should not produce an overlay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
 }
@@ -63,11 +54,14 @@ pub struct DropScanner {
     filter_enabled: bool,
     /// Loot filter hook for D2Sigma.dll
     loot_hook: LootFilterHook,
-    /// Resolved items by unit_id; reused on config change to avoid re-injection.
-    item_cache: HashMap<u32, ItemDropEvent>,
-    /// Per-class MedianXL tier cache, built lazily on first tick.
-    /// Indexed by `UnitAny.class` (items.txt row index).
-    tier_cache: Option<Vec<ItemTier>>,
+    /// Indexed by `UnitAny.class`. Built lazily on first in-game tick.
+    class_cache: Option<Vec<ClassInfo>>,
+}
+
+#[derive(Debug, Clone)]
+struct ClassInfo {
+    base_name: String,
+    tier: ItemTier,
 }
 
 #[cfg(target_os = "windows")]
@@ -75,8 +69,7 @@ impl DropScanner {
     /// Create a new scanner attached to the D2 process
     pub fn new() -> Result<Self, String> {
         let ctx = D2Context::new()?;
-        let injector =
-            D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common, ctx.d2_lang)?;
+        let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common, ctx.d2_lang)?;
 
         // Initialize and inject the loot filter hook
         let mut loot_hook = LootFilterHook::new();
@@ -93,8 +86,7 @@ impl DropScanner {
             filter_config: None,
             filter_enabled: false,
             loot_hook,
-            item_cache: HashMap::new(),
-            tier_cache: None,
+            class_cache: None,
         })
     }
 
@@ -103,20 +95,7 @@ impl DropScanner {
     }
 
     pub fn on_filter_config_changed(&mut self) {
-        if self.loot_hook.is_injected() {
-            if let Err(e) = self.loot_hook.clear_hidden_items(&self.ctx) {
-                log_error(&format!(
-                    "Failed to clear hide mask on config change: {}",
-                    e
-                ));
-            }
-            if let Err(e) = self.loot_hook.clear_shown_items(&self.ctx) {
-                log_error(&format!(
-                    "Failed to clear show mask on config change: {}",
-                    e
-                ));
-            }
-        }
+        self.clear_cache();
     }
 
     /// Enable or disable automatic filtering
@@ -154,10 +133,8 @@ impl DropScanner {
         }
     }
 
-    /// Clear the seen items cache (call when entering a new game)
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
-        self.item_cache.clear();
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.clear_hidden_items(&self.ctx) {
                 log_error(&format!("Failed to clear hide mask: {}", e));
@@ -208,19 +185,16 @@ impl DropScanner {
             return events;
         }
 
-        // Build the per-class tier cache lazily on the first in-game tick.
-        // Synchronous (~2-3s one-time cost per game session) — matches D2Stats
-        // behavior. Further ticks hit an O(1) Vec lookup.
-        if self.tier_cache.is_none() {
-            match self.build_tier_cache() {
+        if self.class_cache.is_none() {
+            match self.build_class_cache() {
                 Ok(cache) => {
-                    log_info(&format!("Tier cache built: {} classes", cache.len()));
-                    self.tier_cache = Some(cache);
+                    log_info(&format!("Class cache built: {} classes", cache.len()));
+                    self.class_cache = Some(cache);
                 }
                 Err(e) => {
-                    log_error(&format!("Failed to build tier cache: {}", e));
+                    log_error(&format!("Failed to build class cache: {}", e));
                     // Install an empty cache so we don't keep retrying every tick.
-                    self.tier_cache = Some(Vec::new());
+                    self.class_cache = Some(Vec::new());
                 }
             }
         }
@@ -291,11 +265,6 @@ impl DropScanner {
                 if let Some(scanned) = self.scan_unit(p_unit) {
                     let event = self.to_event(scanned);
 
-                    // Cache the resolved event so later sweeps (e.g. after a
-                    // config change) can match name/stat rules against real
-                    // text instead of synthetic "Item#<class>" fallbacks.
-                    self.item_cache.insert(event.unit_id, event.clone());
-
                     // Apply filter if enabled
                     let mut event = event;
                     let mut should_emit = true;
@@ -311,10 +280,9 @@ impl DropScanner {
                                         "winner={}",
                                         r.name_pattern.as_deref().unwrap_or("<any>")
                                     ),
-                                    None => format!(
-                                        "no rule matched (hide_all={})",
-                                        filter.hide_all
-                                    ),
+                                    None => {
+                                        format!("no rule matched (hide_all={})", filter.hide_all)
+                                    }
                                 };
                                 let vis_label = match decision.visibility {
                                     Visibility::Show => "SHOW",
@@ -322,8 +290,9 @@ impl DropScanner {
                                     Visibility::Default => "DEFAULT",
                                 };
                                 log_info(&format!(
-                                    "[Filter] \"{}\" ({}, class={}) -> {} notify={} | {}",
+                                    "[Filter] \"{} {}\" ({}, class={}) -> {} notify={} | {}",
                                     event.name,
+                                    event.base_name,
                                     event.quality,
                                     event.class,
                                     vis_label,
@@ -381,108 +350,7 @@ impl DropScanner {
             }
         }
 
-        // Apply filter to ALL ground items (including already seen ones).
-        // This ensures newly spawned items are added to the hide mask and,
-        // after a config change, already-cached items are re-evaluated.
-        // We clone the FilterConfig out of the lock so the sweep can take
-        // `&mut self` (needed to write into item_cache / log_next_sweep).
-        let filter_snapshot = if self.filter_enabled {
-            self.filter_config
-                .as_ref()
-                .and_then(|arc| arc.read().ok().map(|g| g.clone()))
-        } else {
-            None
-        };
-        if let Some(filter) = filter_snapshot {
-            self.apply_filter_to_all_items(&filter, p_paths, i_paths);
-        }
-
         events
-    }
-
-    /// Apply filter rules to all ground items (not just new ones).
-    /// This ensures items that should be hidden end up in the bitmask,
-    /// including items already on the ground at config-change time.
-    fn apply_filter_to_all_items(
-        &mut self,
-        filter: &FilterConfig,
-        p_paths: usize,
-        i_paths: usize,
-    ) {
-        if !self.loot_hook.is_injected() {
-            return;
-        }
-
-        for i in 0..i_paths {
-            let p_path = match self.ctx.process.read_memory::<u32>(p_paths + 4 * i) {
-                Ok(p) if p != 0 => p as usize,
-                _ => continue,
-            };
-
-            let mut p_unit = match self
-                .ctx
-                .process
-                .read_memory::<u32>(p_path + paths::PATH_TO_UNIT)
-            {
-                Ok(p) if p != 0 => p,
-                _ => continue,
-            };
-
-            while p_unit != 0 {
-                // Read unit
-                let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
-                    Ok(u) => u,
-                    Err(_) => break,
-                };
-
-                // Only process items
-                if unit.unit_type == unit_type::ITEM && unit.p_unit_data != 0 {
-                    // Prefer the cached event (has real name/stats from injection).
-                    // Fall back to a synthetic event for items we haven't scanned yet.
-                    let event = if let Some(cached) = self.item_cache.get(&unit.unit_id) {
-                        cached.clone()
-                    } else if let Ok(idata) = self
-                        .ctx
-                        .process
-                        .read_memory::<ItemData>(unit.p_unit_data as usize)
-                    {
-                        let scanned = ScannedItem::from_unit(&unit, &idata, p_unit);
-                        ItemDropEvent {
-                            unit_id: unit.unit_id,
-                            class: unit.class,
-                            quality: scanned.quality_name().to_string(),
-                            name: scanned
-                                .name
-                                .clone()
-                                .unwrap_or_else(|| format!("Item#{}", unit.class)),
-                            stats: scanned.stats.clone().unwrap_or_default(),
-                            is_ethereal: scanned.is_ethereal,
-                            is_identified: scanned.is_identified,
-                            p_unit_data: unit.p_unit_data,
-                            tier: self.class_tier(unit.class),
-                            filter: None,
-                        }
-                    } else {
-                        p_unit = unit.p_next_unit;
-                        continue;
-                    };
-
-                    let ctx = MatchContext::new(&event);
-                    let decision = filter.decide(&ctx);
-                    match decision.visibility {
-                        Visibility::Show => {
-                            let _ = self.loot_hook.add_shown_unit_id(&self.ctx, unit.unit_id);
-                        }
-                        Visibility::Hide => {
-                            let _ = self.loot_hook.add_hidden_unit_id(&self.ctx, unit.unit_id);
-                        }
-                        Visibility::Default => {}
-                    }
-                }
-
-                p_unit = unit.p_next_unit;
-            }
-        }
     }
 
     /// Process a single unit, returning a fully scanned item if it's a new item.
@@ -547,6 +415,7 @@ impl DropScanner {
             unit_id: scanned.unit_id,
             class,
             quality: scanned.quality_name().to_string(),
+            base_name: self.class_base_name(class),
             // Fallback to a generic name if injection failed or returned empty text.
             name: scanned
                 .name
@@ -560,22 +429,23 @@ impl DropScanner {
         }
     }
 
-    /// Look up the MedianXL tier for an item class via the cached table.
-    /// Returns `None` if the cache is not built yet or the class is out of range.
     fn class_tier(&self, class: u32) -> Option<ItemTier> {
-        self.tier_cache
+        self.class_cache
             .as_ref()
             .and_then(|cache| cache.get(class as usize))
-            .copied()
+            .map(|info| info.tier)
     }
 
-    /// Walk items.txt once and derive a `Vec<ItemTier>` indexed by class.
-    ///
-    /// Port of `NotifierCache` in D2Stats.au3 (lines 697-750): for each item
-    /// class we read its base-name via D2Lang_GetStringById and, for weapon/armor
-    /// classes (those with `items_txt.MISC != 0`), scan the name for a tier
-    /// marker. Runes, gems, amulets, rings, etc. get `Tier0`.
-    fn build_tier_cache(&self) -> Result<Vec<ItemTier>, String> {
+    fn class_base_name(&self, class: u32) -> String {
+        self.class_cache
+            .as_ref()
+            .and_then(|cache| cache.get(class as usize))
+            .map(|info| info.base_name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Port of `NotifierCache` in D2Stats.au3 (lines 697-750).
+    fn build_class_cache(&self) -> Result<Vec<ClassInfo>, String> {
         let count_addr = self.ctx.d2_common + d2common::ITEMS_TXT_COUNT;
         let ptr_addr = self.ctx.d2_common + d2common::ITEMS_TXT;
 
@@ -589,9 +459,6 @@ impl DropScanner {
             ));
         }
 
-        // Compile the tier regex once. `(?i)` for case-insensitive Angelic/Sacred/Mastercrafted.
-        // The digit class catches tiers 1-4; tier 0 is the fallback for weapon/armor
-        // without a visible marker.
         let re = regex::Regex::new(r"(?i)\(Sacred\)|\(Angelic\)|\(Mastercrafted\)|[1-4]")
             .map_err(|e| format!("tier regex compile failed: {}", e))?;
 
@@ -600,17 +467,12 @@ impl DropScanner {
         for class in 0..count {
             let record = base_ptr + class * items_txt::RECORD_SIZE;
 
-            // items_txt.MISC (0x84) — non-zero means weapon or armor (tier-eligible).
+            // MISC != 0 → weapon or armor (tier-eligible).
             let misc = self
                 .ctx
                 .process
                 .read_memory::<u32>(record + items_txt::MISC)
                 .unwrap_or(0);
-
-            if misc == 0 {
-                cache.push(ItemTier::Tier0);
-                continue;
-            }
 
             let name_id = self
                 .ctx
@@ -618,28 +480,43 @@ impl DropScanner {
                 .read_memory::<u16>(record + items_txt::NAME_ID)
                 .unwrap_or(0);
 
-            let name = match self.injector.get_string(&self.ctx.process, name_id, 100) {
+            let raw_name = match self.injector.get_string(&self.ctx.process, name_id, 100) {
                 Ok(s) => strip_color_codes(&s),
                 Err(_) => {
-                    cache.push(ItemTier::Tier0);
+                    cache.push(ClassInfo {
+                        base_name: String::new(),
+                        tier: ItemTier::Tier0,
+                    });
                     continue;
                 }
             };
 
-            let tier = match re.find(&name) {
-                Some(m) => match m.as_str().to_ascii_lowercase().as_str() {
-                    "(sacred)" => ItemTier::Sacred,
-                    "(angelic)" => ItemTier::Angelic,
-                    "(mastercrafted)" => ItemTier::Master,
-                    "1" => ItemTier::Tier1,
-                    "2" => ItemTier::Tier2,
-                    "3" => ItemTier::Tier3,
-                    "4" => ItemTier::Tier4,
-                    _ => ItemTier::Tier0,
-                },
-                None => ItemTier::Tier0,
+            let base_name = raw_name
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+
+            let tier = if misc == 0 {
+                ItemTier::Tier0
+            } else {
+                match re.find(&raw_name) {
+                    Some(m) => match m.as_str().to_ascii_lowercase().as_str() {
+                        "(sacred)" => ItemTier::Sacred,
+                        "(angelic)" => ItemTier::Angelic,
+                        "(mastercrafted)" => ItemTier::Master,
+                        "1" => ItemTier::Tier1,
+                        "2" => ItemTier::Tier2,
+                        "3" => ItemTier::Tier3,
+                        "4" => ItemTier::Tier4,
+                        _ => ItemTier::Tier0,
+                    },
+                    None => ItemTier::Tier0,
+                }
             };
-            cache.push(tier);
+
+            cache.push(ClassInfo { base_name, tier });
         }
 
         Ok(cache)

@@ -33,3 +33,4 @@ dist-ssr
 /src-tauri/gen/ios
 
 .ignore
+*.stackdump

@@ -26,11 +26,9 @@ use serde::{Deserialize, Serialize};
 // Enums
 // =====================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemQuality {
-    #[default]
-    Any,
     Inferior,
     Normal,
     Superior,
@@ -59,27 +57,24 @@ impl ItemQuality {
     }
 
     /// Canonical name emitted by the scanner in [`ItemDropEvent::quality`].
-    pub fn d2_quality_name(&self) -> Option<&'static str> {
+    pub fn d2_quality_name(&self) -> &'static str {
         match self {
-            Self::Any => None,
-            Self::Inferior => Some("Inferior"),
-            Self::Normal => Some("Normal"),
-            Self::Superior => Some("Superior"),
-            Self::Magic => Some("Magic"),
-            Self::Set => Some("Set"),
-            Self::Rare => Some("Rare"),
-            Self::Unique => Some("Unique"),
-            Self::Crafted => Some("Crafted"),
-            Self::Honorific => Some("Honorific"),
+            Self::Inferior => "Inferior",
+            Self::Normal => "Normal",
+            Self::Superior => "Superior",
+            Self::Magic => "Magic",
+            Self::Set => "Set",
+            Self::Rare => "Rare",
+            Self::Unique => "Unique",
+            Self::Crafted => "Crafted",
+            Self::Honorific => "Honorific",
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ItemTier {
-    #[default]
-    Any,
     Tier0,
     Tier1,
     Tier2,
@@ -184,11 +179,11 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stat_pattern: Option<String>,
 
-    #[serde(default, skip_serializing_if = "is_any_quality")]
-    pub quality: ItemQuality,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub qualities: Vec<ItemQuality>,
 
-    #[serde(default, skip_serializing_if = "is_any_tier")]
-    pub tier: ItemTier,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tiers: Vec<ItemTier>,
 
     #[serde(default, skip_serializing_if = "is_false")]
     pub ethereal: bool,
@@ -210,14 +205,6 @@ pub struct Rule {
 
     #[serde(default, skip_serializing_if = "is_false")]
     pub display_stats: bool,
-}
-
-fn is_any_quality(q: &ItemQuality) -> bool {
-    *q == ItemQuality::Any
-}
-
-fn is_any_tier(t: &ItemTier) -> bool {
-    *t == ItemTier::Any
 }
 
 fn is_false(b: &bool) -> bool {
@@ -328,8 +315,9 @@ mod tests {
         ItemDropEvent {
             unit_id: 1,
             class: 0,
-            quality: quality.d2_quality_name().unwrap_or("").to_string(),
+            quality: quality.d2_quality_name().to_string(),
             name: name.to_string(),
+            base_name: String::new(),
             stats: String::new(),
             is_ethereal: eth,
             is_identified: true,
@@ -344,13 +332,13 @@ mod tests {
         let config = FilterConfig {
             rules: vec![
                 Rule {
-                    quality: ItemQuality::Unique,
+                    qualities: vec![ItemQuality::Unique],
                     color: Some(NotifyColor::Gold),
                     ..Rule::default()
                 },
                 Rule {
                     name_pattern: Some("Ring$".into()),
-                    quality: ItemQuality::Unique,
+                    qualities: vec![ItemQuality::Unique],
                     color: Some(NotifyColor::Red),
                     notify: true,
                     ..Rule::default()
@@ -375,7 +363,7 @@ mod tests {
     fn notify_is_independent_of_color_and_sound() {
         let config = FilterConfig {
             rules: vec![Rule {
-                quality: ItemQuality::Unique,
+                qualities: vec![ItemQuality::Unique],
                 color: Some(NotifyColor::Gold),
                 sound: Some(1),
                 // no notify!
@@ -407,7 +395,7 @@ mod tests {
         let config = FilterConfig {
             hide_all: true,
             rules: vec![Rule {
-                quality: ItemQuality::Unique,
+                qualities: vec![ItemQuality::Unique],
                 visibility: Visibility::Show,
                 ..Rule::default()
             }],
@@ -431,7 +419,7 @@ mod tests {
     fn normal_hide_rule_hides_normal_items() {
         let config = crate::rules::parse_dsl("normal hide").expect("valid DSL");
         assert_eq!(config.rules.len(), 1, "should parse one rule");
-        assert_eq!(config.rules[0].quality, ItemQuality::Normal);
+        assert_eq!(config.rules[0].qualities, vec![ItemQuality::Normal]);
         assert_eq!(config.rules[0].visibility, Visibility::Hide);
 
         let it = item("Sash", ItemQuality::Normal, false);

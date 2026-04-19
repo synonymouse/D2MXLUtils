@@ -292,11 +292,6 @@ fn set_filter_config(
     config: rules::FilterConfig,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
-    log_info(&format!(
-        "[set_filter_config] {} rules, hide_all={}",
-        config.rules.len(),
-        config.hide_all
-    ));
     {
         let mut guard = state
             .filter_config
@@ -529,10 +524,7 @@ fn enable_debug_privilege() {
         // We need both QUERY and ADJUST_PRIVILEGES to toggle SeDebugPrivilege.
         let desired_access = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
         if let Err(e) = OpenProcessToken(GetCurrentProcess(), desired_access, &mut token_handle) {
-            log_error(&format!(
-                "SeDebugPrivilege: OpenProcessToken failed: {}",
-                e
-            ));
+            log_error(&format!("SeDebugPrivilege: OpenProcessToken failed: {}", e));
             return;
         }
 

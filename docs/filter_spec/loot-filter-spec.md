@@ -69,11 +69,15 @@ A rule matches an item when **all** specified criteria are satisfied.
 
 | Criterion | DSL | Condition |
 |---|---|---|
-| Name | `"regex"` | item name matches regex, case-insensitive |
+| Name | `"regex"` | regex matches either the runtime display name or the items.txt base type name (case-insensitive OR) |
 | Stat | `{regex}` | item stat text matches regex, case-insensitive |
-| Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals keyword |
-| Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals keyword |
+| Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals one of the listed keywords (OR) |
+| Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals one of the listed keywords (OR) |
 | Ethereal | `eth` | item is ethereal |
+
+Quality and tier each accept multiple keywords in a single rule; the rule
+matches if the item's value equals any of the listed ones. A rule with no
+quality keyword matches any quality (same for tier).
 
 Invalid regex falls back to plain substring matching.
 
@@ -156,11 +160,11 @@ enum Visibility { Default, Show, Hide }
 
 Rule {
     // matching
-    name_pattern: Option<String>,
-    stat_pattern: Option<String>,
-    quality:      Option<Quality>,
-    tier:         Option<Tier>,
-    ethereal:     bool,
+    name_pattern:  Option<String>,
+    stat_pattern:  Option<String>,
+    qualities:     Vec<Quality>,  // empty = any; non-empty = OR-match
+    tiers:         Vec<Tier>,     // empty = any; non-empty = OR-match
+    ethereal:      bool,
 
     // actions
     visibility:    Visibility,
