@@ -56,16 +56,16 @@ sacred eth gold notify sound1 name
   });
 
   async function syncFilterConfig() {
-    if (validationStatus !== "valid") return;
-
+    // Parse server-side: backend is authoritative. If the DSL has hard errors
+    // parse_filter_dsl will reject — we log and leave the previous config
+    // active. We intentionally do NOT gate on `validationStatus` because
+    // the editor-side linter is debounced and may lag the actual text,
+    // causing the config to silently stop syncing after profile-load/save.
     try {
       const config = await invoke<any>("parse_filter_dsl", { text: dslText });
-      if (config && !("errors" in config)) {
-        hideAll = !!config.hide_all;
-        await invoke("set_filter_config", { config });
-        // Make sure filtering stays on so rules take effect without a manual toggle.
-        await invoke("set_filter_enabled", { enabled: true });
-      }
+      hideAll = !!config.hide_all;
+      await invoke("set_filter_config", { config });
+      await invoke("set_filter_enabled", { enabled: true });
     } catch (e) {
       console.error("[LootFilterTab] Failed to sync filter config:", e);
     }
@@ -119,9 +119,9 @@ sacred eth gold notify sound1 name
       settingsStore.set('activeProfile', name);
     }
 
-    // Sync filter config to backend after a short delay for validation
-    // (this also refreshes the default-mode indicator from the parsed config).
-    setTimeout(() => syncFilterConfig(), 600);
+    // Push the loaded filter to the scanner immediately. The backend is
+    // authoritative for parsing, so there's no need to wait for the linter.
+    await syncFilterConfig();
   }
 
   /**

@@ -292,6 +292,11 @@ fn set_filter_config(
     config: rules::FilterConfig,
     state: tauri::State<AppState>,
 ) -> Result<(), String> {
+    log_info(&format!(
+        "[set_filter_config] {} rules, hide_all={}",
+        config.rules.len(),
+        config.hide_all
+    ));
     {
         let mut guard = state
             .filter_config

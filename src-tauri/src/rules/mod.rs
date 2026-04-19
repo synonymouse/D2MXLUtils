@@ -426,4 +426,45 @@ mod tests {
         assert_eq!(ItemQuality::from_str("craft"), Some(ItemQuality::Crafted));
         assert_eq!(ItemQuality::from_str("invalid"), None);
     }
+
+    #[test]
+    fn normal_hide_rule_hides_normal_items() {
+        let config = crate::rules::parse_dsl("normal hide").expect("valid DSL");
+        assert_eq!(config.rules.len(), 1, "should parse one rule");
+        assert_eq!(config.rules[0].quality, ItemQuality::Normal);
+        assert_eq!(config.rules[0].visibility, Visibility::Hide);
+
+        let it = item("Sash", ItemQuality::Normal, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert_eq!(d.visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn hide_default_directive_hides_unmatched() {
+        let config = crate::rules::parse_dsl("hide default").expect("valid DSL");
+        assert!(config.hide_all, "hide default sets hide_all");
+
+        let it = item("Any Item", ItemQuality::Normal, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert_eq!(d.visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn group_hide_flattens_into_rules() {
+        let dsl = "[hide] {\n  normal\n  superior\n}\n";
+        let config = crate::rules::parse_dsl(dsl).expect("valid DSL");
+        assert_eq!(config.rules.len(), 2, "group should flatten into 2 rules");
+
+        let norm = item("Sash", ItemQuality::Normal, false);
+        let ctx = MatchContext::new(&norm);
+        let d = config.decide(&ctx);
+        assert_eq!(d.visibility, Visibility::Hide, "normal item hidden");
+
+        let sup = item("Superior Sash", ItemQuality::Superior, false);
+        let ctx = MatchContext::new(&sup);
+        let d = config.decide(&ctx);
+        assert_eq!(d.visibility, Visibility::Hide, "superior item hidden");
+    }
 }
