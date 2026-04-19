@@ -14,7 +14,7 @@ use crate::logger::{error as log_error, info as log_info};
 #[cfg(target_os = "windows")]
 use crate::loot_filter_hook::LootFilterHook;
 #[cfg(target_os = "windows")]
-use crate::offsets::{d2client, d2common, item_data, items_txt, paths, unit_type};
+use crate::offsets::{d2client, d2common, items_txt, paths, unit_type};
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
 #[cfg(target_os = "windows")]
@@ -142,39 +142,15 @@ impl DropScanner {
             if let Err(e) = self.loot_hook.clear_shown_items(&self.ctx) {
                 log_error(&format!("Failed to clear show mask: {}", e));
             }
+            if let Err(e) = self.loot_hook.clear_inspected_mask(&self.ctx) {
+                log_error(&format!("Failed to clear inspected mask: {}", e));
+            }
         }
     }
 
     /// Get a reference to the D2Context
     pub fn context(&self) -> &D2Context {
         &self.ctx
-    }
-
-    /// Set item visibility by writing to iEarLevel field in ItemData
-    /// value: 0 = not processed (default), 1 = show, 2 = hide
-    pub fn set_item_visibility(&self, p_unit_data: u32, visible: bool) -> Result<(), String> {
-        if p_unit_data == 0 {
-            return Err("p_unit_data is null".to_string());
-        }
-
-        let value: u8 = if visible { 1 } else { 2 };
-        let addr = p_unit_data as usize + item_data::EAR_LEVEL;
-
-        // Write the value
-        self.ctx.process.write_buffer(addr, &[value])?;
-
-        // Verify the write
-        let mut verify = [0u8; 1];
-        if let Ok(()) = self.ctx.process.read_buffer_into(addr, &mut verify) {
-            if verify[0] != value {
-                log_error(&format!(
-                    "set_item_visibility: verify mismatch at 0x{:08X}: wrote {} but read back {}",
-                    addr, value, verify[0]
-                ));
-            }
-        }
-
-        Ok(())
     }
 
     /// Scan for ground items and return new items found
@@ -264,6 +240,7 @@ impl DropScanner {
             while p_unit != 0 {
                 if let Some(scanned) = self.scan_unit(p_unit) {
                     let event = self.to_event(scanned);
+                    let unit_id = event.unit_id;
 
                     // Apply filter if enabled
                     let mut event = event;
@@ -338,6 +315,18 @@ impl DropScanner {
 
                     if should_emit {
                         events.push(event);
+                    }
+
+                    // Must run AFTER show/hide bits: otherwise the game thread
+                    // could see inspected=1 with no decision yet and fall through
+                    // to MXL's default (= flash the label).
+                    if self.loot_hook.is_injected() {
+                        if let Err(e) = self.loot_hook.add_inspected_unit_id(&self.ctx, unit_id) {
+                            log_error(&format!(
+                                "Failed to mark item {} inspected: {}",
+                                unit_id, e
+                            ));
+                        }
                     }
                 }
 
@@ -587,10 +576,6 @@ impl DropScanner {
 
     pub fn context(&self) -> ! {
         panic!("Not supported on this OS")
-    }
-
-    pub fn set_item_visibility(&self, _p_unit_data: u32, _visible: bool) -> Result<(), String> {
-        Err("Not supported on this OS".to_string())
     }
 
     pub fn tick(&mut self) -> Vec<ItemDropEvent> {

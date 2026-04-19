@@ -124,7 +124,7 @@ pub struct UniqueItemsTxt {
 pub struct ScannedItem {
     /// Raw unit pointer (for injection calls)
     pub p_unit: u32,
-    /// Pointer to ItemData structure (for set_item_visibility)
+    /// Pointer to ItemData structure
     pub p_unit_data: u32,
     /// Unique unit ID
     pub unit_id: u32,

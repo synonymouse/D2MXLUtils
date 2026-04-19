@@ -82,7 +82,6 @@ pub mod item_data {
     pub const QUALITY: usize = 0x00;        // dword (item quality enum)
     pub const FLAGS: usize = 0x18;          // dword (item flags) - offset 0 + 4 + 5*4 = 0x18
     pub const FILE_INDEX: usize = 0x2C;     // dword - offset 0x18 + 4 + 3*4 + 4 = 0x2C
-    pub const EAR_LEVEL: usize = 0x48;      // byte - offset 0x2C + 4 + 7*4 = 0x48
     pub const NEXT_ITEM: usize = 0x64;      // dword (pointer to next item)
 }
 

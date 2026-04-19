@@ -97,14 +97,6 @@ impl HotkeyState {
         self.is_running.store(false, Ordering::SeqCst);
         log_info("Hotkey listener stop requested");
     }
-
-    /// Get current hotkey configuration
-    pub fn get_current(&self) -> HotkeyConfig {
-        self.current_hotkey
-            .lock()
-            .map(|h| h.clone())
-            .unwrap_or_default()
-    }
 }
 
 #[cfg(target_os = "windows")]
@@ -207,11 +199,5 @@ pub fn update_hotkey(
     log_info(&format!("Updating hotkey to: {}", hotkey.display));
     state.start(app, hotkey);
     Ok(())
-}
-
-/// Tauri command: Get current hotkey configuration
-#[tauri::command]
-pub fn get_hotkey(state: tauri::State<HotkeyState>) -> HotkeyConfig {
-    state.get_current()
 }
 

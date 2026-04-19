@@ -49,7 +49,7 @@ The backend handles all low-level Windows operations:
 
 ### Communication
 
-- **Tauri Commands**: Frontend calls Rust via `invoke()` (e.g., `start_scanner`, `stop_scanner`)
+- **Tauri Commands**: Frontend calls Rust via `invoke()` (e.g., `set_filter_config`, `get_scanner_status`)
 - **Events**: Backend emits events to frontend via `app_handle.emit()` (e.g., `item-drop`, `scanner-status`)
 
 ## Important Conventions

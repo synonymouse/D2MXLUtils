@@ -279,46 +279,12 @@ fn spawn_auto_scanner(
 }
 
 #[tauri::command]
-fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
-    if state.is_scanning.load(Ordering::SeqCst) {
-        return "Scanner is already running".to_string();
-    }
-
-    start_scanner_internal(
-        state.is_scanning.clone(),
-        state.filter_config.clone(),
-        state.filter_enabled.clone(),
-        state.filter_config_generation.clone(),
-        state.scanner_thread.clone(),
-        state.game_status.clone(),
-        app,
-    );
-    "Scanner started".to_string()
-}
-
-#[tauri::command]
 fn get_game_status(state: tauri::State<AppState>) -> &'static str {
     match state.game_status.load(Ordering::SeqCst) {
         GAME_STATUS_INGAME => "ingame",
         GAME_STATUS_MENU => "menu",
         _ => "unknown",
     }
-}
-
-#[tauri::command]
-fn stop_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
-    if !state.is_scanning.load(Ordering::SeqCst) {
-        return "Scanner is not running".to_string();
-    }
-
-    // Signal the scanner to stop
-    state.is_scanning.store(false, Ordering::SeqCst);
-
-    if let Err(e) = app.emit("scanner-status", "stopping") {
-        log_error(&format!("Failed to emit event (stopping): {}", e));
-    }
-
-    "Scanner stopped".to_string()
 }
 
 #[tauri::command]
@@ -355,12 +321,6 @@ fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
     state.filter_enabled.store(enabled, Ordering::SeqCst);
 }
 
-/// Get current filter enabled status
-#[tauri::command]
-fn get_filter_enabled(state: tauri::State<AppState>) -> bool {
-    state.filter_enabled.load(Ordering::SeqCst)
-}
-
 // ===== DSL Parser Commands =====
 
 /// Parse DSL text into FilterConfig JSON
@@ -375,43 +335,10 @@ fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
     rules::validate_dsl(&text)
 }
 
-// ===== Loot Filter Hook Commands =====
-// Note: Hook is managed internally by scanner thread when filtering is enabled.
-// These commands provide a foundation for future UI integration.
-
-/// Apply filter rules to a specific item by setting its visibility flag
-/// This is used when items are scanned and filtered from the UI.
-///
-/// Note: For automatic filtering during scanning, use DropScanner's built-in
-/// filter integration which reuses the scanner's D2Context.
-/// This command creates a new D2Context each call for simplicity and thread-safety.
-#[tauri::command]
-fn apply_item_filter(p_unit_data: u32, visible: bool) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use crate::offsets::item_data;
-        use crate::process::D2Context;
-
-        if p_unit_data == 0 {
-            return Err("p_unit_data is null".to_string());
-        }
-
-        let ctx = D2Context::new()?;
-        let value: u8 = if visible { 1 } else { 2 };
-        let addr = p_unit_data as usize + item_data::EAR_LEVEL;
-        ctx.process.write_buffer(addr, &[value])
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (p_unit_data, visible);
-        Err("Not supported on this OS".to_string())
-    }
-}
-
 /// Resolve the filter decision for a hypothetical item. Used by the UI
 /// to preview what the current filter would do without actually dropping
-/// anything in-game.
+/// anything in-game. See `docs/filter-preview-todo.md` for the planned UI
+/// scenarios built around this command.
 #[tauri::command]
 fn get_item_filter_action(
     config: rules::FilterConfig,
@@ -831,24 +758,19 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            start_scanner,
-            stop_scanner,
             get_scanner_status,
             get_game_status,
             set_filter_config,
             set_filter_enabled,
-            get_filter_enabled,
             sync_overlay_with_game,
             parse_filter_dsl,
             validate_filter_dsl,
-            apply_item_filter,
             get_item_filter_action,
             settings::load_settings,
             settings::save_settings,
             settings::get_window_state,
             settings::save_window_state,
             hotkeys::update_hotkey,
-            hotkeys::get_hotkey,
             profiles::list_profiles,
             profiles::load_profile,
             profiles::save_profile,
