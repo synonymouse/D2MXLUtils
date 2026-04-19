@@ -9,5 +9,19 @@
       "Bash(git check-ignore *)",
       "Bash(echo \"exit=$?\")"
     ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "F=$(python -c \"import json,sys;d=json.load(sys.stdin);print((d.get('tool_response') or {}).get('filePath') or (d.get('tool_input') or {}).get('file_path') or '')\"); case \"$F\" in *.rs) cargo fmt --manifest-path src-tauri/Cargo.toml 2>/dev/null ;; esac"
+          }
+        ]
+      }
+    ]
   }
 }
