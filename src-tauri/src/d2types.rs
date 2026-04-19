@@ -7,7 +7,7 @@
 use crate::offsets::{item_flags, item_quality, unit_type};
 
 /// UnitAny - base structure for all game units (players, monsters, items, etc.)
-/// 
+///
 /// AutoIt definition:
 /// ```
 /// DllStructCreate("dword iUnitType;dword iClass;dword pad1;dword dwUnitId;dword pad2;dword pUnitData;dword pad3[52];dword pUnit;")
@@ -15,14 +15,14 @@ use crate::offsets::{item_flags, item_quality, unit_type};
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct UnitAny {
-    pub unit_type: u32,         // 0x00: Unit type (0=player, 1=monster, 4=item, etc.)
-    pub class: u32,             // 0x04: Class/type ID within unit type
-    pub _pad1: u32,             // 0x08
-    pub unit_id: u32,           // 0x0C: Unique unit identifier
-    pub _pad2: u32,             // 0x10
-    pub p_unit_data: u32,       // 0x14: Pointer to type-specific data (ItemData for items)
-    pub _pad3: [u32; 52],       // 0x18-0xE0 padding
-    pub p_next_unit: u32,       // 0xE4: Pointer to next unit in list (was called pUnit in AutoIt)
+    pub unit_type: u32,   // 0x00: Unit type (0=player, 1=monster, 4=item, etc.)
+    pub class: u32,       // 0x04: Class/type ID within unit type
+    pub _pad1: u32,       // 0x08
+    pub unit_id: u32,     // 0x0C: Unique unit identifier
+    pub _pad2: u32,       // 0x10
+    pub p_unit_data: u32, // 0x14: Pointer to type-specific data (ItemData for items)
+    pub _pad3: [u32; 52], // 0x18-0xE0 padding
+    pub p_next_unit: u32, // 0xE4: Pointer to next unit in list (was called pUnit in AutoIt)
 }
 
 impl Default for UnitAny {
@@ -44,11 +44,11 @@ impl UnitAny {
     pub fn is_item(&self) -> bool {
         self.unit_type == unit_type::ITEM
     }
-    
+
     pub fn is_monster(&self) -> bool {
         self.unit_type == unit_type::MONSTER
     }
-    
+
     pub fn is_player(&self) -> bool {
         self.unit_type == unit_type::PLAYER
     }
@@ -63,32 +63,32 @@ impl UnitAny {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ItemData {
-    pub quality: u32,           // 0x00: Item quality (magic, rare, unique, etc.)
-    pub _pad1: [u32; 5],        // 0x04-0x14 padding
-    pub flags: u32,             // 0x18: Item flags (identified, ethereal, etc.)
-    pub _pad2: [u32; 3],        // 0x1C-0x24 padding
-    pub file_index: u32,        // 0x28: Index into items.txt (actually at 0x2C based on calc)
-    pub _pad3: [u32; 7],        // 0x2C-0x44 padding
-    pub ear_level: u8,          // 0x48: For ears - level of killed player
+    pub quality: u32,    // 0x00: Item quality (magic, rare, unique, etc.)
+    pub _pad1: [u32; 5], // 0x04-0x14 padding
+    pub flags: u32,      // 0x18: Item flags (identified, ethereal, etc.)
+    pub _pad2: [u32; 3], // 0x1C-0x24 padding
+    pub file_index: u32, // 0x28: Index into items.txt (actually at 0x2C based on calc)
+    pub _pad3: [u32; 7], // 0x2C-0x44 padding
+    pub ear_level: u8,   // 0x48: For ears - level of killed player
 }
 
 impl ItemData {
     pub fn is_identified(&self) -> bool {
         (self.flags & item_flags::IDENTIFIED) != 0
     }
-    
+
     pub fn is_ethereal(&self) -> bool {
         (self.flags & item_flags::ETHEREAL) != 0
     }
-    
+
     pub fn is_socketed(&self) -> bool {
         (self.flags & item_flags::SOCKETED) != 0
     }
-    
+
     pub fn is_runeword(&self) -> bool {
         (self.flags & item_flags::RUNEWORD) != 0
     }
-    
+
     pub fn quality_name(&self) -> &'static str {
         match self.quality {
             item_quality::NONE => "None",
@@ -115,8 +115,8 @@ impl ItemData {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UniqueItemsTxt {
-    pub _pad1: [u32; 13],       // 0x00-0x30 padding
-    pub level: u16,             // 0x34: Required level
+    pub _pad1: [u32; 13], // 0x00-0x30 padding
+    pub level: u16,       // 0x34: Required level
 }
 
 /// Scanned item info - higher level representation for the notifier
@@ -165,7 +165,7 @@ impl ScannedItem {
             ear_level: item_data.ear_level,
         }
     }
-    
+
     pub fn quality_name(&self) -> &'static str {
         match self.quality {
             item_quality::NONE => "None",
@@ -187,10 +187,10 @@ impl ScannedItem {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Inventory {
-    pub _pad1: [u32; 3],        // 0x00-0x08
-    pub p_first_item: u32,      // 0x0C: First item in inventory
-    pub _pad2: [u32; 3],        // 0x10-0x18
-    pub weapon_id: u32,         // 0x1C: Currently equipped weapon ID
+    pub _pad1: [u32; 3],   // 0x00-0x08
+    pub p_first_item: u32, // 0x0C: First item in inventory
+    pub _pad2: [u32; 3],   // 0x10-0x18
+    pub weapon_id: u32,    // 0x1C: Currently equipped weapon ID
 }
 
 /// Color codes for D2 print functions
@@ -210,4 +210,3 @@ pub enum PrintColor {
     DarkGreen = 10,
     Purple = 11,
 }
-

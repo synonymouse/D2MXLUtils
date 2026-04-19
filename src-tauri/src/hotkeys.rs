@@ -41,8 +41,8 @@ pub struct HotkeyConfig {
 impl Default for HotkeyConfig {
     fn default() -> Self {
         Self {
-            key_code: 0x4B,       // 'K' key
-            modifiers: 0x0002,   // MOD_CONTROL
+            key_code: 0x4B,    // 'K' key
+            modifiers: 0x0002, // MOD_CONTROL
             display: "Ctrl+K".to_string(),
         }
     }
@@ -109,7 +109,14 @@ fn hotkey_thread_windows(is_running: Arc<AtomicBool>, app_handle: AppHandle, hot
     // Register the hotkey
     let modifiers = HOT_KEY_MODIFIERS(hotkey.modifiers) | MOD_NOREPEAT;
 
-    let result = unsafe { RegisterHotKey(HWND::default(), HOTKEY_ID_TOGGLE_MAIN, modifiers, hotkey.key_code) };
+    let result = unsafe {
+        RegisterHotKey(
+            HWND::default(),
+            HOTKEY_ID_TOGGLE_MAIN,
+            modifiers,
+            hotkey.key_code,
+        )
+    };
 
     if result.is_err() {
         log_error(&format!(
@@ -120,7 +127,10 @@ fn hotkey_thread_windows(is_running: Arc<AtomicBool>, app_handle: AppHandle, hot
         return;
     }
 
-    log_info(&format!("Hotkey {} registered successfully", hotkey.display));
+    log_info(&format!(
+        "Hotkey {} registered successfully",
+        hotkey.display
+    ));
 
     // Message loop using PeekMessage to allow checking is_running flag
     let mut msg = MSG::default();
@@ -128,7 +138,7 @@ fn hotkey_thread_windows(is_running: Arc<AtomicBool>, app_handle: AppHandle, hot
         unsafe {
             // Use PeekMessage to check for messages without blocking
             let has_message = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE);
-            
+
             if has_message.as_bool() {
                 if msg.message == WM_HOTKEY {
                     let hotkey_id = msg.wParam.0 as i32;
@@ -200,4 +210,3 @@ pub fn update_hotkey(
     state.start(app, hotkey);
     Ok(())
 }
-

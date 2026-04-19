@@ -2,6 +2,8 @@
 //! Provides functionality for injecting code and calling game functions via remote threads
 
 #[cfg(target_os = "windows")]
+use std::ffi::c_void;
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::HANDLE;
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
@@ -11,8 +13,6 @@ use windows::Win32::System::Memory::{
 use windows::Win32::System::Threading::{
     CreateRemoteThread, GetExitCodeThread, WaitForSingleObject, INFINITE,
 };
-#[cfg(target_os = "windows")]
-use std::ffi::c_void;
 
 use crate::offsets::{d2client, d2common, d2lang};
 use crate::process::ProcessHandle;
@@ -68,7 +68,11 @@ impl RemoteAlloc {
 /// Execute a function in the remote process via CreateRemoteThread
 /// Returns the thread exit code (which is often the return value of the function)
 #[cfg(target_os = "windows")]
-pub fn remote_thread(process: &ProcessHandle, func_addr: usize, param: usize) -> Result<u32, String> {
+pub fn remote_thread(
+    process: &ProcessHandle,
+    func_addr: usize,
+    param: usize,
+) -> Result<u32, String> {
     unsafe {
         let thread = CreateRemoteThread(
             process.handle,
@@ -243,14 +247,14 @@ impl D2Injector {
 
         // Read the result string (wide char)
         let buffer = process.read_buffer(self.string_buffer.address, 512)?;
-        
+
         // Convert from UTF-16LE to String
         let wide: Vec<u16> = buffer
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .take_while(|&c| c != 0)
             .collect();
-        
+
         Ok(String::from_utf16_lossy(&wide))
     }
 
@@ -266,14 +270,14 @@ impl D2Injector {
 
         // Read the result string
         let buffer = process.read_buffer(self.string_buffer.address, 4096)?;
-        
+
         // Convert from UTF-16LE to String
         let wide: Vec<u16> = buffer
             .chunks_exact(2)
             .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
             .take_while(|&c| c != 0)
             .collect();
-        
+
         Ok(String::from_utf16_lossy(&wide))
     }
 
@@ -349,4 +353,3 @@ impl D2Injector {
         Err("Not supported on this OS".to_string())
     }
 }
-

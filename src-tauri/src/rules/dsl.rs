@@ -213,7 +213,13 @@ pub fn parse_dsl(text: &str) -> Result<FilterConfig, Vec<ParseError>> {
                 continue;
             }
             let mut attrs = Attrs::default();
-            parse_attrs_into(header_src, &mut attrs, /*in_group_header=*/ true, line_num, &mut errors);
+            parse_attrs_into(
+                header_src,
+                &mut attrs,
+                /*in_group_header=*/ true,
+                line_num,
+                &mut errors,
+            );
             current_group = Some((attrs, line_num));
             continue;
         }
@@ -324,7 +330,12 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
             }
             in_group = true;
             group_open_line = line_num;
-            validate_tokens(header, line_num, /*in_group_header=*/ true, &mut errors);
+            validate_tokens(
+                header,
+                line_num,
+                /*in_group_header=*/ true,
+                &mut errors,
+            );
             continue;
         }
 
@@ -626,7 +637,12 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
 // Validation helpers
 // =====================================================================
 
-fn validate_tokens(src: &str, line_num: usize, in_group_header: bool, errors: &mut Vec<ValidationError>) {
+fn validate_tokens(
+    src: &str,
+    line_num: usize,
+    in_group_header: bool,
+    errors: &mut Vec<ValidationError>,
+) {
     let (remainder, _) = extract_stat_pattern(src);
     for token in remainder.split_whitespace() {
         let lower = token.to_lowercase();

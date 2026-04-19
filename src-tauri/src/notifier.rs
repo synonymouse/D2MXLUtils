@@ -322,10 +322,7 @@ impl DropScanner {
                     // to MXL's default (= flash the label).
                     if self.loot_hook.is_injected() {
                         if let Err(e) = self.loot_hook.add_inspected_unit_id(&self.ctx, unit_id) {
-                            log_error(&format!(
-                                "Failed to mark item {} inspected: {}",
-                                unit_id, e
-                            ));
+                            log_error(&format!("Failed to mark item {} inspected: {}", unit_id, e));
                         }
                     }
                 }

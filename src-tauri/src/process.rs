@@ -1,24 +1,24 @@
 #[cfg(target_os = "windows")]
+use std::ffi::{c_void, OsStr};
+#[cfg(target_os = "windows")]
+use std::mem;
+#[cfg(target_os = "windows")]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(target_os = "windows")]
+use windows::core::PCWSTR;
+#[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
+#[cfg(target_os = "windows")]
+use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
     PROCESS_VM_READ, PROCESS_VM_WRITE,
 };
 #[cfg(target_os = "windows")]
-use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
-#[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
-#[cfg(target_os = "windows")]
-use windows::Win32::System::ProcessStatus::{EnumProcessModules, GetModuleBaseNameW};
-#[cfg(target_os = "windows")]
-use windows::core::PCWSTR;
-#[cfg(target_os = "windows")]
-use std::ffi::{c_void, OsStr};
-#[cfg(target_os = "windows")]
-use std::os::windows::ffi::OsStrExt;
-#[cfg(target_os = "windows")]
-use std::mem;
 
 // --- Windows Implementation ---
 
@@ -32,7 +32,9 @@ pub struct ProcessHandle {
 impl Drop for ProcessHandle {
     fn drop(&mut self) {
         if !self.handle.is_invalid() {
-            unsafe { let _ = CloseHandle(self.handle); }
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
         }
     }
 }
@@ -42,21 +44,22 @@ impl ProcessHandle {
     pub fn read_memory<T: Copy>(&self, address: usize) -> Result<T, String> {
         let mut buffer: T = unsafe { mem::zeroed() };
         let mut bytes_read: usize = 0;
-        
+
         unsafe {
             ReadProcessMemory(
                 self.handle,
                 address as *const c_void,
                 &mut buffer as *mut T as *mut c_void,
                 mem::size_of::<T>(),
-                Some(&mut bytes_read)
-            ).map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
         }
-        
+
         if bytes_read != mem::size_of::<T>() {
             return Err("Incomplete read".to_string());
         }
-        
+
         Ok(buffer)
     }
 
@@ -70,12 +73,13 @@ impl ProcessHandle {
                 address as *const c_void,
                 buffer.as_mut_ptr() as *mut c_void,
                 size,
-                Some(&mut bytes_read)
-            ).map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
         }
 
         if bytes_read != size {
-             return Err("Incomplete read".to_string());
+            return Err("Incomplete read".to_string());
         }
 
         Ok(buffer)
@@ -91,8 +95,9 @@ impl ProcessHandle {
                 address as *const c_void,
                 buffer.as_mut_ptr() as *mut c_void,
                 buffer.len(),
-                Some(&mut bytes_read)
-            ).map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
         }
 
         if bytes_read != buffer.len() {
@@ -106,18 +111,19 @@ impl ProcessHandle {
         let mut bytes_written: usize = 0;
         unsafe {
             WriteProcessMemory(
-                 self.handle,
-                 address as *const c_void,
-                 buffer.as_ptr() as *const c_void,
-                 buffer.len(),
-                 Some(&mut bytes_written)
-            ).map_err(|e| format!("WriteProcessMemory failed: {}", e))?;
+                self.handle,
+                address as *const c_void,
+                buffer.as_ptr() as *const c_void,
+                buffer.len(),
+                Some(&mut bytes_written),
+            )
+            .map_err(|e| format!("WriteProcessMemory failed: {}", e))?;
         }
-        
+
         if bytes_written != buffer.len() {
             return Err("Incomplete write".to_string());
         }
-        
+
         Ok(())
     }
 
@@ -130,18 +136,17 @@ impl ProcessHandle {
                 self.handle,
                 modules.as_mut_ptr(),
                 (modules.len() * mem::size_of::<HINSTANCE>()) as u32,
-                &mut cb_needed
-            ).map_err(|e| format!("EnumProcessModules failed: {}", e))?;
+                &mut cb_needed,
+            )
+            .map_err(|e| format!("EnumProcessModules failed: {}", e))?;
         }
 
         let module_count = cb_needed as usize / mem::size_of::<HINSTANCE>();
         for i in 0..module_count {
             let module = modules[i];
             let mut buffer = [0u16; 256];
-            let len = unsafe {
-                GetModuleBaseNameW(self.handle, module, &mut buffer)
-            };
-            
+            let len = unsafe { GetModuleBaseNameW(self.handle, module, &mut buffer) };
+
             if len > 0 {
                 let name = String::from_utf16_lossy(&buffer[..len as usize]);
                 if name.eq_ignore_ascii_case(module_name) {
@@ -149,7 +154,7 @@ impl ProcessHandle {
                 }
             }
         }
-        
+
         Err(format!("Module '{}' not found", module_name))
     }
 
@@ -278,19 +283,22 @@ impl ProcessHandle {
 #[cfg(target_os = "windows")]
 pub fn open_process_by_window_class(class_name: &str) -> Result<ProcessHandle, String> {
     unsafe {
-        let wide_class_name: Vec<u16> = OsStr::new(class_name).encode_wide().chain(Some(0)).collect();
+        let wide_class_name: Vec<u16> = OsStr::new(class_name)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
         let hwnd = FindWindowW(PCWSTR(wide_class_name.as_ptr()), PCWSTR::null())
             .map_err(|_| format!("Window class '{}' not found", class_name))?;
-        
+
         if hwnd.0.is_null() {
-             return Err(format!("Window class '{}' not found", class_name));
+            return Err(format!("Window class '{}' not found", class_name));
         }
 
         let mut pid: u32 = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut pid));
 
         if pid == 0 {
-             return Err("Failed to get process ID".to_string());
+            return Err("Failed to get process ID".to_string());
         }
 
         // Request only necessary permissions for memory reading/writing and thread creation
@@ -299,7 +307,7 @@ pub fn open_process_by_window_class(class_name: &str) -> Result<ProcessHandle, S
             | PROCESS_VM_OPERATION
             | PROCESS_QUERY_INFORMATION
             | PROCESS_CREATE_THREAD;
-        
+
         let handle = OpenProcess(access_flags, false, pid)
             .map_err(|e| format!("Failed to open process: {}", e))?;
 

@@ -154,8 +154,10 @@ impl LootFilterHook {
 
         ctx.process.write_buffer(self.g_show_all_loot, &[1u8])?;
         ctx.process.write_buffer(self.g_filter_enabled, &[1u8])?;
-        ctx.process.write_buffer(self.g_call_counter, &[0u8, 0u8, 0u8, 0u8])?;
-        ctx.process.write_buffer(self.g_last_unit_id, &[0u8, 0u8, 0u8, 0u8])?;
+        ctx.process
+            .write_buffer(self.g_call_counter, &[0u8, 0u8, 0u8, 0u8])?;
+        ctx.process
+            .write_buffer(self.g_last_unit_id, &[0u8, 0u8, 0u8, 0u8])?;
 
         let zeros = vec![0u8; 256];
         ctx.process.write_buffer(self.g_hide_mask, &zeros)?;
@@ -211,8 +213,15 @@ impl LootFilterHook {
 
     fn try_reattach(&mut self, ctx: &D2Context) -> Result<(), String> {
         let pattern: [Option<u8>; 9] = [
-            Some(0xE9), None, None, None, None,
-            Some(0x90), Some(0x90), Some(0x90), Some(0x90),
+            Some(0xE9),
+            None,
+            None,
+            None,
+            None,
+            Some(0x90),
+            Some(0x90),
+            Some(0x90),
+            Some(0x90),
         ];
 
         let mut cursor = ctx.d2_sigma;
@@ -231,7 +240,11 @@ impl LootFilterHook {
             cursor = hit + 1;
 
             let mut rel_bytes = [0u8; 4];
-            if ctx.process.read_buffer_into(hit + 1, &mut rel_bytes).is_err() {
+            if ctx
+                .process
+                .read_buffer_into(hit + 1, &mut rel_bytes)
+                .is_err()
+            {
                 continue;
             }
             let rel = i32::from_le_bytes(rel_bytes);
@@ -286,13 +299,13 @@ impl LootFilterHook {
                 ));
             }
 
-            self.g_call_counter    = u32::from_le_bytes(meta[8..12].try_into().unwrap()) as usize;
-            self.g_filter_enabled  = u32::from_le_bytes(meta[12..16].try_into().unwrap()) as usize;
-            self.g_show_all_loot   = u32::from_le_bytes(meta[16..20].try_into().unwrap()) as usize;
-            self.g_last_unit_id    = u32::from_le_bytes(meta[20..24].try_into().unwrap()) as usize;
-            self.g_show_mask       = u32::from_le_bytes(meta[24..28].try_into().unwrap()) as usize;
-            self.g_hide_mask       = u32::from_le_bytes(meta[28..32].try_into().unwrap()) as usize;
-            self.g_inspected_mask  = u32::from_le_bytes(meta[32..36].try_into().unwrap()) as usize;
+            self.g_call_counter = u32::from_le_bytes(meta[8..12].try_into().unwrap()) as usize;
+            self.g_filter_enabled = u32::from_le_bytes(meta[12..16].try_into().unwrap()) as usize;
+            self.g_show_all_loot = u32::from_le_bytes(meta[16..20].try_into().unwrap()) as usize;
+            self.g_last_unit_id = u32::from_le_bytes(meta[20..24].try_into().unwrap()) as usize;
+            self.g_show_mask = u32::from_le_bytes(meta[24..28].try_into().unwrap()) as usize;
+            self.g_hide_mask = u32::from_le_bytes(meta[28..32].try_into().unwrap()) as usize;
+            self.g_inspected_mask = u32::from_le_bytes(meta[32..36].try_into().unwrap()) as usize;
 
             self.hook_address = hit;
             self.trampoline_address = tramp;
@@ -348,7 +361,8 @@ impl LootFilterHook {
         }
 
         // 2. Restore original bytes
-        let write_result = ctx.process
+        let write_result = ctx
+            .process
             .write_buffer(self.hook_address, &self.original_bytes);
 
         // 3. Restore original memory protection
@@ -598,8 +612,8 @@ impl LootFilterHook {
 
         // jmp rel32 -> original_continue (hook_address + PATCH_SIZE)
         code.push(0xE9);
-        let jmp_target = original_continue as i32
-            - (self.trampoline_address as i32 + code.len() as i32 + 4);
+        let jmp_target =
+            original_continue as i32 - (self.trampoline_address as i32 + code.len() as i32 + 4);
         code.extend_from_slice(&jmp_target.to_le_bytes());
 
         // return_hide:
@@ -625,7 +639,10 @@ impl LootFilterHook {
             let rel = target as i32 - (at as i32 + 1);
             assert!(
                 (-128..=127).contains(&rel),
-                "rel8 out of range: from {} to {} (={})", at, target, rel
+                "rel8 out of range: from {} to {} (={})",
+                at,
+                target,
+                rel
             );
             code[at] = (rel as i8) as u8;
         };
@@ -646,9 +663,15 @@ impl LootFilterHook {
             .map(|b| format!("{:02X}", b))
             .collect::<Vec<_>>()
             .join(" ");
-        log_info(&format!("LootFilterHook: Trampoline bytes: {}", debug_bytes));
+        log_info(&format!(
+            "LootFilterHook: Trampoline bytes: {}",
+            debug_bytes
+        ));
 
-        debug_assert!(code.len() <= METADATA_OFFSET, "trampoline code overlaps metadata tail");
+        debug_assert!(
+            code.len() <= METADATA_OFFSET,
+            "trampoline code overlaps metadata tail"
+        );
         debug_assert_eq!(do_original_offset, DO_ORIGINAL_OFFSET);
 
         code
@@ -660,8 +683,7 @@ impl LootFilterHook {
 
         // Normal JMP to trampoline
         patch[0] = 0xE9;
-        let rel_offset =
-            self.trampoline_address as i32 - (self.hook_address as i32 + 5);
+        let rel_offset = self.trampoline_address as i32 - (self.hook_address as i32 + 5);
         patch[1..5].copy_from_slice(&rel_offset.to_le_bytes());
 
         patch
@@ -697,7 +719,11 @@ impl LootFilterHook {
         Err("Not supported on this OS".to_string())
     }
 
-    pub fn set_show_all(&self, _ctx: &crate::process::D2Context, _show: bool) -> Result<(), String> {
+    pub fn set_show_all(
+        &self,
+        _ctx: &crate::process::D2Context,
+        _show: bool,
+    ) -> Result<(), String> {
         Err("Not supported on this OS".to_string())
     }
 

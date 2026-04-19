@@ -36,8 +36,8 @@ impl<'a> MatchContext<'a> {
             // OR across runtime display name and items.txt base type:
             // a rare's affix name wouldn't otherwise match `"Ring$"`.
             let name_hit = pattern_matches(pattern, &self.name_lower);
-            let base_hit = !self.base_name_lower.is_empty()
-                && pattern_matches(pattern, &self.base_name_lower);
+            let base_hit =
+                !self.base_name_lower.is_empty() && pattern_matches(pattern, &self.base_name_lower);
             if !(name_hit || base_hit) {
                 return false;
             }
