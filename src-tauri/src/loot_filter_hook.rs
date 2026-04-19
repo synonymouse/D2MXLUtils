@@ -31,6 +31,21 @@ const FUNCTION_SIGNATURE: [u8; 9] = [0x83, 0xEC, 0x08, 0x53, 0x55, 0x8B, 0xD9, 0
 /// Approximate size of D2Sigma.dll to scan (2MB should be enough)
 const D2SIGMA_SCAN_SIZE: usize = 0x200000;
 
+// Reattach metadata — written into our 256-byte trampoline buffer on fresh
+// inject, parsed by try_reattach on next launch if the JMP patch survived
+// a dirty shutdown. Layout at trampoline+METADATA_OFFSET:
+//   magic, version, g_call_counter, g_filter_enabled,
+//   g_show_all_loot, g_last_unit_id, g_show_mask, g_hide_mask  (8 × u32 LE)
+const MAGIC: u32 = 0xD2FE11E7;
+const METADATA_VERSION: u32 = 1;
+const METADATA_OFFSET: usize = 224;
+const METADATA_SIZE: usize = 32;
+// Trampoline offset of the replayed original 9 bytes; verified by debug_assert
+// in generate_trampoline_code.
+const DO_ORIGINAL_OFFSET: usize = 59;
+// Trampoline starts with `inc dword [counter]` = `FF 05 ...`.
+const TRAMPOLINE_FIRST_BYTE: u8 = 0xFF;
+
 /// Loot filter hook manager
 #[cfg(target_os = "windows")]
 pub struct LootFilterHook {
@@ -52,11 +67,9 @@ pub struct LootFilterHook {
     g_hide_mask: usize,
     /// Address of show mask (256 bytes = 2048 bits, force-show overrides game filter)
     g_show_mask: usize,
-    /// Saved original bytes from the hook point
     original_bytes: [u8; PATCH_SIZE],
-    /// Whether the hook is currently injected
     is_injected: bool,
-    /// Process handle for cleanup
+    is_reattached: bool,
     process_handle: HANDLE,
 }
 
@@ -76,6 +89,7 @@ impl LootFilterHook {
             g_show_mask: 0,
             original_bytes: [0; PATCH_SIZE],
             is_injected: false,
+            is_reattached: false,
             process_handle: HANDLE::default(),
         }
     }
@@ -85,7 +99,11 @@ impl LootFilterHook {
         self.is_injected
     }
 
-    /// Inject the hook into D2Sigma.dll
+    #[allow(dead_code)]
+    pub fn is_reattached(&self) -> bool {
+        self.is_reattached
+    }
+
     pub fn inject(&mut self, ctx: &D2Context) -> Result<(), String> {
         if self.is_injected {
             return Err("Hook already injected".to_string());
@@ -95,34 +113,35 @@ impl LootFilterHook {
             return Err("D2Sigma.dll not found".to_string());
         }
 
-        // Find the loot filter function by signature scanning
-        let found_addr = ctx
-            .process
-            .scan_pattern(ctx.d2_sigma, D2SIGMA_SCAN_SIZE, &FUNCTION_SIGNATURE)
-            .ok_or_else(|| {
-                format!(
-                    "LootFilter function not found in D2Sigma.dll. Signature {:02X?} not found.",
-                    FUNCTION_SIGNATURE
-                )
-            })?;
+        if let Some(addr) =
+            ctx.process
+                .scan_pattern(ctx.d2_sigma, D2SIGMA_SCAN_SIZE, &FUNCTION_SIGNATURE)
+        {
+            log_info(&format!(
+                "LootFilterHook: primary signature match at 0x{:08X} (fresh inject)",
+                addr
+            ));
+            return self.fresh_inject(ctx, addr);
+        }
 
+        log_info("LootFilterHook: primary signature missing; trying wildcard scan");
+        self.try_reattach(ctx)
+    }
+
+    fn fresh_inject(&mut self, ctx: &D2Context, found_addr: usize) -> Result<(), String> {
         self.hook_address = found_addr;
         self.process_handle = ctx.process.handle;
         let offset = found_addr - ctx.d2_sigma;
 
-        // 1. Allocate memory for trampoline code (256 bytes)
         self.trampoline_address = self.alloc_remote(&ctx.process, 256)?;
 
-        // 2. Allocate memory for global flags and debug variables
         self.g_show_all_loot = self.alloc_remote(&ctx.process, 1)?;
         self.g_filter_enabled = self.alloc_remote(&ctx.process, 1)?;
         self.g_call_counter = self.alloc_remote(&ctx.process, 4)?;
         self.g_last_unit_id = self.alloc_remote(&ctx.process, 4)?;
         self.g_last_ear_level = self.alloc_remote(&ctx.process, 1)?;
 
-        // 3. Allocate 256 bytes for hide mask (2048 bits for unit_id tracking)
         self.g_hide_mask = self.alloc_remote(&ctx.process, 256)?;
-        // 3b. Allocate 256 bytes for show mask (force-show, overrides game filter)
         self.g_show_mask = self.alloc_remote(&ctx.process, 256)?;
 
         log_info(&format!(
@@ -130,30 +149,28 @@ impl LootFilterHook {
             offset, self.hook_address, self.trampoline_address, self.g_hide_mask, self.g_show_mask
         ));
 
-        // 4. Initialize global flags (both TRUE by default) and debug variables
         ctx.process.write_buffer(self.g_show_all_loot, &[1u8])?;
         ctx.process.write_buffer(self.g_filter_enabled, &[1u8])?;
         ctx.process.write_buffer(self.g_call_counter, &[0u8, 0u8, 0u8, 0u8])?;
         ctx.process.write_buffer(self.g_last_unit_id, &[0u8, 0u8, 0u8, 0u8])?;
         ctx.process.write_buffer(self.g_last_ear_level, &[0u8])?;
 
-        // 5. Initialize hide/show masks to all zeros (no forced decisions by default)
         let zeros = vec![0u8; 256];
         ctx.process.write_buffer(self.g_hide_mask, &zeros)?;
         ctx.process.write_buffer(self.g_show_mask, &zeros)?;
 
-        // 4. Generate and write trampoline code
         let trampoline_code = self.generate_trampoline_code();
         ctx.process
             .write_buffer(self.trampoline_address, &trampoline_code)?;
 
-        // 5. Save original bytes
+        // Metadata before JMP patch: hook is never live without valid metadata.
+        self.write_metadata_tail(&ctx.process)?;
+
         let mut saved = [0u8; PATCH_SIZE];
         ctx.process
             .read_buffer_into(self.hook_address, &mut saved)?;
         self.original_bytes = saved;
 
-        // 6. Change memory protection to allow writing
         let mut old_protect = PAGE_PROTECTION_FLAGS(0);
         unsafe {
             VirtualProtectEx(
@@ -166,11 +183,9 @@ impl LootFilterHook {
             .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
         }
 
-        // 8. Write JMP patch
         let jmp_patch = self.generate_jmp_patch();
         let write_result = ctx.process.write_buffer(self.hook_address, &jmp_patch);
 
-        // 9. Restore original memory protection
         unsafe {
             let _ = VirtualProtectEx(
                 ctx.process.handle,
@@ -184,10 +199,128 @@ impl LootFilterHook {
         write_result?;
 
         self.is_injected = true;
+        self.is_reattached = false;
 
         log_info("LootFilterHook: injected");
 
         Ok(())
+    }
+
+    fn try_reattach(&mut self, ctx: &D2Context) -> Result<(), String> {
+        let pattern: [Option<u8>; 9] = [
+            Some(0xE9), None, None, None, None,
+            Some(0x90), Some(0x90), Some(0x90), Some(0x90),
+        ];
+
+        let mut cursor = ctx.d2_sigma;
+        let end = ctx.d2_sigma.saturating_add(D2SIGMA_SCAN_SIZE);
+
+        while cursor < end {
+            let hit = match ctx.process.scan_pattern_wildcard(
+                ctx.d2_sigma,
+                D2SIGMA_SCAN_SIZE,
+                &pattern,
+                cursor,
+            ) {
+                Some(a) => a,
+                None => break,
+            };
+            cursor = hit + 1;
+
+            let mut rel_bytes = [0u8; 4];
+            if ctx.process.read_buffer_into(hit + 1, &mut rel_bytes).is_err() {
+                continue;
+            }
+            let rel = i32::from_le_bytes(rel_bytes);
+            let tramp = ((hit as i64) + 5 + rel as i64) as usize;
+
+            let mut first = [0u8; 1];
+            if ctx.process.read_buffer_into(tramp, &mut first).is_err()
+                || first[0] != TRAMPOLINE_FIRST_BYTE
+            {
+                continue;
+            }
+
+            let mut meta = [0u8; METADATA_SIZE];
+            if ctx
+                .process
+                .read_buffer_into(tramp + METADATA_OFFSET, &mut meta)
+                .is_err()
+            {
+                continue;
+            }
+            let magic = u32::from_le_bytes(meta[0..4].try_into().unwrap());
+            let version = u32::from_le_bytes(meta[4..8].try_into().unwrap());
+
+            if magic != MAGIC {
+                if magic != 0 {
+                    log_error(&format!(
+                        "LootFilterHook: skipping wildcard hit at 0x{:08X}: foreign magic 0x{:08X}",
+                        hit, magic
+                    ));
+                }
+                continue;
+            }
+
+            if version != METADATA_VERSION {
+                return Err(format!(
+                    "Stale hook found but metadata version {} (expected {}) — please restart Diablo II",
+                    version, METADATA_VERSION
+                ));
+            }
+
+            let mut do_orig = [0u8; PATCH_SIZE];
+            ctx.process
+                .read_buffer_into(tramp + DO_ORIGINAL_OFFSET, &mut do_orig)
+                .map_err(|e| format!(
+                    "Stale hook found but couldn't read do_original block: {} — please restart Diablo II",
+                    e
+                ))?;
+            if do_orig != FUNCTION_SIGNATURE {
+                return Err(format!(
+                    "Stale hook found but do_original bytes {:02X?} != expected {:02X?} — please restart Diablo II",
+                    do_orig, FUNCTION_SIGNATURE
+                ));
+            }
+
+            self.g_call_counter   = u32::from_le_bytes(meta[8..12].try_into().unwrap()) as usize;
+            self.g_filter_enabled = u32::from_le_bytes(meta[12..16].try_into().unwrap()) as usize;
+            self.g_show_all_loot  = u32::from_le_bytes(meta[16..20].try_into().unwrap()) as usize;
+            self.g_last_unit_id   = u32::from_le_bytes(meta[20..24].try_into().unwrap()) as usize;
+            self.g_show_mask      = u32::from_le_bytes(meta[24..28].try_into().unwrap()) as usize;
+            self.g_hide_mask      = u32::from_le_bytes(meta[28..32].try_into().unwrap()) as usize;
+
+            self.hook_address = hit;
+            self.trampoline_address = tramp;
+            self.original_bytes = do_orig;
+            self.process_handle = ctx.process.handle;
+            self.is_injected = true;
+            self.is_reattached = true;
+
+            log_info(&format!(
+                "LootFilterHook: reattached at 0x{:08X} trampoline=0x{:08X} (magic=0x{:08X} v{})",
+                hit, tramp, MAGIC, METADATA_VERSION
+            ));
+            return Ok(());
+        }
+
+        Err(format!(
+            "LootFilter function not found in D2Sigma.dll. Signature {:02X?} not found and no reusable JMP patch detected.",
+            FUNCTION_SIGNATURE
+        ))
+    }
+
+    fn write_metadata_tail(&self, process: &ProcessHandle) -> Result<(), String> {
+        let mut buf = [0u8; METADATA_SIZE];
+        buf[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        buf[4..8].copy_from_slice(&METADATA_VERSION.to_le_bytes());
+        buf[8..12].copy_from_slice(&(self.g_call_counter as u32).to_le_bytes());
+        buf[12..16].copy_from_slice(&(self.g_filter_enabled as u32).to_le_bytes());
+        buf[16..20].copy_from_slice(&(self.g_show_all_loot as u32).to_le_bytes());
+        buf[20..24].copy_from_slice(&(self.g_last_unit_id as u32).to_le_bytes());
+        buf[24..28].copy_from_slice(&(self.g_show_mask as u32).to_le_bytes());
+        buf[28..32].copy_from_slice(&(self.g_hide_mask as u32).to_le_bytes());
+        process.write_buffer(self.trampoline_address + METADATA_OFFSET, &buf)
     }
 
     /// Remove the hook and restore original bytes
@@ -544,6 +677,9 @@ impl LootFilterHook {
             .collect::<Vec<_>>()
             .join(" ");
         log_info(&format!("LootFilterHook: Trampoline bytes: {}", debug_bytes));
+
+        debug_assert!(code.len() <= METADATA_OFFSET, "trampoline code overlaps metadata tail");
+        debug_assert_eq!(do_original_offset, DO_ORIGINAL_OFFSET);
 
         code
     }

@@ -206,6 +206,71 @@ impl ProcessHandle {
 
         None
     }
+
+    /// Scan memory for a byte pattern where `None` matches any byte.
+    /// `start_from` skips matches before that absolute address — pass `start`
+    /// for a full scan or `last_hit + 1` to resume.
+    pub fn scan_pattern_wildcard(
+        &self,
+        start: usize,
+        size: usize,
+        pattern: &[Option<u8>],
+        start_from: usize,
+    ) -> Option<usize> {
+        if pattern.is_empty() || size < pattern.len() {
+            return None;
+        }
+
+        const CHUNK_SIZE: usize = 0x10000;
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut offset = 0;
+
+        while offset < size {
+            let read_size = std::cmp::min(CHUNK_SIZE, size - offset);
+            let addr = start + offset;
+
+            let mut bytes_read: usize = 0;
+            let result = unsafe {
+                ReadProcessMemory(
+                    self.handle,
+                    addr as *const c_void,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    read_size,
+                    Some(&mut bytes_read),
+                )
+            };
+
+            if result.is_err() || bytes_read == 0 {
+                offset += CHUNK_SIZE;
+                continue;
+            }
+
+            let search_len = if bytes_read >= pattern.len() {
+                bytes_read - pattern.len() + 1
+            } else {
+                0
+            };
+
+            for i in 0..search_len {
+                let candidate = addr + i;
+                if candidate < start_from {
+                    continue;
+                }
+                let window = &buffer[i..i + pattern.len()];
+                if pattern
+                    .iter()
+                    .zip(window.iter())
+                    .all(|(p, b)| p.map_or(true, |x| x == *b))
+                {
+                    return Some(candidate);
+                }
+            }
+
+            offset += read_size.saturating_sub(pattern.len());
+        }
+
+        None
+    }
 }
 
 #[cfg(target_os = "windows")]
