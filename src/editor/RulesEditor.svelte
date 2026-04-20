@@ -97,7 +97,7 @@
       // Theme (dark mode by default)
       ...getDarkThemeExtensions(),
 
-      d2rulesAutocomplete(() => itemsDictionaryStore.items),
+      d2rulesAutocomplete(() => itemsDictionaryStore.options),
 
       d2rulesLinter(500, onvalidate),
 

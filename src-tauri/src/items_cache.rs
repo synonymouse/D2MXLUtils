@@ -5,6 +5,7 @@ use std::fs;
 use tauri::{AppHandle, Manager};
 
 use crate::logger::{error as log_error, info as log_info};
+use crate::notifier::ItemsDictionary;
 
 const CACHE_FILE: &str = "items-cache.json";
 
@@ -14,11 +15,22 @@ const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
 struct ItemsCacheFile {
     #[serde(default)]
     schema: String,
+    #[serde(default)]
     base_types: Vec<String>,
+    #[serde(default)]
+    uniques_tu: Vec<String>,
+    #[serde(default)]
+    uniques_su: Vec<String>,
+    #[serde(default)]
+    uniques_ssu: Vec<String>,
+    #[serde(default)]
+    uniques_sssu: Vec<String>,
+    #[serde(default)]
+    set_items: Vec<String>,
     dumped_at: String,
 }
 
-pub fn load_items_cache(app: &AppHandle) -> Option<Vec<String>> {
+pub fn load_items_cache(app: &AppHandle) -> Option<ItemsDictionary> {
     let app_data = match app.path().app_data_dir() {
         Ok(dir) => dir,
         Err(e) => {
@@ -54,11 +66,23 @@ pub fn load_items_cache(app: &AppHandle) -> Option<Vec<String>> {
                 return None;
             }
             log_info(&format!(
-                "items cache: loaded {} entries (dumped at {})",
+                "items cache: loaded {} base + {} TU + {} SU + {} SSU + {} SSSU + {} set (dumped at {})",
                 cache.base_types.len(),
+                cache.uniques_tu.len(),
+                cache.uniques_su.len(),
+                cache.uniques_ssu.len(),
+                cache.uniques_sssu.len(),
+                cache.set_items.len(),
                 cache.dumped_at
             ));
-            Some(cache.base_types)
+            Some(ItemsDictionary {
+                base_types: cache.base_types,
+                uniques_tu: cache.uniques_tu,
+                uniques_su: cache.uniques_su,
+                uniques_ssu: cache.uniques_ssu,
+                uniques_sssu: cache.uniques_sssu,
+                set_items: cache.set_items,
+            })
         }
         Err(e) => {
             log_error(&format!("items cache: parse failed: {}", e));
@@ -67,7 +91,7 @@ pub fn load_items_cache(app: &AppHandle) -> Option<Vec<String>> {
     }
 }
 
-pub fn save_items_cache(app: &AppHandle, items: &[String]) -> Result<(), String> {
+pub fn save_items_cache(app: &AppHandle, dict: &ItemsDictionary) -> Result<(), String> {
     let app_data = app
         .path()
         .app_data_dir()
@@ -81,15 +105,25 @@ pub fn save_items_cache(app: &AppHandle, items: &[String]) -> Result<(), String>
     let path = app_data.join(CACHE_FILE);
     let payload = ItemsCacheFile {
         schema: SCHEMA_VERSION.to_string(),
-        base_types: items.to_vec(),
+        base_types: dict.base_types.clone(),
+        uniques_tu: dict.uniques_tu.clone(),
+        uniques_su: dict.uniques_su.clone(),
+        uniques_ssu: dict.uniques_ssu.clone(),
+        uniques_sssu: dict.uniques_sssu.clone(),
+        set_items: dict.set_items.clone(),
         dumped_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     };
     let json = serde_json::to_string_pretty(&payload)
         .map_err(|e| format!("Failed to serialize items cache: {}", e))?;
     fs::write(&path, json).map_err(|e| format!("Failed to write items-cache.json: {}", e))?;
     log_info(&format!(
-        "items cache: wrote {} entries to {}",
-        items.len(),
+        "items cache: wrote {} base + {} TU + {} SU + {} SSU + {} SSSU + {} set entries to {}",
+        dict.base_types.len(),
+        dict.uniques_tu.len(),
+        dict.uniques_su.len(),
+        dict.uniques_ssu.len(),
+        dict.uniques_sssu.len(),
+        dict.set_items.len(),
         path.display()
     ));
     Ok(())

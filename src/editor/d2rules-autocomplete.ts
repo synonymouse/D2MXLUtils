@@ -3,6 +3,7 @@ import {
   type CompletionContext,
   type CompletionResult,
 } from "@codemirror/autocomplete";
+import type { AutocompleteOption } from "../stores/items-dictionary.svelte";
 
 function isInsideQuotedString(line: string, offset: number): boolean {
   let inString = false;
@@ -36,7 +37,7 @@ function isInsideQuotedString(line: string, offset: number): boolean {
   return inString;
 }
 
-export function d2rulesAutocomplete(getItems: () => string[]) {
+export function d2rulesAutocomplete(getOptions: () => AutocompleteOption[]) {
   return autocompletion({
     activateOnTyping: true,
     closeOnBlur: true,
@@ -55,14 +56,14 @@ export function d2rulesAutocomplete(getItems: () => string[]) {
           return null;
         }
 
-        const items = getItems();
-        if (items.length === 0) return null;
+        const opts = getOptions();
+        if (opts.length === 0) return null;
 
         return {
           from: wordBefore.from,
-          options: items.map((name) => ({
-            label: name,
-            type: "variable",
+          options: opts.map((o) => ({
+            label: o.label,
+            type: o.kind,
           })),
           validFor: /^[A-Za-z0-9 \-']*$/,
         };

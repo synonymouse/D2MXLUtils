@@ -23,7 +23,7 @@ use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 use crate::hotkeys::HotkeyState;
 use crate::logger::{error as log_error, info as log_info};
 
-use notifier::DropScanner;
+use notifier::{DropScanner, ItemsDictionary};
 
 // Windows-only imports for process / overlay / privileges
 #[cfg(target_os = "windows")]
@@ -66,7 +66,7 @@ struct AppState {
     // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
-    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
 }
 
 const GAME_STATUS_UNKNOWN: u8 = 0;
@@ -98,7 +98,7 @@ fn start_scanner_internal(
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
-    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -239,8 +239,13 @@ fn start_scanner_internal(
                                 ));
                             }
                             log_info(&format!(
-                                "Published items dictionary ({} base types)",
-                                dict.len()
+                                "Published items dictionary ({} base, {} TU, {} SU, {} SSU, {} SSSU, {} set items)",
+                                dict.base_types.len(),
+                                dict.uniques_tu.len(),
+                                dict.uniques_su.len(),
+                                dict.uniques_ssu.len(),
+                                dict.uniques_sssu.len(),
+                                dict.set_items.len()
                             ));
                             dict_published = true;
                         }
@@ -281,7 +286,7 @@ fn spawn_auto_scanner(
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
-    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -321,7 +326,7 @@ fn get_scanner_status(state: tauri::State<AppState>) -> bool {
 }
 
 #[tauri::command]
-fn get_items_dictionary(state: tauri::State<AppState>) -> Vec<String> {
+fn get_items_dictionary(state: tauri::State<AppState>) -> ItemsDictionary {
     state
         .items_dictionary
         .read()

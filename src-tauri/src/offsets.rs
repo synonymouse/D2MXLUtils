@@ -42,11 +42,30 @@ pub mod d2common {
     /// Pointer to Items.txt data
     pub const ITEMS_TXT: usize = 0x9FB98;
 
+    /// Pointer to `D2DataTablesStrc` (D2MOO naming: `sgptDataTables`).
+    /// Dereference once to get the base of the struct that holds pointers
+    /// to all .txt tables. Same as `$g_pD2sgpt` in D2Stats.au3:259.
+    pub const SGPT_DATA_TABLES: usize = 0x99E1C;
+
     /// GetUnitStat function
     pub const GET_UNIT_STAT: usize = 0x38B70;
 
     /// D2Common_GetUnitStat injection offset (relative to D2Client inject base)
     pub const INJECT_GET_UNIT_STAT: usize = 0x54;
+}
+
+/// Field offsets inside `D2DataTablesStrc` (the struct pointed to by
+/// `sgptDataTables`). Values taken from D2MOO `D2DataTbls.h`, confirmed
+/// against MedianXL 1.13c in live memory: uniques count=1822 and
+/// set-items count=330 with localized names resolving correctly via
+/// `wTblIndex` / `wStringId`. See `docs/item-tables-memory.md`.
+pub mod data_tables {
+    pub const SETS_TXT_PTR: usize = 0xC0C;
+    pub const SETS_TXT_COUNT: usize = 0xC10;
+    pub const SET_ITEMS_TXT_PTR: usize = 0xC18;
+    pub const SET_ITEMS_TXT_COUNT: usize = 0xC1C;
+    pub const UNIQUE_ITEMS_TXT_PTR: usize = 0xC24;
+    pub const UNIQUE_ITEMS_TXT_COUNT: usize = 0xC28;
 }
 
 /// D2Lang.dll offsets
@@ -111,9 +130,29 @@ pub mod item_types_txt {
     pub const EQUIV2: usize = 0x06; // word
 }
 
-/// UniqueItems.txt record offsets
+/// UniqueItems.txt record offsets (record size = 0x14C).
+/// Layout from D2MOO `D2UniqueItemsTxt` struct, confirmed against 1.13c
+/// AutoIt layout (`wLvl` @ 0x34).
 pub mod unique_items_txt {
-    pub const LEVEL: usize = 0x34; // word (at 13*4 = 0x34)
+    pub const RECORD_SIZE: usize = 0x14C;
+    /// `wTblIndex` — string-table index for localized display name.
+    /// Pass to `D2Lang::GetStringById` (same as Items.txt NAME_ID).
+    /// Engine stores sentinel `5383` if the name lookup fails at load.
+    pub const NAME_ID: usize = 0x22; // word
+    pub const LEVEL: usize = 0x34; // word (wLvl)
+    pub const LEVEL_REQ: usize = 0x36; // word (wLvlReq)
+}
+
+/// SetItems.txt record offsets (record size = 0x1B8). Individual set
+/// pieces, e.g. "Sigon's Gage". Not to be confused with Sets.txt which
+/// holds full-set group bonuses.
+pub mod set_items_txt {
+    pub const RECORD_SIZE: usize = 0x1B8;
+    /// `wStringId` — string-table index, same semantics as Items.txt NAME_ID.
+    pub const NAME_ID: usize = 0x24; // word
+    pub const LEVEL: usize = 0x30; // word (wLvl)
+    pub const LEVEL_REQ: usize = 0x32; // word (wLvlReq)
+    pub const SET_ID: usize = 0x2C; // int16 — index into Sets.txt
 }
 
 /// Unit types enum values

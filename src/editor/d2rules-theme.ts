@@ -226,7 +226,7 @@ export const autocompleteTheme = EditorView.baseTheme({
     fontFamily: "inherit",
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
-    padding: "3px 10px",
+    padding: "3px 10px 3px 0",
     lineHeight: "1.5",
     cursor: "pointer",
   },
@@ -252,6 +252,26 @@ export const autocompleteTheme = EditorView.baseTheme({
     opacity: 0.65,
     fontStyle: "italic",
   },
+  ".cm-completionIcon": {
+    width: "2.8em",
+    paddingRight: "0.3em",
+    fontSize: "0.78em",
+    fontStyle: "italic",
+    opacity: 0.55,
+    textAlign: "right",
+    fontFamily: "var(--font-mono, inherit)",
+  },
+  ".cm-completionIcon-base::after": { content: '""' },
+  ".cm-completionIcon-set::after": { content: '"set"' },
+  ".cm-completionIcon-tu::after": { content: '"TU"' },
+  ".cm-completionIcon-su::after": { content: '"SU"' },
+  ".cm-completionIcon-ssu::after": { content: '"SSU"' },
+  ".cm-completionIcon-sssu::after": { content: '"SSSU"' },
+  ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionIcon":
+    {
+      opacity: 0.8,
+      color: "var(--bg-primary, #0a0a0f)",
+    },
 });
 
 /**
