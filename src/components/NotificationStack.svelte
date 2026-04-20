@@ -1,31 +1,44 @@
 <script lang="ts">
   import Notification from './Notification.svelte';
   
+  type UniqueKind = 'tu' | 'su' | 'ssu' | 'sssu';
+
+  interface NotificationFilter {
+    color?: string | null;
+    sound?: number | null;
+    display_stats: boolean;
+  }
+
   interface ItemDrop {
     unit_id: number;
     class: number;
     quality: string;
     name: string;
+    base_name: string;
     stats: string;
     is_ethereal: boolean;
     is_identified: boolean;
+    unique_kind?: UniqueKind | null;
+    filter?: NotificationFilter | null;
     exiting?: boolean;
   }
-  
+
   interface Props {
     items: ItemDrop[];
     position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
     maxVisible?: number;
     fontSize?: number;
     opacity?: number;
+    compactName?: boolean;
   }
-  
+
   let {
     items,
     position = 'bottom-right',
     maxVisible = 10,
     fontSize = 14,
-    opacity = 0.9
+    opacity = 0.9,
+    compactName = false,
   }: Props = $props();
   
   const visibleItems = $derived(items.slice(0, maxVisible));
@@ -45,11 +58,12 @@
   style="{positionStyles[position]} flex-direction: {stackDirection};"
 >
   {#each visibleItems as item (item.unit_id)}
-    <Notification 
-      {item} 
+    <Notification
+      {item}
       exiting={item.exiting ?? false}
       {fontSize}
       {opacity}
+      {compactName}
     />
   {/each}
 </div>

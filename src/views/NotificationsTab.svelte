@@ -1,10 +1,12 @@
 <script lang="ts">
   import { settingsStore } from '../stores';
+  import { Toggle } from '../components';
 
   // Local reactive bindings to store values
   let duration = $derived(settingsStore.settings.notificationDuration);
   let fontSize = $derived(settingsStore.settings.notificationFontSize);
   let opacity = $derived(settingsStore.settings.notificationOpacity);
+  let compactName = $derived(settingsStore.settings.compactName);
 
   function setDuration(value: number) {
     const clamped = Math.max(1000, Math.min(30000, value));
@@ -19,6 +21,10 @@
   function setOpacity(value: number) {
     const clamped = Math.max(0, Math.min(1, value));
     settingsStore.set('notificationOpacity', clamped);
+  }
+
+  function setCompactName(value: boolean) {
+    settingsStore.set('compactName', value);
   }
 </script>
 
@@ -92,6 +98,24 @@
           <span class="setting-value">{Math.round(opacity * 100)}%</span>
         </div>
       </div>
+
+      <!-- Compact name -->
+      <div class="setting-row">
+        <div class="setting-info">
+          <label class="setting-label" for="compact-name">Compact name</label>
+          <span class="setting-hint">
+            Hide unique/set name line for Set/TU/SU/SSU/SSSU drops, show only base type.
+            Rules with the <code>stat</code> flag ignore this.
+          </span>
+        </div>
+        <div class="setting-control">
+          <Toggle
+            id="compact-name"
+            checked={compactName}
+            onchange={setCompactName}
+          />
+        </div>
+      </div>
     </div>
   </div>
 
@@ -99,16 +123,19 @@
   <div class="preview-section">
     <h3 class="preview-title">Preview</h3>
     <div class="preview-container">
-      <div 
+      <div
         class="preview-notification"
         style:font-size="{fontSize}px"
         style:background-color="rgba(0, 0, 0, {opacity})"
       >
-        <div class="preview-name" style:color="var(--quality-unique)">Tyrael's Might</div>
-        <div class="preview-meta">
-          <span>Unique</span>
-          <span class="preview-eth">ETH</span>
+        <div class="preview-name" style:color="var(--quality-unique)">
+          {#if compactName}Sacred Armor{:else}Tyrael's Might SU{/if}<span class="preview-badges">
+            <span class="preview-eth">ETH</span>
+          </span>
         </div>
+        {#if !compactName}
+          <div class="preview-base">Sacred Armor</div>
+        {/if}
       </div>
     </div>
   </div>
@@ -262,15 +289,28 @@
     line-height: 1.3;
   }
 
-  .preview-meta {
-    display: flex;
-    gap: var(--space-2);
+  .preview-base {
     margin-top: var(--space-1);
     font-size: 0.85em;
     color: var(--text-muted);
+    line-height: 1.3;
+  }
+
+  .preview-badges {
+    margin-left: var(--space-2);
+    font-size: 0.85em;
+    font-weight: 400;
   }
 
   .preview-eth {
     color: var(--quality-ethereal);
+  }
+
+  .setting-hint code {
+    background: var(--bg-tertiary);
+    padding: 0 4px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 0.95em;
   }
 </style>

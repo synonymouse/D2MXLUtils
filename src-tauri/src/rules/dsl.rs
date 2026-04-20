@@ -67,7 +67,6 @@ struct Attrs {
     color: Option<NotifyColor>,
     sound: Option<u8>,
     notify: Option<bool>,
-    display_name: Option<bool>,
     display_stats: Option<bool>,
 }
 
@@ -96,9 +95,6 @@ impl Attrs {
         }
         if let Some(n) = self.notify {
             rule.notify = n;
-        }
-        if let Some(dn) = self.display_name {
-            rule.display_name = dn;
         }
         if let Some(ds) = self.display_stats {
             rule.display_stats = ds;
@@ -131,9 +127,6 @@ impl Attrs {
         }
         if self.notify.is_none() {
             self.notify = group.notify;
-        }
-        if self.display_name.is_none() {
-            self.display_name = group.display_name;
         }
         if self.display_stats.is_none() {
             self.display_stats = group.display_stats;
@@ -474,10 +467,6 @@ fn parse_attrs_into(
                 attrs.notify = Some(true);
                 continue;
             }
-            "name" => {
-                attrs.display_name = Some(true);
-                continue;
-            }
             "stat" => {
                 attrs.display_stats = Some(true);
                 continue;
@@ -628,7 +617,6 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
         color: rule.color,
         sound: rule.sound,
         notify: if rule.notify { Some(true) } else { None },
-        display_name: if rule.display_name { Some(true) } else { None },
         display_stats: if rule.display_stats { Some(true) } else { None },
     }
 }
@@ -676,7 +664,7 @@ fn is_known_token(lower: &str) -> bool {
     }
     matches!(
         lower,
-        "eth" | "show" | "hide" | "notify" | "name" | "stat" | "sound_none"
+        "eth" | "show" | "hide" | "notify" | "stat" | "sound_none"
     ) || parse_sound_keyword(lower).is_some()
 }
 
@@ -844,6 +832,15 @@ mod tests {
     fn validator_warns_on_unknown_flag() {
         let errors = validate_dsl("unique wat");
         assert!(errors.iter().any(|e| e.message.contains("Unknown flag")));
+    }
+
+    #[test]
+    fn validator_warns_on_removed_name_flag() {
+        let errors = validate_dsl("unique notify name");
+        assert!(errors
+            .iter()
+            .any(|e| e.severity == ValidationSeverity::Warning
+                && e.message.contains("Unknown flag: name")));
     }
 
     #[test]

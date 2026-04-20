@@ -55,7 +55,7 @@ unique gold
 set lime
 
 # Notify on the best drops
-"Jordan|Tyrael|Windforce" unique gold notify sound1 name stat
+"Jordan|Tyrael|Windforce" unique gold notify sound1 stat
 
 # Hide trash the game would otherwise show
 normal hide
@@ -138,7 +138,7 @@ Normal items are hidden on the ground, but a notification fires when they drop. 
 ### Shared highlight for named uniques
 
 ```
-[unique gold notify sound1 name] {
+[unique gold notify sound1] {
   "Jordan"
   "Tyrael"
   "Windforce"
@@ -210,7 +210,7 @@ rare orange
 unique {All Skills} red notify sound1 stat
 
 # 5. Specific named items (highest priority via being last)
-[unique gold notify sound1 name stat] {
+[unique gold notify sound1 stat] {
   "Jordan"
   "Tyrael"
   "Windforce"
@@ -246,7 +246,7 @@ eth sacred lime notify
 "^(Pul|Um|Mal|Ist|Gul|Vex|Ohm|Lo|Sur|Ber|Jah|Cham|Zod)$" orange notify sound1
 
 # Named drops are always announced
-[unique gold notify sound1 name stat] {
+[unique gold notify sound1 stat] {
   "Jordan"
   "Tyrael"
   "Windforce"
@@ -275,7 +275,7 @@ rare {All Skills} show purple notify stat
 "Rune$" show orange
 
 # Specific items with full notification
-[unique show gold notify sound1 name stat] {
+[unique show gold notify sound1 stat] {
   "Jordan"
   "Tyrael"
   "Windforce"

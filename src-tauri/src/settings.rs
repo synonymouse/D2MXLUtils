@@ -56,6 +56,11 @@ pub struct AppSettings {
     #[serde(default = "default_notification_y")]
     pub notification_y: f32,
 
+    /// When true, show only base name for Set/TU/SU/SSU/SSSU drops
+    /// (single-line layout). Stat-flagged rules ignore this.
+    #[serde(default)]
+    pub compact_name: bool,
+
     /// Hotkey configuration for toggling main window
     #[serde(default)]
     pub toggle_window_hotkey: HotkeyConfig,
@@ -122,6 +127,7 @@ impl Default for AppSettings {
             notification_opacity: default_notification_opacity(),
             notification_x: default_notification_x(),
             notification_y: default_notification_y(),
+            compact_name: false,
             toggle_window_hotkey: HotkeyConfig::default(),
         }
     }

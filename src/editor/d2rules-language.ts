@@ -66,7 +66,7 @@ const SOUND_KEYWORDS = [
 ];
 
 // Display mode keywords
-const DISPLAY_KEYWORDS = ["name", "stat"];
+const DISPLAY_KEYWORDS = ["stat"];
 
 // Modifier keywords
 const MODIFIER_KEYWORDS = ["eth"];

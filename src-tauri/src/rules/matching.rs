@@ -93,6 +93,7 @@ mod tests {
             is_identified: true,
             p_unit_data: 0,
             tier: None,
+            unique_kind: None,
             filter: None,
         }
     }
@@ -109,6 +110,7 @@ mod tests {
             is_identified: true,
             p_unit_data: 0,
             tier: None,
+            unique_kind: None,
             filter: None,
         }
     }

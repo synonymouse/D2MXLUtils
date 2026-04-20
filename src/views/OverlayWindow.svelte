@@ -5,14 +5,25 @@
   import { NotificationStack } from '../components';
   import { settingsStore } from '../stores';
 
+  type UniqueKind = 'tu' | 'su' | 'ssu' | 'sssu';
+
+  interface NotificationFilter {
+    color?: string | null;
+    sound?: number | null;
+    display_stats: boolean;
+  }
+
   interface ItemDrop {
     unit_id: number;
     class: number;
     quality: string;
     name: string;
+    base_name: string;
     stats: string;
     is_ethereal: boolean;
     is_identified: boolean;
+    unique_kind?: UniqueKind | null;
+    filter?: NotificationFilter | null;
   }
 
   interface ItemWithState extends ItemDrop {
@@ -20,11 +31,12 @@
   }
 
   let items = $state<ItemWithState[]>([]);
-  
+
   // Read settings from store (reactive)
   let notificationDuration = $derived(settingsStore.settings.notificationDuration);
   let notificationFontSize = $derived(settingsStore.settings.notificationFontSize);
   let notificationOpacity = $derived(settingsStore.settings.notificationOpacity);
+  let compactName = $derived(settingsStore.settings.compactName);
   
   // Animation duration placeholder (currently 0 for instant, can be changed later)
   const EXIT_ANIMATION_DURATION = 0;
@@ -112,12 +124,13 @@
 </script>
 
 <main class="overlay">
-  <NotificationStack 
-    {items} 
-    position="bottom-right" 
+  <NotificationStack
+    {items}
+    position="bottom-right"
     maxVisible={10}
     fontSize={notificationFontSize}
     opacity={notificationOpacity}
+    {compactName}
   />
 </main>
 

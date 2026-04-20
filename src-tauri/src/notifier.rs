@@ -39,6 +39,8 @@ pub struct ItemDropEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ItemTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_kind: Option<UniqueKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
 }
 
@@ -73,7 +75,9 @@ struct ClassInfo {
 /// Bands below match D2Stats.au3:1181-1191 except the `Sssu` upper
 /// bound is removed — MXL has SSSU items up to at least wLvl 139
 /// (e.g. amulets), and D2Stats' `<= 130` cap mislabeled them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum UniqueKind {
     Tu = 0,   // wLvl 2..=100
@@ -489,11 +493,14 @@ impl DropScanner {
         let mut name = scanned
             .name
             .unwrap_or_else(|| format!("Item #{}", scanned.class));
-        if scanned.quality == item_quality::UNIQUE {
-            if let Some(kind) = self.unique_kind(scanned.file_index) {
-                name.push(' ');
-                name.push_str(kind.label());
-            }
+        let unique_kind = if scanned.quality == item_quality::UNIQUE {
+            self.unique_kind(scanned.file_index)
+        } else {
+            None
+        };
+        if let Some(kind) = unique_kind {
+            name.push(' ');
+            name.push_str(kind.label());
         }
         ItemDropEvent {
             unit_id: scanned.unit_id,
@@ -506,6 +513,7 @@ impl DropScanner {
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
             tier: self.class_tier(class),
+            unique_kind,
             filter: None,
         }
     }

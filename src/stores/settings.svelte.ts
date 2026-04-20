@@ -39,6 +39,9 @@ export interface AppSettings {
   notificationX: number;
   /** Notification position Y offset from edge (percentage 0-100) */
   notificationY: number;
+  /** When true, drop the unique/set name line for Set/TU/SU/SSU/SSSU items
+   *  and show only the base type. Stat-flagged rules ignore this. */
+  compactName: boolean;
   /** Hotkey configuration for toggling main window */
   toggleWindowHotkey: HotkeyConfig;
 }
@@ -71,6 +74,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   notificationOpacity: 0.9,
   notificationX: 2.0,
   notificationY: 50.0,
+  compactName: false,
   toggleWindowHotkey: DEFAULT_HOTKEY,
 };
 

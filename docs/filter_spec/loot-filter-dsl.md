@@ -19,7 +19,6 @@ attr          := quality
                | visibility
                | sound
                | 'notify'
-               | 'name'
                | 'stat'
 stat_pattern  := '{' regex '}'
 ```
@@ -175,8 +174,9 @@ Independent from color and sound. Required for any notification to fire.
 
 | Keyword | Effect |
 |---|---|
-| `name` | include item name in the notification |
 | `stat` | include item stats in the notification |
+
+The unique/set name line is shown automatically for Set/TU/SU/SSU/SSSU drops, controlled by the **Compact name** notification setting (not by a per-rule flag). Other rarities always render as a single base-type line.
 
 ---
 
@@ -199,7 +199,7 @@ Independent from color and sound. Required for any notification to fire.
 ### Example: shared highlight
 
 ```
-[unique gold notify sound1 name] {
+[unique gold notify sound1] {
   "Jordan"
   "Tyrael"
   "Windforce"
@@ -209,9 +209,9 @@ Independent from color and sound. Required for any notification to fire.
 Flattens to:
 
 ```
-"Jordan" unique gold notify sound1 name
-"Tyrael" unique gold notify sound1 name
-"Windforce" unique gold notify sound1 name
+"Jordan" unique gold notify sound1
+"Tyrael" unique gold notify sound1
+"Windforce" unique gold notify sound1
 ```
 
 ### Example: shared stat filter
@@ -260,7 +260,7 @@ hide default      # hide unmatched items
 show default      # show unmatched items (implicit default)
 
 # General rule form
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [name] [stat]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat]
 
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor
