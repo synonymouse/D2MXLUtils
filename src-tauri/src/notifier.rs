@@ -432,9 +432,21 @@ impl DropScanner {
 
     pub fn items_dictionary_snapshot(&self) -> Option<Vec<String>> {
         let cache = self.class_cache.as_ref()?;
+        let word_tier =
+            regex::Regex::new(r"(?i)\s*\((?:Sacred|Angelic|Mastercrafted)\)\s*$").ok()?;
+        let count_suffix = regex::Regex::new(r"\s*\(\d+\)\s*$").ok()?;
+        // Keep "X Container (NN)" intact — the number identifies the rune.
+        let rune_container = regex::Regex::new(r"(?i)\bContainer\s*\(\d+\)\s*$").ok()?;
         let mut names: Vec<String> = cache
             .iter()
-            .map(|info| info.base_name.clone())
+            .map(|info| {
+                let n = word_tier.replace(&info.base_name, "");
+                if rune_container.is_match(&n) {
+                    n.into_owned()
+                } else {
+                    count_suffix.replace(&n, "").into_owned()
+                }
+            })
             .filter(|s| !s.is_empty())
             .collect();
         names.sort();

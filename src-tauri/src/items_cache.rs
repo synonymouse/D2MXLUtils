@@ -8,8 +8,12 @@ use crate::logger::{error as log_error, info as log_info};
 
 const CACHE_FILE: &str = "items-cache.json";
 
+const SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ItemsCacheFile {
+    #[serde(default)]
+    schema: String,
     base_types: Vec<String>,
     dumped_at: String,
 }
@@ -42,6 +46,13 @@ pub fn load_items_cache(app: &AppHandle) -> Option<Vec<String>> {
 
     match serde_json::from_str::<ItemsCacheFile>(&content) {
         Ok(cache) => {
+            if cache.schema != SCHEMA_VERSION {
+                log_info(&format!(
+                    "items cache: schema mismatch (file={:?}, app={:?}), ignoring",
+                    cache.schema, SCHEMA_VERSION
+                ));
+                return None;
+            }
             log_info(&format!(
                 "items cache: loaded {} entries (dumped at {})",
                 cache.base_types.len(),
@@ -69,6 +80,7 @@ pub fn save_items_cache(app: &AppHandle, items: &[String]) -> Result<(), String>
 
     let path = app_data.join(CACHE_FILE);
     let payload = ItemsCacheFile {
+        schema: SCHEMA_VERSION.to_string(),
         base_types: items.to_vec(),
         dumped_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
     };
