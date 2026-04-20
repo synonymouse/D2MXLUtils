@@ -430,6 +430,18 @@ impl DropScanner {
             .unwrap_or_default()
     }
 
+    pub fn items_dictionary_snapshot(&self) -> Option<Vec<String>> {
+        let cache = self.class_cache.as_ref()?;
+        let mut names: Vec<String> = cache
+            .iter()
+            .map(|info| info.base_name.clone())
+            .filter(|s| !s.is_empty())
+            .collect();
+        names.sort();
+        names.dedup();
+        Some(names)
+    }
+
     /// Port of `NotifierCache` in D2Stats.au3 (lines 697-750).
     fn build_class_cache(&self) -> Result<Vec<ClassInfo>, String> {
         let count_addr = self.ctx.d2_common + d2common::ITEMS_TXT_COUNT;

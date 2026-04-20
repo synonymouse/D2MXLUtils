@@ -209,18 +209,63 @@ export const qualityHighlighting = EditorView.baseTheme({
   },
 });
 
+export const autocompleteTheme = EditorView.baseTheme({
+  ".cm-tooltip.cm-tooltip-autocomplete": {
+    backgroundColor: "var(--bg-elevated, #252530)",
+    border: "1px solid var(--border, #2a2a35)",
+    borderRadius: "var(--radius-sm, 4px)",
+    fontFamily: "var(--font-mono, 'Fira Code', 'Consolas', monospace)",
+    fontSize: "var(--text-sm, 13px)",
+    color: "var(--text-primary, #e8e6e3)",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.35)",
+    overflow: "hidden",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete > ul": {
+    maxHeight: "260px",
+    padding: "2px 0",
+    fontFamily: "inherit",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete > ul > li": {
+    padding: "3px 10px",
+    lineHeight: "1.5",
+    cursor: "pointer",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
+    backgroundColor: "var(--accent, #c7b377)",
+    color: "var(--bg-primary, #0a0a0f)",
+  },
+  ".cm-completionLabel": {
+    fontFamily: "inherit",
+  },
+  ".cm-completionMatchedText": {
+    textDecoration: "none",
+    fontWeight: "700",
+    color: "var(--accent, #c7b377)",
+  },
+  ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText":
+    {
+      color: "var(--bg-primary, #0a0a0f)",
+    },
+  ".cm-completionDetail": {
+    marginLeft: "10px",
+    fontSize: "0.85em",
+    opacity: 0.65,
+    fontStyle: "italic",
+  },
+});
+
 /**
  * Get theme extensions for dark mode
  */
 export function getDarkThemeExtensions() {
-  return [darkTheme, darkHighlighting, qualityHighlighting];
+  return [darkTheme, darkHighlighting, qualityHighlighting, autocompleteTheme];
 }
 
 /**
  * Get theme extensions for light mode
  */
 export function getLightThemeExtensions() {
-  return [lightTheme, lightHighlighting, qualityHighlighting];
+  return [lightTheme, lightHighlighting, qualityHighlighting, autocompleteTheme];
 }
 
 

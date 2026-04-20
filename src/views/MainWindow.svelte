@@ -4,7 +4,7 @@
     import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
     import { onMount } from "svelte";
     import { Tabs, ThemeToggle } from "../components";
-    import { windowState, type WindowState } from "../stores";
+    import { windowState, itemsDictionaryStore, type WindowState } from "../stores";
     import { GeneralTab, LootFilterTab, NotificationsTab } from "./index";
 
     // Scanner and game status from backend
@@ -108,6 +108,8 @@
         // Restore window state
         restoreWindowState();
 
+        itemsDictionaryStore.init();
+
         // Listen for scanner status
         listen<string>("scanner-status", (event) => {
             scannerStatus = event.payload as typeof scannerStatus;
@@ -152,6 +154,7 @@
         return () => {
             if (saveTimeout) clearTimeout(saveTimeout);
             unlisteners.forEach((u) => u());
+            itemsDictionaryStore.destroy();
         };
     });
 </script>

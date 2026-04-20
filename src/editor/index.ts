@@ -19,6 +19,7 @@ export {
   darkHighlighting,
   lightHighlighting,
   qualityHighlighting,
+  autocompleteTheme,
   getDarkThemeExtensions,
   getLightThemeExtensions,
 } from "./d2rules-theme";
@@ -29,3 +30,6 @@ export {
   type ValidationError,
   type ValidationResult,
 } from "./d2rules-linter";
+
+// Autocomplete
+export { d2rulesAutocomplete } from "./d2rules-autocomplete";

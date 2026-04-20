@@ -3,6 +3,7 @@
 mod d2types;
 mod hotkeys;
 mod injection;
+mod items_cache;
 mod logger;
 mod loot_filter_hook;
 mod notifier;
@@ -65,6 +66,7 @@ struct AppState {
     // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
 }
 
 const GAME_STATUS_UNKNOWN: u8 = 0;
@@ -96,6 +98,7 @@ fn start_scanner_internal(
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -158,6 +161,7 @@ fn start_scanner_internal(
             scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
 
             let mut was_ingame = false;
+            let mut dict_published = false;
 
             // Main scanning loop
             while is_scanning.load(Ordering::SeqCst) {
@@ -219,6 +223,28 @@ fn start_scanner_internal(
                             log_error(&format!("Failed to emit item-drop event: {}", e));
                         }
                     }
+
+                    if !dict_published {
+                        if let Some(dict) = scanner.items_dictionary_snapshot() {
+                            if let Ok(mut guard) = items_dictionary.write() {
+                                *guard = Some(dict.clone());
+                            }
+                            if let Err(e) = items_cache::save_items_cache(&app_handle, &dict) {
+                                log_error(&format!("Failed to save items cache: {}", e));
+                            }
+                            if let Err(e) = app_handle.emit("items-dictionary-updated", &dict) {
+                                log_error(&format!(
+                                    "Failed to emit items-dictionary-updated: {}",
+                                    e
+                                ));
+                            }
+                            log_info(&format!(
+                                "Published items dictionary ({} base types)",
+                                dict.len()
+                            ));
+                            dict_published = true;
+                        }
+                    }
                 }
 
                 thread::sleep(Duration::from_millis(30));
@@ -255,6 +281,7 @@ fn spawn_auto_scanner(
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<Vec<String>>>>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -268,6 +295,7 @@ fn spawn_auto_scanner(
                     filter_config_generation.clone(),
                     scanner_thread.clone(),
                     game_status.clone(),
+                    items_dictionary.clone(),
                     app_handle.clone(),
                 );
             }
@@ -290,6 +318,16 @@ fn get_game_status(state: tauri::State<AppState>) -> &'static str {
 #[tauri::command]
 fn get_scanner_status(state: tauri::State<AppState>) -> bool {
     state.is_scanning.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn get_items_dictionary(state: tauri::State<AppState>) -> Vec<String> {
+    state
+        .items_dictionary
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 // ===== Filter Configuration Commands =====
@@ -660,6 +698,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
+            let cached_items = items_cache::load_items_cache(app.handle());
+
             // Shared scanner state
             let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
@@ -669,6 +709,7 @@ fn main() {
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
+                items_dictionary: Arc::new(RwLock::new(cached_items)),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
@@ -677,6 +718,7 @@ fn main() {
             let filter_config_generation = state.filter_config_generation.clone();
             let scanner_thread = state.scanner_thread.clone();
             let game_status = state.game_status.clone();
+            let items_dictionary = state.items_dictionary.clone();
             app.manage(state);
 
             // Initialize hotkey state
@@ -708,6 +750,7 @@ fn main() {
                 filter_config_generation.clone(),
                 scanner_thread.clone(),
                 game_status.clone(),
+                items_dictionary.clone(),
                 app_handle,
             );
 
@@ -760,6 +803,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             get_scanner_status,
             get_game_status,
+            get_items_dictionary,
             set_filter_config,
             set_filter_enabled,
             sync_overlay_with_game,
