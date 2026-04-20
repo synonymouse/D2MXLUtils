@@ -28,6 +28,8 @@ windows = { version = "0.58", features = [
     "Win32_UI_Shell",
     "Win32_System_Com",
     # Features for global hotkeys
-    "Win32_UI_Input_KeyboardAndMouse"
+    "Win32_UI_Input_KeyboardAndMouse",
+    # Disable Windows 11 DWM border on the transparent overlay
+    "Win32_Graphics_Dwm"
 ] }
 

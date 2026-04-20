@@ -35,6 +35,8 @@ use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{BOOL, HANDLE, HWND, RECT};
 #[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
+#[cfg(target_os = "windows")]
 use windows::Win32::Security::{
     AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevationType,
     TokenLinkedToken, LUID_AND_ATTRIBUTES, SE_DEBUG_NAME, SE_PRIVILEGE_ENABLED,
@@ -481,6 +483,19 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
             | WS_EX_TOOLWINDOW.0 as i32;
 
         SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex_style);
+
+        // Disable the Windows 11 DWM border. Even borderless/undecorated windows
+        // get a 1px accent frame on Win11, which shows up as a faint rectangle
+        // on top of the game on a transparent layered overlay. Setting the border
+        // color to DWMWA_COLOR_NONE (0xFFFFFFFE) tells DWM to skip that frame.
+        // Silently ignored on Windows 10 (attribute unsupported).
+        const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+        let _ = DwmSetWindowAttribute(
+            hwnd_overlay,
+            DWMWA_BORDER_COLOR,
+            &DWMWA_COLOR_NONE as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
 
         // Workaround for WebView2 transparency bug on Windows:
         // WebView2 doesn't apply transparency until the window is resized.

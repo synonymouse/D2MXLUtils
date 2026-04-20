@@ -126,7 +126,7 @@
 <main class="overlay">
   <NotificationStack
     {items}
-    position="bottom-right"
+    position="top-left"
     maxVisible={10}
     fontSize={notificationFontSize}
     opacity={notificationOpacity}
