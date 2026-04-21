@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { RulesEditor, type ValidationResult } from "../editor";
-  import { Button, ProfileSelector } from "../components";
+  import { ProfileSelector } from "../components";
   import { settingsStore } from "../stores";
 
   // Default example filter for new/empty profiles. Spec-aligned:
@@ -42,7 +42,6 @@ sacred eth gold notify sound1 name
   let validationStatus = $state<"idle" | "valid" | "error">("idle");
   let errorCount = $state(0);
   let ruleCount = $state(0);
-  let isSaving = $state(false);
   let hasUnsavedChanges = $state(false);
   // Default-mode state derived from the parsed DSL (mirrors FilterConfig.hide_all).
   let hideAll = $state(false);
@@ -142,26 +141,11 @@ sacred eth gold notify sound1 name
     // Sync filter config to backend
     await syncFilterConfig();
   }
-
-  /**
-   * Reset to default filter (for current profile)
-   */
-  function resetToDefault() {
-    if (hasUnsavedChanges && !confirm("Discard unsaved changes?")) {
-      return;
-    }
-    dslText = DEFAULT_FILTER;
-    validationStatus = "idle";
-    errorCount = 0;
-    ruleCount = 0;
-    hasUnsavedChanges = true;
-  }
 </script>
 
 <section class="loot-filter-tab">
   <header class="tab-header">
     <div class="header-left">
-      <h2>Loot Filter Editor</h2>
       <span class="status-badge" class:valid={validationStatus === "valid"} class:error={validationStatus === "error"}>
         {#if validationStatus === "valid"}
           ✓ {ruleCount} {ruleCount === 1 ? "rule" : "rules"}
@@ -192,14 +176,6 @@ sacred eth gold notify sound1 name
         onsave={handleSaveComplete}
         canSave={validationStatus === "valid"}
       />
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={resetToDefault}
-        disabled={isSaving}
-      >
-        Reset
-      </Button>
     </div>
   </header>
 
@@ -300,13 +276,6 @@ sacred eth gold notify sound1 name
     display: flex;
     align-items: center;
     gap: var(--space-3, 12px);
-  }
-
-  .tab-header h2 {
-    margin: 0;
-    font-size: var(--text-lg, 18px);
-    font-weight: 600;
-    color: var(--text-primary);
   }
 
   .header-actions {

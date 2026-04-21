@@ -283,10 +283,10 @@
 }
 
 .section-title {
-  font-size: var(--text-base);
+  font-size: var(--text-lg);
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 var(--space-1) 0;
+  margin: 0 0 var(--space-3) 0;
 }
 
 .section-description {

@@ -388,15 +388,20 @@
     display: flex;
     align-items: center;
     gap: var(--space-2, 8px);
-    padding: 6px 12px;
+    padding: var(--space-1) var(--space-2);
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: var(--radius-md, 6px);
     color: var(--text-primary);
-    font-size: var(--text-sm, 13px);
+    font-size: var(--text-xs);
+    line-height: 1.5;
     cursor: pointer;
     min-width: 180px;
     transition: all 0.15s ease;
+  }
+
+  .profile-icon {
+    font-size: var(--text-xs);
   }
 
   .dropdown-trigger:hover:not(:disabled) {
@@ -407,10 +412,6 @@
   .dropdown-trigger:disabled {
     opacity: 0.6;
     cursor: not-allowed;
-  }
-
-  .profile-icon {
-    font-size: 14px;
   }
 
   .profile-name {
