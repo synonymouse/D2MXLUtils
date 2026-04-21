@@ -132,7 +132,7 @@ Regex in braces, matched case-insensitively against the item's stat text.
 
 One of:
 
-`transparent`, `white`, `red`, `lime`, `blue`, `gold`, `grey`, `black`, `pink`, `orange`, `yellow`, `green`, `purple`.
+`white`, `red`, `lime`, `blue`, `gold`, `grey`, `black`, `pink`, `orange`, `yellow`, `green`, `purple`.
 
 Color alone does not produce a notification. Pair with `notify` to emit one.
 
@@ -265,7 +265,7 @@ show default      # show unmatched items (implicit default)
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor
 tier       := 0 | 1 | 2 | 3 | 4 | sacred | angelic | master
-color      := transparent | white | red | lime | blue | gold | grey | black
+color      := white | red | lime | blue | gold | grey | black
             | pink | orange | yellow | green | purple
 visibility := show | hide
 sound      := sound1 | sound2 | sound3 | sound4 | sound5 | sound6 | sound_none

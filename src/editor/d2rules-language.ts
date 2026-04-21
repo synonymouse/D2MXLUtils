@@ -32,7 +32,6 @@ const TIER_KEYWORDS = [
 
 // Color keywords (no longer include show/hide — those are visibility)
 const COLOR_KEYWORDS = [
-  "transparent",
   "white",
   "red",
   "lime",

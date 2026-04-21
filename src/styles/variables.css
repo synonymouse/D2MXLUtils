@@ -64,5 +64,19 @@
   --notif-stat: #8787ff;               /* magic-affix blue, brightened for overlay readability */
   --notif-stat-matched: #15ff00;       /* highlights the stat line triggered by a {stat-pattern} rule */
   --notif-muted: #9e9c98;              /* dim secondary text (e.g. [UNID]) */
+
+  /* Loot filter notify colors (palette mirrors NotifyColor::to_hex in Rust) */
+  --notify-white:  #ffffff;
+  --notify-red:    #ff0000;
+  --notify-lime:   #15ff00;
+  --notify-blue:   #7878f5;
+  --notify-gold:   #f0cd8c;
+  --notify-grey:   #9d9d9d;
+  --notify-black:  #000000;
+  --notify-pink:   #ff00ff;
+  --notify-orange: #ffbf00;
+  --notify-yellow: #ffff00;
+  --notify-green:  #008000;
+  --notify-purple: #9d00ff;
 }
 

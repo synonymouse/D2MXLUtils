@@ -49,7 +49,27 @@
     'Normal': 'var(--quality-normal)'
   };
 
-  const nameColor = $derived(qualityColors[item.quality] ?? 'var(--text-muted)');
+  // Palette for rule-level `color` flag — takes precedence over quality color.
+  const notifyColors: Record<string, string> = {
+    white:  'var(--notify-white)',
+    red:    'var(--notify-red)',
+    lime:   'var(--notify-lime)',
+    blue:   'var(--notify-blue)',
+    gold:   'var(--notify-gold)',
+    grey:   'var(--notify-grey)',
+    black:  'var(--notify-black)',
+    pink:   'var(--notify-pink)',
+    orange: 'var(--notify-orange)',
+    yellow: 'var(--notify-yellow)',
+    green:  'var(--notify-green)',
+    purple: 'var(--notify-purple)',
+  };
+
+  const nameColor = $derived(
+    (item.filter?.color ? notifyColors[item.filter.color] : undefined)
+      ?? qualityColors[item.quality]
+      ?? 'var(--text-muted)'
+  );
 
   // Items that get the two-line "name + base" treatment.
   const isLargeDrop = $derived(item.quality === 'Set' || item.unique_kind != null);

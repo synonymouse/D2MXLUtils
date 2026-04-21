@@ -104,7 +104,6 @@ impl ItemTier {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NotifyColor {
-    Transparent,
     White,
     Red,
     Lime,
@@ -122,7 +121,6 @@ pub enum NotifyColor {
 impl NotifyColor {
     pub fn from_str(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
-            "transparent" => Some(Self::Transparent),
             "white" => Some(Self::White),
             "red" => Some(Self::Red),
             "lime" => Some(Self::Lime),
@@ -141,7 +139,6 @@ impl NotifyColor {
 
     pub fn to_hex(&self) -> &'static str {
         match self {
-            Self::Transparent => "#00000000",
             Self::White => "#FFFFFF",
             Self::Red => "#FF0000",
             Self::Lime => "#15FF00",
