@@ -107,11 +107,32 @@ impl UniqueKind {
     }
 }
 
+/// Resolve a unique's tier label combining wLvl banding and base-item tier.
+///
+/// MXL stores `wLvl = 1` for many low-tier uniques (e.g. Razordisk on a
+/// Tier1 Buckler). When wLvl alone yields no band, fall back to the base
+/// item tier: a normal-tier base (Tier1-4) means TU.
+fn classify_unique_kind(
+    from_wlvl: Option<UniqueKind>,
+    base_tier: Option<ItemTier>,
+) -> Option<UniqueKind> {
+    if from_wlvl.is_some() {
+        return from_wlvl;
+    }
+    match base_tier? {
+        ItemTier::Tier1 | ItemTier::Tier2 | ItemTier::Tier3 | ItemTier::Tier4 => {
+            Some(UniqueKind::Tu)
+        }
+        _ => None,
+    }
+}
+
 /// One entry per UniqueItems.txt record (aligned 1:1 with `file_index`
-/// read from `ItemData`). `kind = None` marks records with no tier band
-/// (wLvl == 0 or 1 — quest uniques); `display_name.is_empty()` marks
-/// failed `GetStringById` resolution. Both cases are skipped in the
-/// autocomplete snapshot and produce no suffix at drop time.
+/// read from `ItemData`). `kind = None` marks records with wLvl ∈ {0, 1};
+/// at drop time `classify_unique_kind` falls back to base item tier so
+/// low-tier TUs (e.g. Razordisk on Tier1 Buckler) still get the TU label.
+/// `display_name.is_empty()` marks failed `GetStringById` resolution;
+/// such records are skipped in the autocomplete snapshot.
 #[derive(Debug, Clone)]
 struct UniqueInfo {
     display_name: String,
@@ -494,7 +515,7 @@ impl DropScanner {
             .name
             .unwrap_or_else(|| format!("Item #{}", scanned.class));
         let unique_kind = if scanned.quality == item_quality::UNIQUE {
-            self.unique_kind(scanned.file_index)
+            self.unique_kind(scanned.file_index, class)
         } else {
             None
         };
@@ -518,11 +539,13 @@ impl DropScanner {
         }
     }
 
-    fn unique_kind(&self, file_index: u32) -> Option<UniqueKind> {
-        self.unique_cache
+    fn unique_kind(&self, file_index: u32, class: u32) -> Option<UniqueKind> {
+        let from_wlvl = self
+            .unique_cache
             .as_ref()
             .and_then(|cache| cache.get(file_index as usize))
-            .and_then(|info| info.kind)
+            .and_then(|info| info.kind);
+        classify_unique_kind(from_wlvl, self.class_tier(class))
     }
 
     fn class_tier(&self, class: u32) -> Option<ItemTier> {
