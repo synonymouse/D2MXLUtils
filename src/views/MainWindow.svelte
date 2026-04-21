@@ -164,7 +164,7 @@
     <header class="header">
         <div class="brand">
             <h1 class="title">D2MXL<span class="accent">Utils</span></h1>
-            <span class="version">v1.2.0</span>
+            <span class="version">v{__APP_VERSION__}</span>
         </div>
 
         <div class="header-right">
