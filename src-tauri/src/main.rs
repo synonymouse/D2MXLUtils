@@ -770,6 +770,21 @@ fn load_initial_filter_config(app: &AppHandle) -> Option<rules::FilterConfig> {
     }
 }
 
+#[tauri::command]
+fn open_app_folder(app: AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    std::process::Command::new("explorer")
+        .arg(&dir)
+        .spawn()
+        .map_err(|e| format!("Failed to open explorer: {}", e))?;
+    Ok(())
+}
+
 fn main() {
     // Enable SeDebugPrivilege so OpenProcess has the same behavior as legacy tools.
     enable_debug_privilege();
@@ -920,7 +935,8 @@ fn main() {
             profiles::create_profile,
             updater::check_for_updates,
             updater::start_update,
-            updater::restart_app
+            updater::restart_app,
+            open_app_folder
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

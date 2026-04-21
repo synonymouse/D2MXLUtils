@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { Button, HotkeyInput } from '../components';
   import { settingsStore, updaterStore, type HotkeyConfig } from '../stores';
   import { playSound } from '../lib/sound-player';
@@ -49,6 +50,14 @@
 
   function handleCheckForUpdates() {
     updaterStore.check(true);
+  }
+
+  async function handleOpenAppFolder() {
+    try {
+      await invoke('open_app_folder');
+    } catch (err) {
+      console.error('Failed to open app folder:', err);
+    }
   }
 </script>
 
@@ -115,7 +124,17 @@
   </div>
 
   <div class="settings-section">
-    <h2 class="section-title">Updates</h2>
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">App data folder</span>
+        <span class="setting-hint">Settings, profiles, logs</span>
+      </div>
+      <div class="update-control">
+        <Button variant="secondary" size="sm" onclick={handleOpenAppFolder}>
+          Open folder
+        </Button>
+      </div>
+    </div>
 
     <div class="setting-row">
       <div class="setting-info">

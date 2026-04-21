@@ -1,25 +1,36 @@
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use chrono::Local;
 
 /// Simple file logger used by the backend.
 ///
-/// Writes log lines to `d2mxlutils.log` next to the executable.
+/// Writes log lines to `d2mxlutils.log` inside the app-data directory
+/// (`%APPDATA%\com.d2mxlutils.app` on Windows), matching the location used
+/// by `settings.json`, `profiles/`, and `items-cache.json`. Falls back to the
+/// directory next to the executable if `%APPDATA%` cannot be resolved.
+
+const APP_DIR_NAME: &str = "com.d2mxlutils.app";
+const LOG_FILE_NAME: &str = "d2mxlutils.log";
 
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 fn get_log_path() -> PathBuf {
     LOG_PATH
         .get_or_init(|| {
-            let exe_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
-            let dir = exe_path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-            dir.join("d2mxlutils.log")
+            let dir = std::env::var_os("APPDATA")
+                .map(PathBuf::from)
+                .map(|p| p.join(APP_DIR_NAME))
+                .or_else(|| {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                })
+                .unwrap_or_else(|| PathBuf::from("."));
+            let _ = std::fs::create_dir_all(&dir);
+            dir.join(LOG_FILE_NAME)
         })
         .clone()
 }
