@@ -24,13 +24,13 @@ set lime
 "Ring$" rare {Skills} lime notify sound2 stat
 
 # Ethereal sacred items get the full treatment
-sacred eth gold notify sound1 name
+sacred eth gold notify sound1
 
 # All runes
-"Rune$" gold notify sound3 name
+"Rune$" gold notify sound3
 
 # Group: always call out the named uniques
-[unique gold notify sound1 name stat] {
+[unique gold notify sound1 stat] {
   "Jordan"
   "Tyrael"
   "Windforce"

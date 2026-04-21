@@ -97,7 +97,6 @@
   onMount(() => {
     const unlisteners: Array<() => void> = [];
     let syncTimer: number | null = null;
-    let settingsTimer: number | null = null;
 
     // Listen for item drops
     listen<ItemDrop>('item-drop', (event) => {
@@ -128,6 +127,10 @@
       }
     }).then(u => unlisteners.push(u));
 
+    listen('settings-updated', () => {
+      settingsStore.load();
+    }).then(u => unlisteners.push(u));
+
     // Periodically sync overlay position with Diablo II window
     syncTimer = window.setInterval(() => {
       invoke('sync_overlay_with_game').catch(() => {
@@ -135,19 +138,10 @@
       });
     }, 250);
 
-    // Periodically reload settings to sync with main window changes
-    // TODO: replace with a watcher on the settings store
-    settingsTimer = window.setInterval(() => {
-      settingsStore.load();
-    }, 2000);
-
     return () => {
       unlisteners.forEach(u => u());
       if (syncTimer !== null) {
         clearInterval(syncTimer);
-      }
-      if (settingsTimer !== null) {
-        clearInterval(settingsTimer);
       }
       // Clear all removal timers
       removalTimers.forEach(timer => clearTimeout(timer));

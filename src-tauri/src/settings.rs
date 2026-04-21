@@ -4,7 +4,7 @@
 //! Settings are stored in a JSON file in the app's data directory.
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
 
 use crate::hotkeys::HotkeyConfig;
@@ -186,6 +186,10 @@ pub fn save_settings(app: AppHandle, settings: AppSettings) -> Result<(), String
     store
         .save()
         .map_err(|e| format!("Failed to save settings to disk: {}", e))?;
+
+    if let Err(e) = app.emit("settings-updated", &settings) {
+        log_error(&format!("Failed to emit settings-updated: {}", e));
+    }
 
     Ok(())
 }

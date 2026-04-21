@@ -172,27 +172,41 @@ pub fn parse_dsl(text: &str) -> Result<FilterConfig, Vec<ParseError>> {
         }
 
         // File-scope directive: `hide default` / `show default`.
-        if let Some(mode) = parse_default_mode(trimmed) {
-            if current_group.is_some() {
+        match parse_default_mode(trimmed) {
+            DefaultModeParse::NotDirective => {}
+            DefaultModeParse::ExtraTokens(keyword) => {
                 errors.push(ParseError {
                     line: line_num,
                     column: 0,
-                    message: "'hide default' / 'show default' cannot appear inside a group"
-                        .to_string(),
+                    message: format!(
+                        "'{} default' is a file-scope directive and cannot have additional tokens",
+                        keyword
+                    ),
                 });
                 continue;
             }
-            if default_mode_line.is_some() {
-                errors.push(ParseError {
-                    line: line_num,
-                    column: 0,
-                    message: "Duplicate 'hide default' / 'show default' directive".to_string(),
-                });
+            DefaultModeParse::Directive(mode) => {
+                if current_group.is_some() {
+                    errors.push(ParseError {
+                        line: line_num,
+                        column: 0,
+                        message: "'hide default' / 'show default' cannot appear inside a group"
+                            .to_string(),
+                    });
+                    continue;
+                }
+                if default_mode_line.is_some() {
+                    errors.push(ParseError {
+                        line: line_num,
+                        column: 0,
+                        message: "Duplicate 'hide default' / 'show default' directive".to_string(),
+                    });
+                    continue;
+                }
+                hide_all = mode;
+                default_mode_line = Some(line_num);
                 continue;
             }
-            hide_all = mode;
-            default_mode_line = Some(line_num);
-            continue;
         }
 
         // Group opener: [attrs] {
@@ -288,28 +302,43 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
         }
 
         // File-scope directive: `hide default` / `show default`.
-        if parse_default_mode(trimmed).is_some() {
-            if in_group {
+        match parse_default_mode(trimmed) {
+            DefaultModeParse::NotDirective => {}
+            DefaultModeParse::ExtraTokens(keyword) => {
                 errors.push(ValidationError {
                     line: line_num,
                     column: 0,
-                    message: "'hide default' / 'show default' cannot appear inside a group"
-                        .to_string(),
+                    message: format!(
+                        "'{} default' is a file-scope directive and cannot have additional tokens",
+                        keyword
+                    ),
                     severity: ValidationSeverity::Error,
                 });
                 continue;
             }
-            if default_mode_line.is_some() {
-                errors.push(ValidationError {
-                    line: line_num,
-                    column: 0,
-                    message: "Duplicate 'hide default' / 'show default' directive".to_string(),
-                    severity: ValidationSeverity::Error,
-                });
+            DefaultModeParse::Directive(_) => {
+                if in_group {
+                    errors.push(ValidationError {
+                        line: line_num,
+                        column: 0,
+                        message: "'hide default' / 'show default' cannot appear inside a group"
+                            .to_string(),
+                        severity: ValidationSeverity::Error,
+                    });
+                    continue;
+                }
+                if default_mode_line.is_some() {
+                    errors.push(ValidationError {
+                        line: line_num,
+                        column: 0,
+                        message: "Duplicate 'hide default' / 'show default' directive".to_string(),
+                        severity: ValidationSeverity::Error,
+                    });
+                    continue;
+                }
+                default_mode_line = Some(line_num);
                 continue;
             }
-            default_mode_line = Some(line_num);
-            continue;
         }
 
         if let Some(header) = parse_group_open(trimmed) {
@@ -427,6 +456,15 @@ fn parse_attrs_into(
     line_num: usize,
     errors: &mut Vec<ParseError>,
 ) {
+    if in_group_header && src.contains('"') {
+        errors.push(ParseError {
+            line: line_num,
+            column: 0,
+            message: "Group headers cannot contain a name pattern".to_string(),
+        });
+        return;
+    }
+
     // Pull out stat pattern from any {...} occurrence.
     let (remainder, stat) = extract_stat_pattern(src);
     if let Some(s) = stat {
@@ -471,6 +509,8 @@ fn parse_attrs_into(
                 attrs.display_stats = Some(true);
                 continue;
             }
+            // `Some(0)` = silence marker; normalized to `None` in
+            // `FilterConfig::decide`. Lets a rule override group-level sound.
             "sound_none" => {
                 attrs.sound = Some(0);
                 continue;
@@ -483,14 +523,6 @@ fn parse_attrs_into(
         }
         if let Some(num) = parse_sound_keyword(&lower) {
             attrs.sound = Some(num);
-            continue;
-        }
-        if in_group_header && lower.starts_with('"') {
-            errors.push(ParseError {
-                line: line_num,
-                column: 0,
-                message: "Group headers cannot contain a name pattern".to_string(),
-            });
             continue;
         }
         // Unknown tokens are lenient — see `validate_dsl` for warnings.
@@ -543,8 +575,8 @@ fn strip_inline_comment(line: &str) -> &str {
     line
 }
 
-/// Extract the FIRST `{...}` from `s` and return `(remainder, content)`.
-/// Supports `\{`, `\}`, `\\` escapes inside the braces.
+/// Extract the first `{...}` from `s`. Braces are balanced (so regex
+/// quantifiers like `{n,m}` survive); `\{` / `\}` / `\\` escape literals.
 fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
     let mut remainder = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -554,6 +586,7 @@ fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
     while let Some(c) = chars.next() {
         if c == '{' && !captured {
             let mut inner = String::new();
+            let mut depth = 1usize;
             while let Some(nc) = chars.next() {
                 if nc == '\\' {
                     inner.push(nc);
@@ -562,11 +595,21 @@ fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
                     }
                     continue;
                 }
+                if nc == '{' {
+                    depth += 1;
+                    inner.push(nc);
+                    continue;
+                }
                 if nc == '}' {
-                    if !inner.trim().is_empty() {
-                        pattern = Some(inner.trim().to_string());
+                    depth -= 1;
+                    if depth == 0 {
+                        if !inner.trim().is_empty() {
+                            pattern = Some(inner.trim().to_string());
+                        }
+                        break;
                     }
-                    break;
+                    inner.push(nc);
+                    continue;
                 }
                 inner.push(nc);
             }
@@ -631,19 +674,20 @@ fn validate_tokens(
     in_group_header: bool,
     errors: &mut Vec<ValidationError>,
 ) {
+    if in_group_header && src.contains('"') {
+        errors.push(ValidationError {
+            line: line_num,
+            column: 0,
+            message: "Group headers cannot contain a name pattern".to_string(),
+            severity: ValidationSeverity::Error,
+        });
+        return;
+    }
+
     let (remainder, _) = extract_stat_pattern(src);
     for token in remainder.split_whitespace() {
         let lower = token.to_lowercase();
         if is_known_token(&lower) {
-            continue;
-        }
-        if in_group_header && lower.starts_with('"') {
-            errors.push(ValidationError {
-                line: line_num,
-                column: 0,
-                message: "Group headers cannot contain a name pattern".to_string(),
-                severity: ValidationSeverity::Error,
-            });
             continue;
         }
         errors.push(ValidationError {
@@ -697,27 +741,37 @@ fn info_warn_notify_independence(src: &str, line_num: usize, errors: &mut Vec<Va
 // Directive parsing
 // =====================================================================
 
-/// Parse a bare `hide default` / `show default` directive.
-///
-/// Returns `Some(true)` for `hide default` (hide unmatched items),
-/// `Some(false)` for `show default`, and `None` if the line isn't a
-/// default-mode directive.
-fn parse_default_mode(trimmed: &str) -> Option<bool> {
+enum DefaultModeParse {
+    NotDirective,
+    /// `true` = `hide default`, `false` = `show default`.
+    Directive(bool),
+    /// Payload carries `"hide"` or `"show"` for the error message.
+    ExtraTokens(&'static str),
+}
+
+fn parse_default_mode(trimmed: &str) -> DefaultModeParse {
     let lowered = trimmed.to_ascii_lowercase();
     let mut tokens = lowered.split_whitespace();
-    let first = tokens.next()?;
-    let second = tokens.next()?;
-    if tokens.next().is_some() {
-        return None;
-    }
+    let first = match tokens.next() {
+        Some(t) => t.to_string(),
+        None => return DefaultModeParse::NotDirective,
+    };
+    let second = match tokens.next() {
+        Some(t) => t.to_string(),
+        None => return DefaultModeParse::NotDirective,
+    };
     if second != "default" {
-        return None;
+        return DefaultModeParse::NotDirective;
     }
-    match first {
-        "hide" => Some(true),
-        "show" => Some(false),
-        _ => None,
+    let keyword: &'static str = match first.as_str() {
+        "hide" => "hide",
+        "show" => "show",
+        _ => return DefaultModeParse::NotDirective,
+    };
+    if tokens.next().is_some() {
+        return DefaultModeParse::ExtraTokens(keyword);
     }
+    DefaultModeParse::Directive(keyword == "hide")
 }
 
 // =====================================================================
@@ -952,5 +1006,33 @@ mod tests {
     fn duplicate_tier_tokens_are_deduplicated() {
         let cfg = parse_dsl("1 1 2 2 hide").unwrap();
         assert_eq!(cfg.rules[0].tiers, vec![ItemTier::Tier1, ItemTier::Tier2]);
+    }
+
+    #[test]
+    fn group_header_with_quoted_name_emits_single_error() {
+        let src = "[\"Stone of Jordan\" unique gold] {\n  \"X\"\n}";
+        let errs = parse_dsl(src).unwrap_err();
+        let name_errs: Vec<_> = errs
+            .iter()
+            .filter(|e| e.message.contains("Group headers cannot contain a name pattern"))
+            .collect();
+        assert_eq!(name_errs.len(), 1);
+    }
+
+    #[test]
+    fn stat_pattern_allows_regex_quantifier() {
+        let cfg = parse_dsl("rare {All Skills.{2,5}}").unwrap();
+        assert_eq!(
+            cfg.rules[0].stat_pattern.as_deref(),
+            Some("All Skills.{2,5}")
+        );
+    }
+
+    #[test]
+    fn hide_default_with_extras_is_error() {
+        let errs = parse_dsl("hide default unique").unwrap_err();
+        assert!(errs
+            .iter()
+            .any(|e| e.message.contains("cannot have additional tokens")));
     }
 }

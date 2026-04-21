@@ -136,23 +136,6 @@ impl NotifyColor {
             _ => None,
         }
     }
-
-    pub fn to_hex(&self) -> &'static str {
-        match self {
-            Self::White => "#FFFFFF",
-            Self::Red => "#FF0000",
-            Self::Lime => "#15FF00",
-            Self::Blue => "#7878F5",
-            Self::Gold => "#F0CD8C",
-            Self::Grey => "#9D9D9D",
-            Self::Black => "#000000",
-            Self::Pink => "#FF00FF",
-            Self::Orange => "#FFBF00",
-            Self::Yellow => "#FFFF00",
-            Self::Green => "#008000",
-            Self::Purple => "#9D00FF",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -277,9 +260,11 @@ impl FilterConfig {
                         .stat_pattern
                         .as_deref()
                         .and_then(|p| ctx.matching_stat_line_index(p));
+                    // Collapse the `sound_none` silence marker so consumers
+                    // only see 1..=6.
                     Some(Notification {
                         color: rule.color,
-                        sound: rule.sound,
+                        sound: rule.sound.filter(|&s| s != 0),
                         display_stats: rule.display_stats
                             || rule.stat_pattern.is_some(),
                         matched_stat_line,
@@ -485,6 +470,18 @@ mod tests {
         let n = d.notification.expect("rule should notify");
         assert!(n.display_stats);
         assert_eq!(n.matched_stat_line, None);
+    }
+
+    #[test]
+    fn sound_none_overrides_group_and_normalizes_to_no_sound() {
+        let dsl = "[unique notify sound1] {\n  \"Jordan\" sound_none\n}\n";
+        let config = crate::rules::parse_dsl(dsl).expect("valid DSL");
+        assert_eq!(config.rules[0].sound, Some(0));
+
+        let it = item("Stone of Jordan", ItemQuality::Unique, false);
+        let ctx = MatchContext::new(&it);
+        let n = config.decide(&ctx).notification.expect("should notify");
+        assert_eq!(n.sound, None);
     }
 
     #[test]
