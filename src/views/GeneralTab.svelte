@@ -1,12 +1,38 @@
 <script lang="ts">
   import { Button, HotkeyInput } from '../components';
-  import { settingsStore, type HotkeyConfig } from '../stores';
+  import { settingsStore, updaterStore, type HotkeyConfig } from '../stores';
   import { playSound } from '../lib/sound-player';
 
   // Derived state from settings store
   let soundVolume = $derived(settingsStore.settings.soundVolume);
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
   let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
+
+  let updaterState = $derived(updaterStore.state);
+  let checkDisabled = $derived(
+    updaterState.kind === 'checking' ||
+    updaterState.kind === 'downloading' ||
+    updaterState.kind === 'ready',
+  );
+
+  function formatBytes(n: number): string {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function updateStatusText(): string {
+    const s = updaterState;
+    switch (s.kind) {
+      case 'idle':        return '';
+      case 'checking':    return 'Checking…';
+      case 'up_to_date':  return 'You have the latest version';
+      case 'available':   return `Update v${s.latest} available — click the button in the top right`;
+      case 'downloading': return `Downloading ${formatBytes(s.downloaded)}`;
+      case 'ready':       return 'Ready to install. Click "Restart" in the top right';
+      case 'error':       return 'Failed to check for updates. Check your connection';
+    }
+  }
 
   function handleVolumeInput(e: Event) {
     const target = e.currentTarget as HTMLInputElement;
@@ -19,6 +45,10 @@
 
   function handleEditOverlayHotkeyChange(hotkey: HotkeyConfig) {
     settingsStore.setEditOverlayHotkey(hotkey);
+  }
+
+  function handleCheckForUpdates() {
+    updaterStore.check(true);
   }
 </script>
 
@@ -83,6 +113,28 @@
       </div>
     </div>
   </div>
+
+  <div class="settings-section">
+    <h2 class="section-title">Updates</h2>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Current version</span>
+        <span class="setting-hint">v{__APP_VERSION__}</span>
+      </div>
+      <div class="update-control">
+        <Button variant="secondary" size="sm" disabled={checkDisabled} onclick={handleCheckForUpdates}>
+          Check for updates
+        </Button>
+      </div>
+    </div>
+
+    {#if updateStatusText()}
+      <div class="update-status" class:is-error={updaterState.kind === 'error'}>
+        {updateStatusText()}
+      </div>
+    {/if}
+  </div>
 </section>
 
 <style>
@@ -143,5 +195,23 @@
     padding: 0 2px;
     background: var(--bg-tertiary);
     border-radius: var(--radius-sm);
+  }
+
+  .update-control {
+    display: flex;
+    align-items: center;
+  }
+
+  .update-status {
+    margin-top: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-sm);
+    color: var(--text-secondary, var(--text-primary));
+  }
+
+  .update-status.is-error {
+    color: var(--status-error-text);
   }
 </style>
