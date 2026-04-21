@@ -1,10 +1,11 @@
 <script lang="ts">
     import { invoke } from "@tauri-apps/api/core";
     import { listen } from "@tauri-apps/api/event";
+    import { LogicalPosition, LogicalSize } from "@tauri-apps/api/dpi";
     import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
     import { onMount } from "svelte";
-    import { Tabs, ThemeToggle } from "../components";
-    import { windowState, itemsDictionaryStore, type WindowState } from "../stores";
+    import { Tabs, ThemeToggle, UpdateButton } from "../components";
+    import { windowState, itemsDictionaryStore, updaterStore, type WindowState } from "../stores";
     import { GeneralTab, LootFilterTab, NotificationsTab } from "./index";
 
     // Scanner and game status from backend
@@ -79,16 +80,8 @@
             const window = getCurrentWebviewWindow();
 
             // Restore position and size
-            await window.setPosition({
-                type: "Logical",
-                x: state.x,
-                y: state.y,
-            });
-            await window.setSize({
-                type: "Logical",
-                width: state.width,
-                height: state.height,
-            });
+            await window.setPosition(new LogicalPosition(state.x, state.y));
+            await window.setSize(new LogicalSize(state.width, state.height));
 
             // Restore maximized state
             if (state.maximized) {
@@ -109,6 +102,13 @@
         restoreWindowState();
 
         itemsDictionaryStore.init();
+
+        // Wire up updater events and trigger a silent startup check after
+        // a short delay so cold-start isn't slowed down.
+        updaterStore.initListeners();
+        const updateCheckTimer = setTimeout(() => {
+            updaterStore.check(false);
+        }, 3000);
 
         // Listen for scanner status
         listen<string>("scanner-status", (event) => {
@@ -153,8 +153,10 @@
 
         return () => {
             if (saveTimeout) clearTimeout(saveTimeout);
+            clearTimeout(updateCheckTimer);
             unlisteners.forEach((u) => u());
             itemsDictionaryStore.destroy();
+            updaterStore.destroyListeners();
         };
     });
 </script>
@@ -168,6 +170,7 @@
         </div>
 
         <div class="header-right">
+            <UpdateButton />
             <ThemeToggle />
 
             <div class="status-bar">

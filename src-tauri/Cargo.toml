@@ -15,6 +15,8 @@ regex = "1"
 tauri = { version = "2", features = [] }
 tauri-plugin-store = "2"
 chrono = { version = "0.4", features = ["clock", "std"] }
+self_update = "0.44"
+semver = "1"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",

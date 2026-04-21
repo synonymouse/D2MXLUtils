@@ -12,6 +12,7 @@ mod process;
 mod profiles;
 mod rules;
 mod settings;
+mod updater;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -916,7 +917,10 @@ fn main() {
             profiles::delete_profile,
             profiles::rename_profile,
             profiles::duplicate_profile,
-            profiles::create_profile
+            profiles::create_profile,
+            updater::check_for_updates,
+            updater::start_update,
+            updater::restart_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
