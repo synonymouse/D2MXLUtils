@@ -21,6 +21,8 @@ use tauri::{AppHandle, Emitter};
 use self_update::backends::github::ReleaseList;
 use self_update::Download;
 
+use http::header::{HeaderValue, ACCEPT};
+
 use crate::logger::{error as log_error, info as log_info};
 
 const REPO_OWNER: &str = "synonymouse";
@@ -181,6 +183,7 @@ fn download_and_replace(app: &AppHandle, url: &str) -> Result<(), String> {
     let mut writer = ProgressWriter::new(file, app.clone());
 
     Download::from_url(url)
+        .set_header(ACCEPT, HeaderValue::from_static("application/octet-stream"))
         .show_progress(false)
         .download_to(&mut writer)
         .map_err(|e| format!("download: {}", e))?;
