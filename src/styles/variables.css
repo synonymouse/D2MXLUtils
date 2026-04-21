@@ -59,5 +59,9 @@
   --stat-poison: #44ff44;
   --stat-physical: #ffffff;
   --stat-magic: #b366ff;
+
+  --notif-base: #ffffff;               /* base item type line (white) */
+  --notif-stat: #8787ff;               /* magic-affix blue, brightened for overlay readability */
+  --notif-muted: #9e9c98;              /* dim secondary text (e.g. [UNID]) */
 }
 

@@ -83,17 +83,15 @@
     <div class="item-base">{secondary}</div>
   {/if}
   {#if showStats}
-    <div class="item-stats">
-      {item.stats.length > 80 ? item.stats.substring(0, 80) + '...' : item.stats}
-    </div>
+    <div class="item-stats">{item.stats}</div>
   {/if}
 </div>
 
 <style>
   .notification {
-    max-width: 320px;
+    max-width: 22em;
     font-family: var(--font-mono);
-    padding: var(--space-2) var(--space-3);
+    padding: 0.45em 0.65em;
   }
 
   .item-name {
@@ -102,15 +100,15 @@
   }
 
   .item-base {
-    margin-top: var(--space-1);
-    font-size: var(--text-xs);
-    color: var(--text-muted);
+    margin-top: 0.22em;
+    font-size: 0.85em;
+    color: var(--notif-base);
     line-height: 1.3;
   }
 
   .badges {
-    margin-left: var(--space-2);
-    font-size: var(--text-xs);
+    margin-left: 0.45em;
+    font-size: 0.85em;
     font-weight: 400;
   }
 
@@ -119,16 +117,16 @@
   }
 
   .unid {
-    color: var(--text-muted);
-    margin-left: var(--space-1);
+    color: var(--notif-muted);
+    margin-left: 0.22em;
   }
 
   .item-stats {
-    margin-top: var(--space-1);
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    margin-top: 0.22em;
+    font-size: 0.85em;
+    color: var(--notif-stat);
+    line-height: 1.3;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
   }
 </style>
