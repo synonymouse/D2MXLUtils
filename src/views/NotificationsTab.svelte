@@ -1,6 +1,55 @@
 <script lang="ts">
   import { settingsStore } from '../stores';
-  import { Toggle } from '../components';
+  import { Toggle, Notification } from '../components';
+
+  const previewPlain = {
+    unit_id: 0,
+    class: 0,
+    quality: 'Unique',
+    name: "Tyrael's Might SU",
+    base_name: 'Sacred Armor',
+    stats: '',
+    is_ethereal: true,
+    is_identified: true,
+    unique_kind: 'su' as const,
+    filter: { display_stats: false },
+  };
+
+  const previewWithStats = {
+    unit_id: 1,
+    class: 0,
+    quality: 'Unique',
+    name: "Tyrael's Might SU",
+    base_name: 'Sacred Armor',
+    stats: [
+      'Indestructible',
+      '+150% Enhanced Defense',
+      '+20% Faster Run/Walk',
+      'Requirements -100%',
+      '+2 to All Skills',
+    ].join('\n'),
+    is_ethereal: true,
+    is_identified: true,
+    unique_kind: 'su' as const,
+    filter: { display_stats: true },
+  };
+
+  const previewWithMatch = {
+    unit_id: 2,
+    class: 0,
+    quality: 'Rare',
+    name: 'Rune Turn',
+    base_name: 'Sacred Ring',
+    stats: [
+      '+15% Faster Cast Rate',
+      '+1 to All Skills',
+      '+25 to Mana',
+    ].join('\n'),
+    is_ethereal: false,
+    is_identified: true,
+    unique_kind: null,
+    filter: { display_stats: true, matched_stat_line: 1 },
+  };
 
   // Local reactive bindings to store values
   let duration = $derived(settingsStore.settings.notificationDuration);
@@ -60,8 +109,8 @@
       <!-- Font Size -->
       <div class="setting-row">
         <div class="setting-info">
-          <label class="setting-label" for="font-size">Font Size</label>
-          <span class="setting-hint">Text size for notifications (10-24 px)</span>
+          <label class="setting-label" for="font-size">Size</label>
+          <span class="setting-hint">Scales the whole notification (10-24 px)</span>
         </div>
         <div class="setting-control">
           <input
@@ -123,20 +172,24 @@
   <div class="preview-section">
     <h3 class="preview-title">Preview</h3>
     <div class="preview-container">
-      <div
-        class="preview-notification"
-        style:font-size="{fontSize}px"
-        style:background-color="rgba(0, 0, 0, {opacity})"
-      >
-        <div class="preview-name" style:color="var(--quality-unique)">
-          {#if compactName}Sacred Armor{:else}Tyrael's Might SU{/if}<span class="preview-badges">
-            <span class="preview-eth">ETH</span>
-          </span>
-        </div>
-        {#if !compactName}
-          <div class="preview-base">Sacred Armor</div>
-        {/if}
-      </div>
+      <Notification
+        item={previewPlain}
+        {fontSize}
+        {opacity}
+        {compactName}
+      />
+      <Notification
+        item={previewWithStats}
+        {fontSize}
+        {opacity}
+        {compactName}
+      />
+      <Notification
+        item={previewWithMatch}
+        {fontSize}
+        {opacity}
+        {compactName}
+      />
     </div>
   </div>
 </section>
@@ -144,9 +197,16 @@
 <style>
   .tab-content {
     padding: var(--space-4);
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
     gap: var(--space-5);
+    align-items: start;
+  }
+
+  @media (max-width: 820px) {
+    .tab-content {
+      grid-template-columns: 1fr;
+    }
   }
 
   .settings-section {
@@ -252,6 +312,8 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3);
+    position: sticky;
+    top: var(--space-4);
   }
 
   .preview-title {
@@ -265,7 +327,9 @@
 
   .preview-container {
     display: flex;
-    justify-content: flex-start;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
     padding: var(--space-4);
     background: repeating-linear-gradient(
       45deg,
@@ -276,34 +340,6 @@
     );
     border-radius: var(--radius-md);
     min-height: 100px;
-  }
-
-  .preview-notification {
-    font-family: var(--font-mono);
-    padding: var(--space-2) var(--space-3);
-    max-width: 300px;
-  }
-
-  .preview-name {
-    font-weight: 600;
-    line-height: 1.3;
-  }
-
-  .preview-base {
-    margin-top: var(--space-1);
-    font-size: 0.85em;
-    color: var(--text-muted);
-    line-height: 1.3;
-  }
-
-  .preview-badges {
-    margin-left: var(--space-2);
-    font-size: 0.85em;
-    font-weight: 400;
-  }
-
-  .preview-eth {
-    color: var(--quality-ethereal);
   }
 
   .setting-hint code {

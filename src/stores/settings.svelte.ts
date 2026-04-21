@@ -21,9 +21,7 @@ export interface HotkeyConfig {
 export interface AppSettings {
   /** UI theme: "dark" or "light" */
   theme: string;
-  /** Enable sound effects for item drops */
-  soundEnabled: boolean;
-  /** Sound volume (0.0 - 1.0) */
+  /** Master volume for drop notification sounds (0.0 - 1.0, 0 = silent) */
   soundVolume: number;
   /** Active loot filter profile name */
   activeProfile: string | null;
@@ -74,7 +72,6 @@ const DEFAULT_EDIT_OVERLAY_HOTKEY: HotkeyConfig = {
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
-  soundEnabled: true,
   soundVolume: 0.8,
   activeProfile: null,
   notificationDuration: 5000,
@@ -197,14 +194,15 @@ class SettingsStore {
     this.setTheme(newTheme);
   }
 
-  /** Get sound enabled state */
-  get soundEnabled(): boolean {
-    return this._settings.soundEnabled;
+  /** Get master sound volume (0.0 - 1.0) */
+  get soundVolume(): number {
+    return this._settings.soundVolume;
   }
 
-  /** Set sound enabled state */
-  setSoundEnabled(enabled: boolean): void {
-    this.set('soundEnabled', enabled);
+  /** Set master sound volume (clamped to 0.0 - 1.0) */
+  setSoundVolume(volume: number): void {
+    const clamped = Math.max(0, Math.min(1, volume));
+    this.set('soundVolume', clamped);
   }
 
   /** Get toggle window hotkey */

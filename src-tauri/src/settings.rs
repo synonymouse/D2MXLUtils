@@ -20,11 +20,7 @@ pub struct AppSettings {
     #[serde(default = "default_theme")]
     pub theme: String,
 
-    /// Enable sound effects for item drops
-    #[serde(default = "default_true")]
-    pub sound_enabled: bool,
-
-    /// Sound volume (0.0 - 1.0)
+    /// Master volume for drop notification sounds (0.0 - 1.0, 0 = silent)
     #[serde(default = "default_volume")]
     pub sound_volume: f32,
 
@@ -86,10 +82,6 @@ fn default_theme() -> String {
     "dark".to_string()
 }
 
-fn default_true() -> bool {
-    true
-}
-
 fn default_volume() -> f32 {
     0.8
 }
@@ -130,7 +122,6 @@ impl Default for AppSettings {
     fn default() -> Self {
         Self {
             theme: default_theme(),
-            sound_enabled: default_true(),
             sound_volume: default_volume(),
             active_profile: None,
             notification_duration: default_notification_duration(),

@@ -730,6 +730,45 @@ fn setup_webview2_for_elevation() {
     // No-op on non-Windows platforms
 }
 
+/// Pre-populate the scanner's filter config from the last-used profile on
+/// startup
+fn load_initial_filter_config(app: &AppHandle) -> Option<rules::FilterConfig> {
+    let settings = settings::load_settings(app.clone()).ok()?;
+    let name = settings.active_profile.filter(|s| !s.is_empty())?;
+    let text = match profiles::load_profile(app.clone(), name.clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            log_error(&format!(
+                "Startup: failed to read active profile '{}': {}",
+                name, e
+            ));
+            return None;
+        }
+    };
+    match rules::parse_dsl(&text) {
+        Ok(cfg) => {
+            log_info(&format!(
+                "Startup: loaded filter config from active profile '{}' ({} rules)",
+                name,
+                cfg.rules.len()
+            ));
+            Some(cfg)
+        }
+        Err(errors) => {
+            log_error(&format!(
+                "Startup: failed to parse active profile '{}': {}",
+                name,
+                errors
+                    .iter()
+                    .map(|e| e.message.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            None
+        }
+    }
+}
+
 fn main() {
     // Enable SeDebugPrivilege so OpenProcess has the same behavior as legacy tools.
     enable_debug_privilege();
@@ -741,12 +780,13 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let cached_items = items_cache::load_items_cache(app.handle());
+            let initial_filter_config = load_initial_filter_config(app.handle());
 
             // Shared scanner state
             let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
                 should_auto_scan: Arc::new(AtomicBool::new(true)),
-                filter_config: Arc::new(RwLock::new(None)),
+                filter_config: Arc::new(RwLock::new(initial_filter_config)),
                 filter_enabled: Arc::new(AtomicBool::new(true)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),

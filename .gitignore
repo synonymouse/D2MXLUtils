@@ -35,3 +35,4 @@ dist-ssr
 .ignore
 *.stackdump
 *.local.json
+.vscode

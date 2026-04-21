@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { NotificationStack, OverlayEditGrid } from '../components';
   import { settingsStore } from '../stores';
+  import { playSound } from '../lib/sound-player';
 
   type UniqueKind = 'tu' | 'su' | 'ssu' | 'sssu';
 
@@ -11,6 +12,7 @@
     color?: string | null;
     sound?: number | null;
     display_stats: boolean;
+    matched_stat_line?: number | null;
   }
 
   interface ItemDrop {
@@ -39,6 +41,7 @@
   let compactName = $derived(settingsStore.settings.compactName);
   let notificationX = $derived(settingsStore.settings.notificationX);
   let notificationY = $derived(settingsStore.settings.notificationY);
+  let soundVolume = $derived(settingsStore.settings.soundVolume);
 
   let editActive = $state(false);
   let pendingX = $state(0);
@@ -99,6 +102,8 @@
     // Listen for item drops
     listen<ItemDrop>('item-drop', (event) => {
       addItem(event.payload, notificationDuration);
+      const s = event.payload.filter?.sound;
+      if (s != null) playSound(s, soundVolume);
     }).then(u => unlisteners.push(u));
 
     listen<{ active: boolean }>('overlay-edit-mode', async (event) => {

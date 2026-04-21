@@ -50,6 +50,13 @@ impl<'a> MatchContext<'a> {
         true
     }
 
+    /// `None` even after a successful `matches()` if the pattern spans line boundaries.
+    pub fn matching_stat_line_index(&self, pattern: &str) -> Option<usize> {
+        self.stats_lower
+            .split('\n')
+            .position(|line| pattern_matches(pattern, line))
+    }
+
     fn qualities_match(&self, rule_qualities: &[ItemQuality]) -> bool {
         if rule_qualities.is_empty() {
             return true;
@@ -332,5 +339,29 @@ mod tests {
             ..Rule::default()
         };
         assert!(ctx.matches(&r));
+    }
+
+    #[test]
+    fn matching_stat_line_index_finds_later_line() {
+        let it = item(
+            "Ring",
+            "Unique",
+            "+3 to All Skills\n+15% Faster Cast Rate",
+            false,
+        );
+        let ctx = MatchContext::new(&it);
+        assert_eq!(ctx.matching_stat_line_index("Faster Cast"), Some(1));
+    }
+
+    #[test]
+    fn matching_stat_line_index_none_when_no_line_matches() {
+        let it = item(
+            "Ring",
+            "Unique",
+            "+3 to All Skills\n+15% Faster Cast Rate",
+            false,
+        );
+        let ctx = MatchContext::new(&it);
+        assert_eq!(ctx.matching_stat_line_index("Life Steal"), None);
     }
 }
