@@ -14,7 +14,10 @@ use crate::logger::{error as log_error, info as log_info};
 #[cfg(target_os = "windows")]
 use crate::loot_filter_hook::LootFilterHook;
 #[cfg(target_os = "windows")]
-use crate::offsets::{d2client, d2common, item_data, items_txt, paths, unit_type};
+use crate::offsets::{
+    d2client, d2common, data_tables, item_quality, items_txt, paths, set_items_txt,
+    unique_items_txt, unit_type,
+};
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
 #[cfg(target_os = "windows")]
@@ -36,6 +39,8 @@ pub struct ItemDropEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ItemTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_kind: Option<UniqueKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
 }
 
@@ -56,12 +61,71 @@ pub struct DropScanner {
     loot_hook: LootFilterHook,
     /// Indexed by `UnitAny.class`. Built lazily on first in-game tick.
     class_cache: Option<Vec<ClassInfo>>,
+    unique_cache: Option<Vec<UniqueInfo>>,
+    set_cache: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
 struct ClassInfo {
     base_name: String,
     tier: ItemTier,
+}
+
+/// Sacred unique tier buckets, classified by UniqueItems.txt `wLvl`.
+/// Bands below match D2Stats.au3:1181-1191 except the `Sssu` upper
+/// bound is removed — MXL has SSSU items up to at least wLvl 139
+/// (e.g. amulets), and D2Stats' `<= 130` cap mislabeled them.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UniqueKind {
+    Tu = 0,   // wLvl 2..=100
+    Su = 1,   // wLvl 101..=115
+    Ssu = 2,  // wLvl 116..=120
+    Sssu = 3, // wLvl 121..
+}
+
+impl UniqueKind {
+    fn from_wlvl(wlvl: u16) -> Option<Self> {
+        match wlvl {
+            2..=100 => Some(UniqueKind::Tu),
+            101..=115 => Some(UniqueKind::Su),
+            116..=120 => Some(UniqueKind::Ssu),
+            121.. => Some(UniqueKind::Sssu),
+            _ => None,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            UniqueKind::Tu => "TU",
+            UniqueKind::Su => "SU",
+            UniqueKind::Ssu => "SSU",
+            UniqueKind::Sssu => "SSSU",
+        }
+    }
+}
+
+/// One entry per UniqueItems.txt record (aligned 1:1 with `file_index`
+/// read from `ItemData`). `kind = None` marks records with no tier band
+/// (wLvl == 0 or 1 — quest uniques); `display_name.is_empty()` marks
+/// failed `GetStringById` resolution. Both cases are skipped in the
+/// autocomplete snapshot and produce no suffix at drop time.
+#[derive(Debug, Clone)]
+struct UniqueInfo {
+    display_name: String,
+    kind: Option<UniqueKind>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ItemsDictionary {
+    pub base_types: Vec<String>,
+    pub uniques_tu: Vec<String>,
+    pub uniques_su: Vec<String>,
+    pub uniques_ssu: Vec<String>,
+    pub uniques_sssu: Vec<String>,
+    pub set_items: Vec<String>,
 }
 
 #[cfg(target_os = "windows")]
@@ -87,6 +151,8 @@ impl DropScanner {
             filter_enabled: false,
             loot_hook,
             class_cache: None,
+            unique_cache: None,
+            set_cache: None,
         })
     }
 
@@ -142,39 +208,15 @@ impl DropScanner {
             if let Err(e) = self.loot_hook.clear_shown_items(&self.ctx) {
                 log_error(&format!("Failed to clear show mask: {}", e));
             }
+            if let Err(e) = self.loot_hook.clear_inspected_mask(&self.ctx) {
+                log_error(&format!("Failed to clear inspected mask: {}", e));
+            }
         }
     }
 
     /// Get a reference to the D2Context
     pub fn context(&self) -> &D2Context {
         &self.ctx
-    }
-
-    /// Set item visibility by writing to iEarLevel field in ItemData
-    /// value: 0 = not processed (default), 1 = show, 2 = hide
-    pub fn set_item_visibility(&self, p_unit_data: u32, visible: bool) -> Result<(), String> {
-        if p_unit_data == 0 {
-            return Err("p_unit_data is null".to_string());
-        }
-
-        let value: u8 = if visible { 1 } else { 2 };
-        let addr = p_unit_data as usize + item_data::EAR_LEVEL;
-
-        // Write the value
-        self.ctx.process.write_buffer(addr, &[value])?;
-
-        // Verify the write
-        let mut verify = [0u8; 1];
-        if let Ok(()) = self.ctx.process.read_buffer_into(addr, &mut verify) {
-            if verify[0] != value {
-                log_error(&format!(
-                    "set_item_visibility: verify mismatch at 0x{:08X}: wrote {} but read back {}",
-                    addr, value, verify[0]
-                ));
-            }
-        }
-
-        Ok(())
     }
 
     /// Scan for ground items and return new items found
@@ -195,6 +237,32 @@ impl DropScanner {
                     log_error(&format!("Failed to build class cache: {}", e));
                     // Install an empty cache so we don't keep retrying every tick.
                     self.class_cache = Some(Vec::new());
+                }
+            }
+        }
+
+        if self.unique_cache.is_none() {
+            match self.build_unique_items_cache() {
+                Ok(cache) => {
+                    log_info(&format!("Unique cache built: {} records", cache.len()));
+                    self.unique_cache = Some(cache);
+                }
+                Err(e) => {
+                    log_error(&format!("Failed to build unique cache: {}", e));
+                    self.unique_cache = Some(Vec::new());
+                }
+            }
+        }
+
+        if self.set_cache.is_none() {
+            match self.build_set_items_cache() {
+                Ok(cache) => {
+                    log_info(&format!("Set cache built: {} records", cache.len()));
+                    self.set_cache = Some(cache);
+                }
+                Err(e) => {
+                    log_error(&format!("Failed to build set cache: {}", e));
+                    self.set_cache = Some(Vec::new());
                 }
             }
         }
@@ -264,6 +332,7 @@ impl DropScanner {
             while p_unit != 0 {
                 if let Some(scanned) = self.scan_unit(p_unit) {
                     let event = self.to_event(scanned);
+                    let unit_id = event.unit_id;
 
                     // Apply filter if enabled
                     let mut event = event;
@@ -339,6 +408,15 @@ impl DropScanner {
                     if should_emit {
                         events.push(event);
                     }
+
+                    // Must run AFTER show/hide bits: otherwise the game thread
+                    // could see inspected=1 with no decision yet and fall through
+                    // to MXL's default (= flash the label).
+                    if self.loot_hook.is_injected() {
+                        if let Err(e) = self.loot_hook.add_inspected_unit_id(&self.ctx, unit_id) {
+                            log_error(&format!("Failed to mark item {} inspected: {}", unit_id, e));
+                        }
+                    }
                 }
 
                 // Move to next unit (use struct layout for safety instead of hardcoded offset)
@@ -411,22 +489,40 @@ impl DropScanner {
     /// Convert a scanned item into an event payload for the frontend.
     fn to_event(&self, scanned: ScannedItem) -> ItemDropEvent {
         let class = scanned.class;
+        let quality = scanned.quality_name().to_string();
+        let mut name = scanned
+            .name
+            .unwrap_or_else(|| format!("Item #{}", scanned.class));
+        let unique_kind = if scanned.quality == item_quality::UNIQUE {
+            self.unique_kind(scanned.file_index)
+        } else {
+            None
+        };
+        if let Some(kind) = unique_kind {
+            name.push(' ');
+            name.push_str(kind.label());
+        }
         ItemDropEvent {
             unit_id: scanned.unit_id,
             class,
-            quality: scanned.quality_name().to_string(),
+            quality,
             base_name: self.class_base_name(class),
-            // Fallback to a generic name if injection failed or returned empty text.
-            name: scanned
-                .name
-                .unwrap_or_else(|| format!("Item #{}", scanned.class)),
+            name,
             stats: scanned.stats.unwrap_or_default(),
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
             tier: self.class_tier(class),
+            unique_kind,
             filter: None,
         }
+    }
+
+    fn unique_kind(&self, file_index: u32) -> Option<UniqueKind> {
+        self.unique_cache
+            .as_ref()
+            .and_then(|cache| cache.get(file_index as usize))
+            .and_then(|info| info.kind)
     }
 
     fn class_tier(&self, class: u32) -> Option<ItemTier> {
@@ -442,6 +538,91 @@ impl DropScanner {
             .and_then(|cache| cache.get(class as usize))
             .map(|info| info.base_name.clone())
             .unwrap_or_default()
+    }
+
+    pub fn items_dictionary_snapshot(&self) -> Option<ItemsDictionary> {
+        let class_cache = self.class_cache.as_ref()?;
+        let unique_cache = self.unique_cache.as_ref()?;
+        let set_cache = self.set_cache.as_ref()?;
+
+        let word_tier =
+            regex::Regex::new(r"(?i)\s*\((?:Sacred|Angelic|Mastercrafted)\)\s*$").ok()?;
+        let count_suffix = regex::Regex::new(r"\s*\(\d+\)\s*$").ok()?;
+        // Keep "X Container (NN)" intact — the number identifies the rune.
+        let rune_container = regex::Regex::new(r"(?i)\bContainer\s*\(\d+\)\s*$").ok()?;
+        let mut base_types: Vec<String> = class_cache
+            .iter()
+            .map(|info| {
+                let n = word_tier.replace(&info.base_name, "");
+                if rune_container.is_match(&n) {
+                    n.into_owned()
+                } else {
+                    count_suffix.replace(&n, "").into_owned()
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        base_types.sort();
+        base_types.dedup();
+
+        // On name collision keep the highest kind (Sssu > Ssu > Su > Tu)
+        // so the strongest tier of a multi-record unique survives dedup.
+        let mut kind_by_name: std::collections::HashMap<String, UniqueKind> =
+            std::collections::HashMap::new();
+        for info in unique_cache {
+            let kind = match info.kind {
+                Some(k) => k,
+                None => continue,
+            };
+            if info.display_name.is_empty() {
+                continue;
+            }
+            kind_by_name
+                .entry(info.display_name.clone())
+                .and_modify(|k| *k = (*k).max(kind))
+                .or_insert(kind);
+        }
+
+        // Drop uniques that also live in base_types — MXL charms
+        // (e.g. "The Butcher's Tooth", "Azmodan's Heart") are indexed
+        // in both tables; keep them on the base side only.
+        let base_set: HashSet<&str> = base_types.iter().map(String::as_str).collect();
+        let mut uniques_tu: Vec<String> = Vec::new();
+        let mut uniques_su: Vec<String> = Vec::new();
+        let mut uniques_ssu: Vec<String> = Vec::new();
+        let mut uniques_sssu: Vec<String> = Vec::new();
+        for (name, kind) in kind_by_name {
+            if base_set.contains(name.as_str()) {
+                continue;
+            }
+            match kind {
+                UniqueKind::Tu => uniques_tu.push(name),
+                UniqueKind::Su => uniques_su.push(name),
+                UniqueKind::Ssu => uniques_ssu.push(name),
+                UniqueKind::Sssu => uniques_sssu.push(name),
+            }
+        }
+        uniques_tu.sort();
+        uniques_su.sort();
+        uniques_ssu.sort();
+        uniques_sssu.sort();
+
+        let mut set_items: Vec<String> = set_cache
+            .iter()
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .collect();
+        set_items.sort();
+        set_items.dedup();
+
+        Some(ItemsDictionary {
+            base_types,
+            uniques_tu,
+            uniques_su,
+            uniques_ssu,
+            uniques_sssu,
+            set_items,
+        })
     }
 
     /// Port of `NotifierCache` in D2Stats.au3 (lines 697-750).
@@ -521,6 +702,115 @@ impl DropScanner {
 
         Ok(cache)
     }
+
+    fn build_unique_items_cache(&self) -> Result<Vec<UniqueInfo>, String> {
+        let sgpt = self
+            .ctx
+            .process
+            .read_memory::<u32>(self.ctx.d2_common + d2common::SGPT_DATA_TABLES)?
+            as usize;
+        if sgpt == 0 {
+            return Err("sgptDataTables is NULL".into());
+        }
+
+        let count = self
+            .ctx
+            .process
+            .read_memory::<u32>(sgpt + data_tables::UNIQUE_ITEMS_TXT_COUNT)?
+            as usize;
+        let base_ptr =
+            self.ctx
+                .process
+                .read_memory::<u32>(sgpt + data_tables::UNIQUE_ITEMS_TXT_PTR)? as usize;
+
+        if count == 0 || base_ptr == 0 {
+            return Err(format!(
+                "UniqueItems.txt not available (count={}, ptr=0x{:X})",
+                count, base_ptr
+            ));
+        }
+
+        let mut cache = Vec::with_capacity(count);
+
+        // Push exactly one UniqueInfo per UniqueItems.txt record so that
+        // runtime lookup by `ItemData.file_index` stays O(1).
+        for i in 0..count {
+            let record = base_ptr + i * unique_items_txt::RECORD_SIZE;
+
+            let name_id = self
+                .ctx
+                .process
+                .read_memory::<u16>(record + unique_items_txt::NAME_ID)
+                .unwrap_or(0);
+            let wlvl = self
+                .ctx
+                .process
+                .read_memory::<u16>(record + unique_items_txt::LEVEL)
+                .unwrap_or(0);
+
+            let display_name = self
+                .injector
+                .get_string(&self.ctx.process, name_id, 200)
+                .map(|s| strip_color_codes(&s).trim().to_string())
+                .unwrap_or_default();
+
+            cache.push(UniqueInfo {
+                display_name,
+                kind: UniqueKind::from_wlvl(wlvl),
+            });
+        }
+
+        Ok(cache)
+    }
+
+    fn build_set_items_cache(&self) -> Result<Vec<String>, String> {
+        let sgpt = self
+            .ctx
+            .process
+            .read_memory::<u32>(self.ctx.d2_common + d2common::SGPT_DATA_TABLES)?
+            as usize;
+        if sgpt == 0 {
+            return Err("sgptDataTables is NULL".into());
+        }
+
+        let count =
+            self.ctx
+                .process
+                .read_memory::<u32>(sgpt + data_tables::SET_ITEMS_TXT_COUNT)? as usize;
+        let base_ptr =
+            self.ctx
+                .process
+                .read_memory::<u32>(sgpt + data_tables::SET_ITEMS_TXT_PTR)? as usize;
+
+        if count == 0 || base_ptr == 0 {
+            return Err(format!(
+                "SetItems.txt not available (count={}, ptr=0x{:X})",
+                count, base_ptr
+            ));
+        }
+
+        let mut cache = Vec::with_capacity(count);
+        for i in 0..count {
+            let record = base_ptr + i * set_items_txt::RECORD_SIZE;
+            let name_id = match self
+                .ctx
+                .process
+                .read_memory::<u16>(record + set_items_txt::NAME_ID)
+            {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let name = match self.injector.get_string(&self.ctx.process, name_id, 200) {
+                Ok(s) => strip_color_codes(&s).trim().to_string(),
+                Err(_) => continue,
+            };
+            if !name.is_empty() {
+                cache.push(name);
+            }
+        }
+
+        Ok(cache)
+    }
 }
 
 /// Strip D2 color codes from string (ÿc followed by color char)
@@ -587,10 +877,6 @@ impl DropScanner {
 
     pub fn context(&self) -> ! {
         panic!("Not supported on this OS")
-    }
-
-    pub fn set_item_visibility(&self, _p_unit_data: u32, _visible: bool) -> Result<(), String> {
-        Err("Not supported on this OS".to_string())
     }
 
     pub fn tick(&mut self) -> Vec<ItemDropEvent> {

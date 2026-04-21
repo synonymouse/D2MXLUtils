@@ -3,6 +3,7 @@
 mod d2types;
 mod hotkeys;
 mod injection;
+mod items_cache;
 mod logger;
 mod loot_filter_hook;
 mod notifier;
@@ -12,17 +13,17 @@ mod profiles;
 mod rules;
 mod settings;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
-use std::thread;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
-use crate::hotkeys::HotkeyState;
+use crate::hotkeys::{EditModeState, HotkeyState};
 use crate::logger::{error as log_error, info as log_info};
 
-use notifier::DropScanner;
+use notifier::{DropScanner, ItemsDictionary};
 
 // Windows-only imports for process / overlay / privileges
 #[cfg(target_os = "windows")]
@@ -33,6 +34,8 @@ use std::os::windows::ffi::OsStrExt;
 use windows::core::PCWSTR;
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{BOOL, HANDLE, HWND, RECT};
+#[cfg(target_os = "windows")]
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
 #[cfg(target_os = "windows")]
 use windows::Win32::Security::{
     AdjustTokenPrivileges, GetTokenInformation, LookupPrivilegeValueW, TokenElevationType,
@@ -62,7 +65,15 @@ struct AppState {
     /// Whether filtering is enabled
     filter_enabled: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
+    // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
+    scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
 }
+
+const GAME_STATUS_UNKNOWN: u8 = 0;
+const GAME_STATUS_INGAME: u8 = 1;
+const GAME_STATUS_MENU: u8 = 2;
 
 /// Check if Diablo II window exists
 #[cfg(target_os = "windows")]
@@ -87,11 +98,18 @@ fn start_scanner_internal(
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
+    scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     app_handle: AppHandle,
 ) {
     // Check if already running
     if is_scanning.load(Ordering::SeqCst) {
         return;
+    }
+
+    if let Some(prev) = scanner_thread.lock().unwrap().take() {
+        let _ = prev.join();
     }
 
     // Set scanning flag
@@ -103,120 +121,162 @@ fn start_scanner_internal(
     }
 
     // Spawn background scanning thread
-    thread::spawn(move || {
-        // Try to create scanner
-        let mut scanner = match DropScanner::new() {
-            Ok(s) => {
-                log_info("Scanner attached to Diablo II");
-                if let Err(e) = app_handle.emit("scanner-status", "running") {
-                    log_error(&format!("Failed to emit event (running): {}", e));
+    let handle = thread::Builder::new()
+        .name("drop-scanner".into())
+        .spawn(move || {
+            // Try to create scanner
+            let mut scanner = match DropScanner::new() {
+                Ok(s) => {
+                    log_info("Scanner attached to Diablo II");
+                    if let Err(e) = app_handle.emit("scanner-status", "running") {
+                        log_error(&format!("Failed to emit event (running): {}", e));
+                    }
+                    s
                 }
-                s
+                Err(e) => {
+                    log_error(&format!("Failed to attach to Diablo II: {}", e));
+                    if let Err(e) = app_handle.emit("scanner-status", "error") {
+                        log_error(&format!("Failed to emit event (error): {}", e));
+                    }
+                    // Ensure overlay is hidden if attachment failed
+                    if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                        if let Err(e) = overlay.hide() {
+                            log_error(&format!(
+                                "Failed to hide overlay window after scanner attach error: {}",
+                                e
+                            ));
+                        }
+                    }
+                    is_scanning.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            // Configure filter if available
+            let mut last_config_gen = filter_config_generation.load(Ordering::SeqCst);
+            if let Ok(guard) = filter_config.read() {
+                if let Some(ref config) = *guard {
+                    scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+                    scanner.on_filter_config_changed();
+                }
             }
-            Err(e) => {
-                log_error(&format!("Failed to attach to Diablo II: {}", e));
-                if let Err(e) = app_handle.emit("scanner-status", "error") {
-                    log_error(&format!("Failed to emit event (error): {}", e));
+            scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
+
+            let mut was_ingame = false;
+            let mut dict_published = false;
+
+            // Main scanning loop
+            while is_scanning.load(Ordering::SeqCst) {
+                // Check if D2 is still running
+                if !is_diablo2_running() {
+                    log_info("Diablo II closed, stopping scanner");
+                    break;
                 }
-                // Ensure overlay is hidden if attachment failed
-                if let Some(overlay) = app_handle.get_webview_window("overlay") {
-                    if let Err(e) = overlay.hide() {
-                        log_error(&format!(
-                            "Failed to hide overlay window after scanner attach error: {}",
-                            e
-                        ));
+
+                let ingame = scanner.is_ingame();
+
+                game_status.store(
+                    if ingame {
+                        GAME_STATUS_INGAME
+                    } else {
+                        GAME_STATUS_MENU
+                    },
+                    Ordering::SeqCst,
+                );
+
+                // Detect entering a new game
+                if ingame && !was_ingame {
+                    log_info("Entered game");
+                    scanner.clear_cache();
+                    if let Err(e) = app_handle.emit("game-status", "ingame") {
+                        log_error(&format!("Failed to emit event (ingame): {}", e));
+                    }
+                } else if !ingame && was_ingame {
+                    if let Err(e) = app_handle.emit("game-status", "menu") {
+                        log_error(&format!("Failed to emit event (menu): {}", e));
                     }
                 }
-                is_scanning.store(false, Ordering::SeqCst);
-                return;
-            }
-        };
+                was_ingame = ingame;
 
-        // Configure filter if available
-        let mut last_config_gen = filter_config_generation.load(Ordering::SeqCst);
-        if let Ok(guard) = filter_config.read() {
-            if let Some(ref config) = *guard {
-                scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
-                scanner.on_filter_config_changed();
-            }
-        }
-        scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
-
-        let mut was_ingame = false;
-
-        // Main scanning loop
-        while is_scanning.load(Ordering::SeqCst) {
-            // Check if D2 is still running
-            if !is_diablo2_running() {
-                log_info("Diablo II closed, stopping scanner");
-                break;
-            }
-
-            let ingame = scanner.is_ingame();
-
-            // Detect entering a new game
-            if ingame && !was_ingame {
-                log_info("Entered game");
-                scanner.clear_cache();
-                if let Err(e) = app_handle.emit("game-status", "ingame") {
-                    log_error(&format!("Failed to emit event (ingame): {}", e));
+                // Only re-sync config when generation changed (user saved or toggled mode).
+                // This avoids reallocating Arcs every tick and also lets us trigger a
+                // full re-evaluation of ground items + hide-mask reset on change.
+                let current_gen = filter_config_generation.load(Ordering::SeqCst);
+                if current_gen != last_config_gen {
+                    if let Ok(guard) = filter_config.read() {
+                        if let Some(ref config) = *guard {
+                            scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
+                            scanner.on_filter_config_changed();
+                        }
+                    }
+                    last_config_gen = current_gen;
                 }
-            } else if !ingame && was_ingame {
-                if let Err(e) = app_handle.emit("game-status", "menu") {
-                    log_error(&format!("Failed to emit event (menu): {}", e));
-                }
-            }
-            was_ingame = ingame;
 
-            // Only re-sync config when generation changed (user saved or toggled mode).
-            // This avoids reallocating Arcs every tick and also lets us trigger a
-            // full re-evaluation of ground items + hide-mask reset on change.
-            let current_gen = filter_config_generation.load(Ordering::SeqCst);
-            if current_gen != last_config_gen {
-                if let Ok(guard) = filter_config.read() {
-                    if let Some(ref config) = *guard {
-                        scanner.set_filter_config(Arc::new(RwLock::new(config.clone())));
-                        scanner.on_filter_config_changed();
+                // Sync filter_enabled state from AppState
+                let current_filter_enabled = filter_enabled.load(Ordering::SeqCst);
+                scanner.set_filter_enabled(current_filter_enabled);
+
+                // Scan for items
+                if ingame {
+                    let items = scanner.tick();
+                    for item in items {
+                        // Emit item-drop event to frontend
+                        if let Err(e) = app_handle.emit("item-drop", &item) {
+                            log_error(&format!("Failed to emit item-drop event: {}", e));
+                        }
+                    }
+
+                    if !dict_published {
+                        if let Some(dict) = scanner.items_dictionary_snapshot() {
+                            if let Ok(mut guard) = items_dictionary.write() {
+                                *guard = Some(dict.clone());
+                            }
+                            if let Err(e) = items_cache::save_items_cache(&app_handle, &dict) {
+                                log_error(&format!("Failed to save items cache: {}", e));
+                            }
+                            if let Err(e) = app_handle.emit("items-dictionary-updated", &dict) {
+                                log_error(&format!(
+                                    "Failed to emit items-dictionary-updated: {}",
+                                    e
+                                ));
+                            }
+                            log_info(&format!(
+                                "Published items dictionary ({} base, {} TU, {} SU, {} SSU, {} SSSU, {} set items)",
+                                dict.base_types.len(),
+                                dict.uniques_tu.len(),
+                                dict.uniques_su.len(),
+                                dict.uniques_ssu.len(),
+                                dict.uniques_sssu.len(),
+                                dict.set_items.len()
+                            ));
+                            dict_published = true;
+                        }
                     }
                 }
-                last_config_gen = current_gen;
+
+                thread::sleep(Duration::from_millis(30));
             }
 
-            // Sync filter_enabled state from AppState
-            let current_filter_enabled = filter_enabled.load(Ordering::SeqCst);
-            scanner.set_filter_enabled(current_filter_enabled);
-
-            // Scan for items
-            if ingame {
-                let items = scanner.tick();
-                for item in items {
-                    // Emit item-drop event to frontend
-                    if let Err(e) = app_handle.emit("item-drop", &item) {
-                        log_error(&format!("Failed to emit item-drop event: {}", e));
-                    }
+            is_scanning.store(false, Ordering::SeqCst);
+            game_status.store(GAME_STATUS_UNKNOWN, Ordering::SeqCst);
+            if let Err(e) = app_handle.emit("scanner-status", "stopped") {
+                log_error(&format!("Failed to emit event (stopped): {}", e));
+            }
+            if let Err(e) = app_handle.emit("game-status", "unknown") {
+                log_error(&format!("Failed to emit event (unknown): {}", e));
+            }
+            // Ensure overlay is hidden when scanner stops
+            if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                if let Err(e) = overlay.hide() {
+                    log_error(&format!(
+                        "Failed to hide overlay window when scanner stopped: {}",
+                        e
+                    ));
                 }
             }
-
-            thread::sleep(Duration::from_millis(30));
-        }
-
-        is_scanning.store(false, Ordering::SeqCst);
-        if let Err(e) = app_handle.emit("scanner-status", "stopped") {
-            log_error(&format!("Failed to emit event (stopped): {}", e));
-        }
-        if let Err(e) = app_handle.emit("game-status", "unknown") {
-            log_error(&format!("Failed to emit event (unknown): {}", e));
-        }
-        // Ensure overlay is hidden when scanner stops
-        if let Some(overlay) = app_handle.get_webview_window("overlay") {
-            if let Err(e) = overlay.hide() {
-                log_error(&format!(
-                    "Failed to hide overlay window when scanner stopped: {}",
-                    e
-                ));
-            }
-        }
-    });
+        })
+        .expect("failed to spawn drop-scanner thread");
+    *scanner_thread.lock().unwrap() = Some(handle);
 }
 
 /// Spawn background thread that monitors for Diablo II and auto-starts scanner
@@ -226,6 +286,9 @@ fn spawn_auto_scanner(
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
+    scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
+    game_status: Arc<AtomicU8>,
+    items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -237,6 +300,9 @@ fn spawn_auto_scanner(
                     filter_config.clone(),
                     filter_enabled.clone(),
                     filter_config_generation.clone(),
+                    scanner_thread.clone(),
+                    game_status.clone(),
+                    items_dictionary.clone(),
                     app_handle.clone(),
                 );
             }
@@ -248,40 +314,27 @@ fn spawn_auto_scanner(
 }
 
 #[tauri::command]
-fn start_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
-    if state.is_scanning.load(Ordering::SeqCst) {
-        return "Scanner is already running".to_string();
+fn get_game_status(state: tauri::State<AppState>) -> &'static str {
+    match state.game_status.load(Ordering::SeqCst) {
+        GAME_STATUS_INGAME => "ingame",
+        GAME_STATUS_MENU => "menu",
+        _ => "unknown",
     }
-
-    start_scanner_internal(
-        state.is_scanning.clone(),
-        state.filter_config.clone(),
-        state.filter_enabled.clone(),
-        state.filter_config_generation.clone(),
-        app,
-    );
-    "Scanner started".to_string()
-}
-
-#[tauri::command]
-fn stop_scanner(state: tauri::State<AppState>, app: AppHandle) -> String {
-    if !state.is_scanning.load(Ordering::SeqCst) {
-        return "Scanner is not running".to_string();
-    }
-
-    // Signal the scanner to stop
-    state.is_scanning.store(false, Ordering::SeqCst);
-
-    if let Err(e) = app.emit("scanner-status", "stopping") {
-        log_error(&format!("Failed to emit event (stopping): {}", e));
-    }
-
-    "Scanner stopped".to_string()
 }
 
 #[tauri::command]
 fn get_scanner_status(state: tauri::State<AppState>) -> bool {
     state.is_scanning.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn get_items_dictionary(state: tauri::State<AppState>) -> ItemsDictionary {
+    state
+        .items_dictionary
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .unwrap_or_default()
 }
 
 // ===== Filter Configuration Commands =====
@@ -313,12 +366,6 @@ fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
     state.filter_enabled.store(enabled, Ordering::SeqCst);
 }
 
-/// Get current filter enabled status
-#[tauri::command]
-fn get_filter_enabled(state: tauri::State<AppState>) -> bool {
-    state.filter_enabled.load(Ordering::SeqCst)
-}
-
 // ===== DSL Parser Commands =====
 
 /// Parse DSL text into FilterConfig JSON
@@ -333,43 +380,10 @@ fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
     rules::validate_dsl(&text)
 }
 
-// ===== Loot Filter Hook Commands =====
-// Note: Hook is managed internally by scanner thread when filtering is enabled.
-// These commands provide a foundation for future UI integration.
-
-/// Apply filter rules to a specific item by setting its visibility flag
-/// This is used when items are scanned and filtered from the UI.
-///
-/// Note: For automatic filtering during scanning, use DropScanner's built-in
-/// filter integration which reuses the scanner's D2Context.
-/// This command creates a new D2Context each call for simplicity and thread-safety.
-#[tauri::command]
-fn apply_item_filter(p_unit_data: u32, visible: bool) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use crate::offsets::item_data;
-        use crate::process::D2Context;
-
-        if p_unit_data == 0 {
-            return Err("p_unit_data is null".to_string());
-        }
-
-        let ctx = D2Context::new()?;
-        let value: u8 = if visible { 1 } else { 2 };
-        let addr = p_unit_data as usize + item_data::EAR_LEVEL;
-        ctx.process.write_buffer(addr, &[value])
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = (p_unit_data, visible);
-        Err("Not supported on this OS".to_string())
-    }
-}
-
 /// Resolve the filter decision for a hypothetical item. Used by the UI
 /// to preview what the current filter would do without actually dropping
-/// anything in-game.
+/// anything in-game. See `docs/filter-preview-todo.md` for the planned UI
+/// scenarios built around this command.
 #[tauri::command]
 fn get_item_filter_action(
     config: rules::FilterConfig,
@@ -378,6 +392,21 @@ fn get_item_filter_action(
     use crate::rules::MatchContext;
     let ctx = MatchContext::new(&item);
     config.decide(&ctx)
+}
+
+#[tauri::command]
+fn set_overlay_interactive(app: AppHandle, active: bool) -> Result<(), String> {
+    OVERLAY_CLICK_THROUGH.store(!active, Ordering::SeqCst);
+    // Re-sync immediately so the style change doesn't wait ~250 ms for the next tick.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = sync_overlay_with_game_impl(&app);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+    }
+    Ok(())
 }
 
 /// Sync the transparent overlay window with the Diablo II game window.
@@ -401,6 +430,10 @@ fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
 
 /// Track if overlay was visible in the previous sync call
 static OVERLAY_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+// Read by sync_overlay_with_game_impl so its 250 ms style re-apply loop
+// honors whatever set_overlay_interactive last set.
+static OVERLAY_CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
 
 #[cfg(target_os = "windows")]
 fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
@@ -460,15 +493,31 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     // Check if overlay was hidden before (transition from hidden -> visible)
     let was_visible = OVERLAY_WAS_VISIBLE.swap(true, Ordering::SeqCst);
 
-    // Apply extended styles: layered + transparent (click-through) + toolwindow (hide from Alt+Tab)
+    // WS_EX_TRANSPARENT is toggled by OVERLAY_CLICK_THROUGH so the edit-mode
+    // hotkey can make the overlay receive input.
     unsafe {
         let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
-        let new_ex_style = ex_style
-            | WS_EX_LAYERED.0 as i32
-            | WS_EX_TRANSPARENT.0 as i32
-            | WS_EX_TOOLWINDOW.0 as i32;
+        let base_style = ex_style | WS_EX_LAYERED.0 as i32 | WS_EX_TOOLWINDOW.0 as i32;
+        let new_ex_style = if OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst) {
+            base_style | WS_EX_TRANSPARENT.0 as i32
+        } else {
+            base_style & !(WS_EX_TRANSPARENT.0 as i32)
+        };
 
         SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex_style);
+
+        // Disable the Windows 11 DWM border. Even borderless/undecorated windows
+        // get a 1px accent frame on Win11, which shows up as a faint rectangle
+        // on top of the game on a transparent layered overlay. Setting the border
+        // color to DWMWA_COLOR_NONE (0xFFFFFFFE) tells DWM to skip that frame.
+        // Silently ignored on Windows 10 (attribute unsupported).
+        const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+        let _ = DwmSetWindowAttribute(
+            hwnd_overlay,
+            DWMWA_BORDER_COLOR,
+            &DWMWA_COLOR_NONE as *const u32 as *const _,
+            std::mem::size_of::<u32>() as u32,
+        );
 
         // Workaround for WebView2 transparency bug on Windows:
         // WebView2 doesn't apply transparency until the window is resized.
@@ -691,6 +740,8 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
+            let cached_items = items_cache::load_items_cache(app.handle());
+
             // Shared scanner state
             let state = AppState {
                 is_scanning: Arc::new(AtomicBool::new(false)),
@@ -698,32 +749,49 @@ fn main() {
                 filter_config: Arc::new(RwLock::new(None)),
                 filter_enabled: Arc::new(AtomicBool::new(true)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
+                scanner_thread: Arc::new(Mutex::new(None)),
+                game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
+                items_dictionary: Arc::new(RwLock::new(cached_items)),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
             let filter_config = state.filter_config.clone();
             let filter_enabled = state.filter_enabled.clone();
             let filter_config_generation = state.filter_config_generation.clone();
+            let scanner_thread = state.scanner_thread.clone();
+            let game_status = state.game_status.clone();
+            let items_dictionary = state.items_dictionary.clone();
             app.manage(state);
 
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
+            let edit_mode_state = EditModeState::new();
 
             // Load settings and start hotkey listener
             let app_handle_for_hotkeys = app.handle().clone();
+            let app_handle_for_edit_mode = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
                 Ok(loaded_settings) => {
                     hotkey_state
                         .start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
+                    edit_mode_state.start(
+                        app_handle_for_edit_mode,
+                        loaded_settings.edit_overlay_hotkey,
+                    );
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
-                    // Start with default hotkey
+                    // Start with default hotkeys
                     hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
+                    edit_mode_state.start(
+                        app_handle_for_edit_mode,
+                        settings::AppSettings::default().edit_overlay_hotkey,
+                    );
                 }
             }
 
             app.manage(hotkey_state);
+            app.manage(edit_mode_state);
 
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
@@ -733,6 +801,9 @@ fn main() {
                 filter_config.clone(),
                 filter_enabled.clone(),
                 filter_config_generation.clone(),
+                scanner_thread.clone(),
+                game_status.clone(),
+                items_dictionary.clone(),
                 app_handle,
             );
 
@@ -741,14 +812,13 @@ fn main() {
             if let Some(main_window) = app.get_webview_window("main") {
                 let is_scanning_clone = is_scanning.clone();
                 let should_auto_scan_clone = should_auto_scan.clone();
+                let scanner_thread_clone = scanner_thread.clone();
                 let app_handle_clone = app.handle().clone();
                 main_window.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { .. } = event {
-                        // Stop auto-scanner monitor
                         should_auto_scan_clone.store(false, Ordering::SeqCst);
-                        // Stop scanner loop
                         is_scanning_clone.store(false, Ordering::SeqCst);
-                        // Close overlay window if it exists
+
                         if let Some(overlay) = app_handle_clone.get_webview_window("overlay") {
                             if let Err(e) = overlay.close() {
                                 log_error(&format!(
@@ -758,7 +828,25 @@ fn main() {
                             }
                         }
 
-                        app_handle_clone.exit(0);
+                        let handle_opt = scanner_thread_clone.lock().unwrap().take();
+                        let ah = app_handle_clone.clone();
+                        thread::spawn(move || {
+                            let watchdog_fired = Arc::new(AtomicBool::new(false));
+                            let wf_w = watchdog_fired.clone();
+                            let ah_w = ah.clone();
+                            thread::spawn(move || {
+                                thread::sleep(Duration::from_millis(1000));
+                                wf_w.store(true, Ordering::SeqCst);
+                                log_error("scanner join watchdog fired after 1s; exiting");
+                                ah_w.exit(0);
+                            });
+                            if let Some(h) = handle_opt {
+                                let _ = h.join();
+                            }
+                            if !watchdog_fired.load(Ordering::SeqCst) {
+                                ah.exit(0);
+                            }
+                        });
                     }
                 });
             }
@@ -766,23 +854,22 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            start_scanner,
-            stop_scanner,
             get_scanner_status,
+            get_game_status,
+            get_items_dictionary,
             set_filter_config,
             set_filter_enabled,
-            get_filter_enabled,
             sync_overlay_with_game,
+            set_overlay_interactive,
             parse_filter_dsl,
             validate_filter_dsl,
-            apply_item_filter,
             get_item_filter_action,
             settings::load_settings,
             settings::save_settings,
             settings::get_window_state,
             settings::save_window_state,
             hotkeys::update_hotkey,
-            hotkeys::get_hotkey,
+            hotkeys::update_edit_mode_hotkey,
             profiles::list_profiles,
             profiles::load_profile,
             profiles::save_profile,

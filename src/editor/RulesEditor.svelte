@@ -25,6 +25,8 @@
   import { d2rules } from "./d2rules-language";
   import { getDarkThemeExtensions } from "./d2rules-theme";
   import { d2rulesLinter, type ValidationResult } from "./d2rules-linter";
+  import { d2rulesAutocomplete } from "./d2rules-autocomplete";
+  import { itemsDictionaryStore } from "../stores";
 
   interface Props {
     /** Editor content (two-way bindable) */
@@ -94,6 +96,8 @@
 
       // Theme (dark mode by default)
       ...getDarkThemeExtensions(),
+
+      d2rulesAutocomplete(() => itemsDictionaryStore.options),
 
       d2rulesLinter(500, onvalidate),
 

@@ -201,9 +201,6 @@ pub struct Rule {
     pub notify: bool,
 
     #[serde(default, skip_serializing_if = "is_false")]
-    pub display_name: bool,
-
-    #[serde(default, skip_serializing_if = "is_false")]
     pub display_stats: bool,
 }
 
@@ -225,7 +222,6 @@ pub struct Notification {
     pub color: Option<NotifyColor>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound: Option<u8>,
-    pub display_name: bool,
     pub display_stats: bool,
 }
 
@@ -281,7 +277,6 @@ impl FilterConfig {
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound,
-                        display_name: rule.display_name,
                         display_stats: rule.display_stats,
                     })
                 } else {
@@ -323,6 +318,7 @@ mod tests {
             is_identified: true,
             p_unit_data: 0,
             tier: None,
+            unique_kind: None,
             filter: None,
         }
     }

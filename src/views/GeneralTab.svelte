@@ -5,6 +5,7 @@
   // Derived state from settings store
   let soundEnabled = $derived(settingsStore.settings.soundEnabled);
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
+  let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
 
   function handleSoundToggle(checked: boolean) {
     settingsStore.setSoundEnabled(checked);
@@ -12,6 +13,10 @@
 
   function handleHotkeyChange(hotkey: HotkeyConfig) {
     settingsStore.setToggleWindowHotkey(hotkey);
+  }
+
+  function handleEditOverlayHotkeyChange(hotkey: HotkeyConfig) {
+    settingsStore.setEditOverlayHotkey(hotkey);
   }
 </script>
 
@@ -25,6 +30,14 @@
         <span class="setting-hint">Show/hide main window over game</span>
       </div>
       <HotkeyInput value={toggleWindowHotkey} onchange={handleHotkeyChange} />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Reposition notifications</span>
+        <span class="setting-hint">Hold to drag the drop-notification anchor on the overlay</span>
+      </div>
+      <HotkeyInput value={editOverlayHotkey} onchange={handleEditOverlayHotkeyChange} />
     </div>
   </div>
 

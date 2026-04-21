@@ -31,11 +31,7 @@ fn write_line(prefix: &str, msg: &str) {
     let now = Local::now();
     let ts = now.format("%Y-%m-%d %H:%M:%S");
 
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(file, "[{}] {}{}", ts, prefix, msg);
     }
 }
@@ -51,4 +47,3 @@ pub fn error(msg: &str) {
     eprintln!("{}", msg);
     write_line("[ERROR] ", msg);
 }
-

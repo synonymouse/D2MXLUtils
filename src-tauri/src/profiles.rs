@@ -134,8 +134,8 @@ pub fn load_profile(app: AppHandle, name: String) -> Result<String, String> {
         return Err(format!("Profile '{}' not found", name));
     }
 
-    let content = fs::read_to_string(&path)
-        .map_err(|e| format!("Failed to read profile: {}", e))?;
+    let content =
+        fs::read_to_string(&path).map_err(|e| format!("Failed to read profile: {}", e))?;
 
     log_info(&format!("Loaded profile '{}'", safe_name));
     Ok(content)
@@ -225,8 +225,7 @@ pub fn rename_profile(
         return Err(format!("Profile '{}' already exists", new_name));
     }
 
-    fs::rename(&old_path, &new_path)
-        .map_err(|e| format!("Failed to rename profile: {}", e))?;
+    fs::rename(&old_path, &new_path).map_err(|e| format!("Failed to rename profile: {}", e))?;
 
     let rule_count = fs::read_to_string(&new_path)
         .ok()

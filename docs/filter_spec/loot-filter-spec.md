@@ -56,7 +56,7 @@ A group header accepts all rule attributes **except a name pattern**. Name patte
 ## Rule Anatomy
 
 ```
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [name] [stat]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat]
 ```
 
 All components are optional. A line with zero attributes is valid but is a no-op (matches everything, does nothing).
@@ -110,10 +110,11 @@ A fired notification uses the winning rule's:
 
 - `color` — text color (or default if absent)
 - `sound` — sound index 1–6 (silent if absent)
-- `name` — include item name if set
 - `stat` — include item stats if set
 
-`color`, `sound`, `name`, `stat` alone do **not** imply `notify`.
+`color`, `sound`, `stat` alone do **not** imply `notify`.
+
+The unique/set name line shown above the base type for Set/TU/SU/SSU/SSSU drops is governed by the **Compact name** notification setting, not by a per-rule flag. When a rule has the `stat` flag, the full two-line header is forced regardless of the Compact name setting.
 
 | Rule | Visibility | Notification |
 |---|---|---|
@@ -171,7 +172,6 @@ Rule {
     color:         Option<Color>,
     sound:         Option<u8>,
     notify:        bool,
-    display_name:  bool,
     display_stats: bool,
 }
 ```

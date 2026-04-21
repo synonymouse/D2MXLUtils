@@ -29,14 +29,15 @@ The backend handles all low-level Windows operations:
 
 - **`main.rs`** — Tauri app setup, commands, scanner lifecycle, overlay window management, UAC elevation handling
 - **`process.rs`** — D2 process attachment via WinAPI (`OpenProcess`, `ReadProcessMemory`)
-- **`injection.rs`** — Remote thread injection into D2 process to call internal game functions
-- **`notifier.rs`** — `DropScanner` that scans item unit lists and emits `item-drop` events
+- **`injection.rs`** — Remote thread injection into D2 process to call internal game functions (e.g. `GetStringById` to resolve localized names)
+- **`notifier.rs`** — `DropScanner` that scans item unit lists and emits `item-drop` events; also builds `class_cache` over `items.txt` which backs both drop notifications and the editor autocomplete dictionary (`items_dictionary_snapshot`)
 - **`rules/`** — Loot filter rule engine: DSL parsing (`dsl.rs`), rule matching (`matching.rs`)
 - **`d2types.rs`** — `#[repr(C)]` structs for D2 memory structures (`UnitAny`, `ItemData`, etc.)
-- **`offsets.rs`** — D2 memory offsets (DLL bases, unit lists, item data pointers)
+- **`offsets.rs`** — D2 memory offsets (DLL bases, unit lists, item data pointers, `items.txt` layout)
 - **`logger.rs`** — File logger writing to `d2mxlutils.log` next to the exe
 - **`settings.rs`** — App settings persistence
 - **`profiles.rs`** — Loot filter profile management
+- **`items_cache.rs`** — On-disk mirror of the items-dictionary snapshot (`items-cache.json` in `app_data_dir`) so editor autocomplete works in sessions without D2 attached. See `docs/autocomplete.md`.
 - **`hotkeys.rs`** — Global hotkey handling
 
 ### Svelte Frontend (`src/`)
@@ -44,13 +45,13 @@ The backend handles all low-level Windows operations:
 - **`App.svelte`** — Entry point, routes to `MainWindow` or `OverlayWindow` based on Tauri window label
 - **`views/`** — Main window tabs (`GeneralTab`, `LootFilterTab`, `NotificationsTab`) and overlay
 - **`components/`** — Reusable UI components (Button, Toggle, Tabs, etc.)
-- **`editor/`** — CodeMirror-based loot filter rules editor
-- **`stores/`** — Svelte stores for settings and window state
+- **`editor/`** — CodeMirror-based loot filter rules editor: DSL language (`d2rules-language.ts`), linter (`d2rules-linter.ts`), theme (`d2rules-theme.ts`), autocomplete for item names inside quoted patterns (`d2rules-autocomplete.ts`)
+- **`stores/`** — Svelte stores for settings, window state, and the items dictionary used by editor autocomplete (`items-dictionary.svelte.ts`)
 
 ### Communication
 
-- **Tauri Commands**: Frontend calls Rust via `invoke()` (e.g., `start_scanner`, `stop_scanner`)
-- **Events**: Backend emits events to frontend via `app_handle.emit()` (e.g., `item-drop`, `scanner-status`)
+- **Tauri Commands**: Frontend calls Rust via `invoke()` (e.g., `set_filter_config`, `get_scanner_status`, `get_items_dictionary`)
+- **Events**: Backend emits events to frontend via `app_handle.emit()` (e.g., `item-drop`, `scanner-status`, `items-dictionary-updated`)
 
 ## Important Conventions
 
@@ -84,16 +85,5 @@ The file is ~3000 lines. **Never load it fully** — it will overflow context.
 ### Documentation
 
 - `docs/index_d2Stats.md` — Index of legacy AutoIt code sections
-- `docs/d2mxlutils-refactoring.plan.md` — Refactoring plan and progress log
-- `docs/loot-filter-spec.md`, `docs/loot-filter-dsl.md` — Loot filter DSL specification
-
-## Version Bumping
-
-```bash
-pnpm version patch    # 0.1.0 → 0.1.1
-pnpm version minor    # 0.1.0 → 0.2.0
-pnpm version major    # 0.1.0 → 1.0.0
-git push --follow-tags  # Triggers GitHub Actions release
-```
-
-This syncs version across `package.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`.
+- `docs/filter_spec/` — Loot filter DSL specification
+- `docs/autocomplete.md` — Editor autocomplete: data flow, cache lifecycle, extension points
