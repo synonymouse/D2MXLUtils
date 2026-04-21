@@ -12,6 +12,7 @@
     color?: string | null;
     sound?: number | null;
     display_stats: boolean;
+    matched_stat_line?: number | null;
   }
 
   interface ItemDrop {

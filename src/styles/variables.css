@@ -62,6 +62,7 @@
 
   --notif-base: #ffffff;               /* base item type line (white) */
   --notif-stat: #8787ff;               /* magic-affix blue, brightened for overlay readability */
+  --notif-stat-matched: #15ff00;       /* highlights the stat line triggered by a {stat-pattern} rule */
   --notif-muted: #9e9c98;              /* dim secondary text (e.g. [UNID]) */
 }
 

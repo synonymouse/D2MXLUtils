@@ -34,6 +34,23 @@
     filter: { display_stats: true },
   };
 
+  const previewWithMatch = {
+    unit_id: 2,
+    class: 0,
+    quality: 'Rare',
+    name: 'Rune Turn',
+    base_name: 'Sacred Ring',
+    stats: [
+      '+15% Faster Cast Rate',
+      '+1 to All Skills',
+      '+25 to Mana',
+    ].join('\n'),
+    is_ethereal: false,
+    is_identified: true,
+    unique_kind: null,
+    filter: { display_stats: true, matched_stat_line: 1 },
+  };
+
   // Local reactive bindings to store values
   let duration = $derived(settingsStore.settings.notificationDuration);
   let fontSize = $derived(settingsStore.settings.notificationFontSize);
@@ -163,6 +180,12 @@
       />
       <Notification
         item={previewWithStats}
+        {fontSize}
+        {opacity}
+        {compactName}
+      />
+      <Notification
+        item={previewWithMatch}
         {fontSize}
         {opacity}
         {compactName}

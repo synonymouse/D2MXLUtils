@@ -223,6 +223,8 @@ pub struct Notification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound: Option<u8>,
     pub display_stats: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_stat_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,10 +276,16 @@ impl FilterConfig {
             Some(rule) => FilterDecision {
                 visibility: resolve_visibility(rule.visibility, self.hide_all),
                 notification: if rule.notify {
+                    let matched_stat_line = rule
+                        .stat_pattern
+                        .as_deref()
+                        .and_then(|p| ctx.matching_stat_line_index(p));
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound,
-                        display_stats: rule.display_stats,
+                        display_stats: rule.display_stats
+                            || rule.stat_pattern.is_some(),
+                        matched_stat_line,
                     })
                 } else {
                     None
@@ -433,6 +441,53 @@ mod tests {
         let ctx = MatchContext::new(&it);
         let d = config.decide(&ctx);
         assert_eq!(d.visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn stat_pattern_rule_implicitly_shows_stats_and_reports_matched_line() {
+        let config = FilterConfig {
+            rules: vec![Rule {
+                name_pattern: Some("Ring$".into()),
+                qualities: vec![ItemQuality::Rare],
+                stat_pattern: Some("Skills".into()),
+                notify: true,
+                ..Rule::default()
+            }],
+            ..FilterConfig::default()
+        };
+
+        let mut ring = item("Rune Turn", ItemQuality::Rare, false);
+        ring.base_name = "Ring".to_string();
+        ring.stats = "+10% Faster Cast Rate\n+1 to All Skills".to_string();
+        let ctx = MatchContext::new(&ring);
+        let d = config.decide(&ctx);
+        let n = d.notification.expect("rule should notify");
+        assert!(
+            n.display_stats,
+            "stat_pattern implies display_stats even without explicit flag"
+        );
+        assert_eq!(n.matched_stat_line, Some(1));
+    }
+
+    #[test]
+    fn name_only_rule_does_not_set_matched_stat_line() {
+        let config = FilterConfig {
+            rules: vec![Rule {
+                name_pattern: Some("Ring$".into()),
+                notify: true,
+                display_stats: true,
+                ..Rule::default()
+            }],
+            ..FilterConfig::default()
+        };
+
+        let mut ring = item("Stone of Jordan Ring", ItemQuality::Unique, false);
+        ring.stats = "+1 to All Skills".to_string();
+        let ctx = MatchContext::new(&ring);
+        let d = config.decide(&ctx);
+        let n = d.notification.expect("rule should notify");
+        assert!(n.display_stats);
+        assert_eq!(n.matched_stat_line, None);
     }
 
     #[test]

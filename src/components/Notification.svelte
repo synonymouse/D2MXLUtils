@@ -5,6 +5,7 @@
     color?: string | null;
     sound?: number | null;
     display_stats: boolean;
+    matched_stat_line?: number | null;
   }
 
   interface ItemDrop {
@@ -54,6 +55,8 @@
   const isLargeDrop = $derived(item.quality === 'Set' || item.unique_kind != null);
 
   const showStats = $derived(item.filter?.display_stats === true && item.stats.length > 0);
+  const statLines = $derived(showStats ? item.stats.split('\n') : []);
+  const matchedLineIdx = $derived(item.filter?.matched_stat_line ?? null);
 
   // Compact-name yields a single line, but the stat-flag exception keeps
   // the full two-line header so the drop reads cleanly above its stats.
@@ -83,7 +86,11 @@
     <div class="item-base">{secondary}</div>
   {/if}
   {#if showStats}
-    <div class="item-stats">{item.stats}</div>
+    <div class="item-stats">
+      {#each statLines as line, i}
+        <div class="stat-line" class:matched={i === matchedLineIdx}>{line}</div>
+      {/each}
+    </div>
   {/if}
 </div>
 
@@ -124,9 +131,15 @@
   .item-stats {
     margin-top: 0.22em;
     font-size: 0.85em;
-    color: var(--notif-stat);
     line-height: 1.3;
-    white-space: pre-line;
     overflow-wrap: anywhere;
+  }
+
+  .stat-line {
+    color: var(--notif-stat);
+  }
+
+  .stat-line.matched {
+    color: var(--notif-stat-matched);
   }
 </style>
