@@ -38,10 +38,20 @@ jobs:
       - name: Build Tauri app (32-bit)
         run: pnpm tauri build --target i686-pc-windows-msvc
 
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGES.md
+          GITHUB_REPO: ${{ github.repository }}
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: D2MXLUtils ${{ github.ref_name }}
+          body_path: CHANGES.md
           files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
           draft: false
           prerelease: false

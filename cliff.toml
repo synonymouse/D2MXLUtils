@@ -1,0 +1,59 @@
+# git-cliff configuration
+# Generates GitHub release notes from commit history.
+# Works with Conventional Commits (feat:, fix:, docs:, ...) and falls
+# back to keyword matching for unprefixed messages.
+
+[changelog]
+header = ""
+body = """
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | upper_first }}
+{% for commit in commits %}
+- {{ commit.message | split(pat="\n") | first | upper_first }} ({{ commit.id | truncate(length=7, end="") }})
+{%- endfor %}
+{% endfor %}
+"""
+footer = ""
+trim = true
+
+[git]
+conventional_commits = false
+filter_unconventional = false
+filter_commits = true
+topo_order = false
+sort_commits = "newest"
+protect_breaking_commits = true
+
+commit_parsers = [
+  # Conventional Commits
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^refactor", group = "Refactor" },
+  { message = "^docs", group = "Documentation" },
+  { message = "^test", group = "Tests" },
+  { message = "^style", group = "Styling" },
+  { message = "^build", group = "Build" },
+  { message = "^ci", group = "CI" },
+  { message = "^chore", group = "Miscellaneous" },
+
+  # Noise — skip
+  { message = "^[Mm]erge ", skip = true },
+  { message = "^[Aa]pply cargo fmt", skip = true },
+  { message = "^[Ss]top tracking", skip = true },
+  { message = "^[Uu]pdate \\.gitignore", skip = true },
+  { message = "^[Uu]pdate settings\\.local\\.json", skip = true },
+  { message = "^lock$", skip = true },
+  { message = "^wip", skip = true },
+
+  # Keyword fallbacks for unprefixed commits
+  { message = "^([Aa]dd|[Ii]ntroduce|[Ii]mplement|[Ss]upport)", group = "Features" },
+  { message = "^([Ff]ix|[Rr]esolve|[Ee]liminate|[Ss]urvive|[Pp]revent|[Cc]orrect|[Rr]epair)", group = "Bug Fixes" },
+  { message = "^([Rr]efactor|[Rr]estructure|[Cc]lean[ -]?up|[Ss]implify|[Ee]xtract)", group = "Refactor" },
+  { message = "^([Rr]edesign|[Rr]ework|[Mm]ove|[Rr]ename|[Rr]eplace|[Rr]emove|[Dd]rop|[Ss]witch|[Cc]hange|[Nn]ormalize|[Uu]pdate)", group = "Changes" },
+  { message = "^([Dd]oc|[Rr]eadme)", group = "Documentation" },
+  { message = "^([Bb]ump|[Rr]elease)", group = "Miscellaneous" },
+
+  # Everything else
+  { message = ".*", group = "Other" },
+]
