@@ -44,6 +44,8 @@ export interface AppSettings {
   compactName: boolean;
   /** Hotkey configuration for toggling main window */
   toggleWindowHotkey: HotkeyConfig;
+  /** Hotkey held to enter overlay edit mode (drag notification anchor) */
+  editOverlayHotkey: HotkeyConfig;
 }
 
 /** Window state interface */
@@ -62,6 +64,13 @@ const DEFAULT_HOTKEY: HotkeyConfig = {
   display: 'Ctrl+K',
 };
 
+/** Default edit-overlay hotkey (Ctrl+Alt, modifier-only — keyCode 0) */
+const DEFAULT_EDIT_OVERLAY_HOTKEY: HotkeyConfig = {
+  keyCode: 0,
+  modifiers: 0x0001 | 0x0002, // MOD_ALT | MOD_CONTROL
+  display: 'Ctrl+Alt',
+};
+
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -72,10 +81,11 @@ const DEFAULT_SETTINGS: AppSettings = {
   notificationStackDirection: 'up',
   notificationFontSize: 14,
   notificationOpacity: 0.9,
-  notificationX: 2.0,
-  notificationY: 50.0,
+  notificationX: 1.0,
+  notificationY: 1.0,
   compactName: false,
   toggleWindowHotkey: DEFAULT_HOTKEY,
+  editOverlayHotkey: DEFAULT_EDIT_OVERLAY_HOTKEY,
 };
 
 /** Settings store singleton */
@@ -211,6 +221,26 @@ class SettingsStore {
     } catch (error) {
       console.error('[Settings] Failed to update hotkey:', error);
     }
+  }
+
+  /** Get overlay-edit-mode hotkey */
+  get editOverlayHotkey(): HotkeyConfig {
+    return this._settings.editOverlayHotkey;
+  }
+
+  /** Set overlay-edit-mode hotkey */
+  async setEditOverlayHotkey(hotkey: HotkeyConfig): Promise<void> {
+    this.set('editOverlayHotkey', hotkey);
+    try {
+      await invoke('update_edit_mode_hotkey', { hotkey });
+    } catch (error) {
+      console.error('[Settings] Failed to update edit-mode hotkey:', error);
+    }
+  }
+
+  /** Set notification anchor position (percentages 0-100) */
+  setNotificationPosition(x: number, y: number): void {
+    this.update({ notificationX: x, notificationY: y });
   }
 }
 

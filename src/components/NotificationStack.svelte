@@ -25,7 +25,10 @@
 
   interface Props {
     items: ItemDrop[];
-    position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
+    /** Anchor x position as percentage of overlay width (0-100). */
+    x?: number;
+    /** Anchor y position as percentage of overlay height (0-100). */
+    y?: number;
     maxVisible?: number;
     fontSize?: number;
     opacity?: number;
@@ -34,28 +37,20 @@
 
   let {
     items,
-    position = 'bottom-right',
+    x = 1,
+    y = 1,
     maxVisible = 10,
     fontSize = 14,
     opacity = 0.9,
     compactName = false,
   }: Props = $props();
-  
+
   const visibleItems = $derived(items.slice(0, maxVisible));
-  
-  const positionStyles: Record<string, string> = {
-    'bottom-right': 'bottom: var(--space-5); right: var(--space-5); align-items: flex-end;',
-    'bottom-left': 'bottom: var(--space-5); left: var(--space-5); align-items: flex-start;',
-    'top-right': 'top: var(--space-5); right: var(--space-5); align-items: flex-end;',
-    'top-left': 'top: var(--space-5); left: var(--space-5); align-items: flex-start;'
-  };
-  
-  const stackDirection = $derived(position.startsWith('bottom') ? 'column-reverse' : 'column');
 </script>
 
-<div 
+<div
   class="notification-stack"
-  style="{positionStyles[position]} flex-direction: {stackDirection};"
+  style="top: {y}%; left: {x}%;"
 >
   {#each visibleItems as item (item.unit_id)}
     <Notification
@@ -72,6 +67,8 @@
   .notification-stack {
     position: fixed;
     display: flex;
+    flex-direction: column;
+    align-items: flex-start;
     gap: var(--space-2);
     pointer-events: none;
     z-index: 9999;

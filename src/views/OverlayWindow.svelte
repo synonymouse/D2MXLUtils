@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
-  import { NotificationStack } from '../components';
+  import { NotificationStack, OverlayEditGrid } from '../components';
   import { settingsStore } from '../stores';
 
   type UniqueKind = 'tu' | 'su' | 'ssu' | 'sssu';
@@ -37,6 +37,12 @@
   let notificationFontSize = $derived(settingsStore.settings.notificationFontSize);
   let notificationOpacity = $derived(settingsStore.settings.notificationOpacity);
   let compactName = $derived(settingsStore.settings.compactName);
+  let notificationX = $derived(settingsStore.settings.notificationX);
+  let notificationY = $derived(settingsStore.settings.notificationY);
+
+  let editActive = $state(false);
+  let pendingX = $state(0);
+  let pendingY = $state(0);
   
   // Animation duration placeholder (currently 0 for instant, can be changed later)
   const EXIT_ANIMATION_DURATION = 0;
@@ -95,6 +101,28 @@
       addItem(event.payload, notificationDuration);
     }).then(u => unlisteners.push(u));
 
+    listen<{ active: boolean }>('overlay-edit-mode', async (event) => {
+      const active = event.payload.active;
+      if (active) {
+        pendingX = notificationX;
+        pendingY = notificationY;
+        editActive = true;
+        try {
+          await invoke('set_overlay_interactive', { active: true });
+        } catch (err) {
+          console.error('[Overlay] set_overlay_interactive(true) failed:', err);
+        }
+      } else {
+        editActive = false;
+        try {
+          await invoke('set_overlay_interactive', { active: false });
+        } catch (err) {
+          console.error('[Overlay] set_overlay_interactive(false) failed:', err);
+        }
+        settingsStore.setNotificationPosition(pendingX, pendingY);
+      }
+    }).then(u => unlisteners.push(u));
+
     // Periodically sync overlay position with Diablo II window
     syncTimer = window.setInterval(() => {
       invoke('sync_overlay_with_game').catch(() => {
@@ -126,12 +154,20 @@
 <main class="overlay">
   <NotificationStack
     {items}
-    position="top-left"
+    x={notificationX}
+    y={notificationY}
     maxVisible={10}
     fontSize={notificationFontSize}
     opacity={notificationOpacity}
     {compactName}
   />
+  {#if editActive}
+    <OverlayEditGrid
+      x={pendingX}
+      y={pendingY}
+      onchange={(nx, ny) => { pendingX = nx; pendingY = ny; }}
+    />
+  {/if}
 </main>
 
 <style>

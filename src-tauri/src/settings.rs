@@ -64,6 +64,10 @@ pub struct AppSettings {
     /// Hotkey configuration for toggling main window
     #[serde(default)]
     pub toggle_window_hotkey: HotkeyConfig,
+
+    /// Hotkey held to enter overlay edit mode (drag notification anchor)
+    #[serde(default = "default_edit_overlay_hotkey")]
+    pub edit_overlay_hotkey: HotkeyConfig,
 }
 
 /// Window state for persistence
@@ -107,11 +111,19 @@ fn default_notification_opacity() -> f32 {
 }
 
 fn default_notification_x() -> f32 {
-    2.0
+    1.0
 }
 
 fn default_notification_y() -> f32 {
-    50.0
+    1.0
+}
+
+fn default_edit_overlay_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        key_code: 0,
+        modifiers: 0x0001 | 0x0002, // MOD_ALT | MOD_CONTROL
+        display: "Ctrl+Alt".to_string(),
+    }
 }
 
 impl Default for AppSettings {
@@ -129,6 +141,7 @@ impl Default for AppSettings {
             notification_y: default_notification_y(),
             compact_name: false,
             toggle_window_hotkey: HotkeyConfig::default(),
+            edit_overlay_hotkey: default_edit_overlay_hotkey(),
         }
     }
 }

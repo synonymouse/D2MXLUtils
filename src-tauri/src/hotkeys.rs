@@ -16,7 +16,8 @@ use crate::logger::{error as log_error, info as log_info};
 use windows::Win32::Foundation::HWND;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
+    GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT,
+    VK_CONTROL, VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -207,6 +208,169 @@ pub fn update_hotkey(
     hotkey: HotkeyConfig,
 ) -> Result<(), String> {
     log_info(&format!("Updating hotkey to: {}", hotkey.display));
+    state.start(app, hotkey);
+    Ok(())
+}
+
+// Edit-mode watcher: RegisterHotKey can't deliver release events or accept
+// modifier-only chords, so we poll GetAsyncKeyState and emit on edge
+// transitions instead.
+
+pub struct EditModeState {
+    is_running: Arc<AtomicBool>,
+    current_hotkey: Arc<std::sync::Mutex<HotkeyConfig>>,
+}
+
+impl EditModeState {
+    pub fn new() -> Self {
+        Self {
+            is_running: Arc::new(AtomicBool::new(false)),
+            current_hotkey: Arc::new(std::sync::Mutex::new(HotkeyConfig {
+                key_code: 0,
+                modifiers: 0x0001 | 0x0002, // MOD_ALT | MOD_CONTROL
+                display: "Ctrl+Alt".to_string(),
+            })),
+        }
+    }
+
+    pub fn start(&self, app_handle: AppHandle, hotkey: HotkeyConfig) {
+        if self.is_running.load(Ordering::SeqCst) {
+            log_info("Edit-mode watcher already running, restarting with new config");
+            self.stop();
+            thread::sleep(std::time::Duration::from_millis(80));
+        }
+
+        if let Ok(mut current) = self.current_hotkey.lock() {
+            *current = hotkey.clone();
+        }
+
+        self.is_running.store(true, Ordering::SeqCst);
+        let is_running = self.is_running.clone();
+        let current_hotkey = self.current_hotkey.clone();
+
+        #[cfg(target_os = "windows")]
+        {
+            thread::spawn(move || {
+                edit_mode_thread_windows(is_running, current_hotkey, app_handle);
+            });
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            log_info("Edit-mode watcher is only supported on Windows");
+            let _ = (app_handle, current_hotkey);
+        }
+    }
+
+    pub fn stop(&self) {
+        self.is_running.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Default for EditModeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn is_key_down(vk: u16) -> bool {
+    // High bit of GetAsyncKeyState is set while the key is held.
+    unsafe { (GetAsyncKeyState(vk as i32) as u16) & 0x8000 != 0 }
+}
+
+#[cfg(target_os = "windows")]
+fn chord_is_pressed(hk: &HotkeyConfig) -> bool {
+    const MOD_ALT: u32 = 0x0001;
+    const MOD_CONTROL: u32 = 0x0002;
+    const MOD_SHIFT: u32 = 0x0004;
+    const MOD_WIN: u32 = 0x0008;
+
+    // Require at least one modifier so a bare key doesn't constantly trigger.
+    if hk.modifiers == 0 {
+        return false;
+    }
+
+    if hk.modifiers & MOD_CONTROL != 0 && !is_key_down(VK_CONTROL.0) {
+        return false;
+    }
+    if hk.modifiers & MOD_SHIFT != 0 && !is_key_down(VK_SHIFT.0) {
+        return false;
+    }
+    if hk.modifiers & MOD_ALT != 0 && !is_key_down(VK_MENU.0) {
+        return false;
+    }
+    if hk.modifiers & MOD_WIN != 0 && !(is_key_down(VK_LWIN.0) || is_key_down(VK_RWIN.0)) {
+        return false;
+    }
+
+    if hk.key_code != 0 && !is_key_down(hk.key_code as u16) {
+        return false;
+    }
+
+    true
+}
+
+#[cfg(target_os = "windows")]
+fn edit_mode_thread_windows(
+    is_running: Arc<AtomicBool>,
+    current_hotkey: Arc<std::sync::Mutex<HotkeyConfig>>,
+    app_handle: AppHandle,
+) {
+    log_info("Edit-mode watcher thread starting");
+
+    let mut last_active = false;
+    let mut last_key_code: u32 = 0;
+    let mut last_modifiers: u32 = 0;
+
+    while is_running.load(Ordering::SeqCst) {
+        let hk = match current_hotkey.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                thread::sleep(std::time::Duration::from_millis(100));
+                continue;
+            }
+        };
+
+        // Reset on reconfigure so we don't emit a phantom release for the old chord.
+        if hk.key_code != last_key_code || hk.modifiers != last_modifiers {
+            if last_active {
+                let _ =
+                    app_handle.emit("overlay-edit-mode", serde_json::json!({ "active": false }));
+            }
+            last_active = false;
+            last_key_code = hk.key_code;
+            last_modifiers = hk.modifiers;
+        }
+
+        let active = chord_is_pressed(&hk);
+
+        if active != last_active {
+            if let Err(e) =
+                app_handle.emit("overlay-edit-mode", serde_json::json!({ "active": active }))
+            {
+                log_error(&format!("Failed to emit overlay-edit-mode event: {}", e));
+            }
+            last_active = active;
+        }
+
+        thread::sleep(std::time::Duration::from_millis(30));
+    }
+
+    // Release on shutdown so the overlay doesn't stay stuck in interactive mode.
+    if last_active {
+        let _ = app_handle.emit("overlay-edit-mode", serde_json::json!({ "active": false }));
+    }
+    log_info("Edit-mode watcher thread stopped");
+}
+
+#[tauri::command]
+pub fn update_edit_mode_hotkey(
+    state: tauri::State<EditModeState>,
+    app: AppHandle,
+    hotkey: HotkeyConfig,
+) -> Result<(), String> {
+    log_info(&format!("Updating edit-mode hotkey to: {}", hotkey.display));
     state.start(app, hotkey);
     Ok(())
 }

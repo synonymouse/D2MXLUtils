@@ -10,4 +10,5 @@ export { default as ProfileSelector } from './ProfileSelector.svelte';
 // Notification components
 export { default as Notification } from './Notification.svelte';
 export { default as NotificationStack } from './NotificationStack.svelte';
+export { default as OverlayEditGrid } from './OverlayEditGrid.svelte';
 

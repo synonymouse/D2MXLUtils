@@ -16,6 +16,8 @@
   }: Props = $props();
 
   let isRecording = $state(false);
+  // Peak modifier set seen during recording; used to commit modifier-only chords on release.
+  let recordedModifiers = $state(0);
 
   // Windows modifier constants
   const MOD_ALT = 0x0001;
@@ -82,8 +84,24 @@
     if (modifiers & MOD_SHIFT) parts.push('Shift');
     if (modifiers & MOD_ALT) parts.push('Alt');
     if (modifiers & MOD_WIN) parts.push('Win');
-    parts.push(vkToDisplay(keyCode));
+    if (keyCode !== 0) parts.push(vkToDisplay(keyCode));
     return parts.join('+');
+  }
+
+  function modifiersFromEvent(e: KeyboardEvent): number {
+    let modifiers = 0;
+    if (e.ctrlKey) modifiers |= MOD_CONTROL;
+    if (e.shiftKey) modifiers |= MOD_SHIFT;
+    if (e.altKey) modifiers |= MOD_ALT;
+    if (e.metaKey) modifiers |= MOD_WIN;
+    return modifiers;
+  }
+
+  function commit(hotkey: HotkeyConfig) {
+    value = hotkey;
+    onchange?.(hotkey);
+    isRecording = false;
+    recordedModifiers = 0;
   }
 
   function handleKeyDown(e: KeyboardEvent) {
@@ -92,41 +110,37 @@
     e.preventDefault();
     e.stopPropagation();
 
-    // Ignore modifier-only key presses
-    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+    // Accumulate modifier-only chords; committed on keyup.
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) {
+      recordedModifiers = modifiersFromEvent(e);
+      return;
+    }
 
     const result = eventToVk(e);
     if (!result) return;
-    
-    const [keyCode, keyName] = result;
+    const [keyCode] = result;
 
-    // Build modifiers
-    let modifiers = 0;
-    if (e.ctrlKey) modifiers |= MOD_CONTROL;
-    if (e.shiftKey) modifiers |= MOD_SHIFT;
-    if (e.altKey) modifiers |= MOD_ALT;
-    if (e.metaKey) modifiers |= MOD_WIN;
-
-    // Must have at least one modifier
+    const modifiers = modifiersFromEvent(e);
     if (modifiers === 0) return;
 
-    // Build display string
-    const modParts: string[] = [];
-    if (modifiers & MOD_CONTROL) modParts.push('Ctrl');
-    if (modifiers & MOD_SHIFT) modParts.push('Shift');
-    if (modifiers & MOD_ALT) modParts.push('Alt');
-    if (modifiers & MOD_WIN) modParts.push('Win');
-    modParts.push(keyName);
+    commit({ keyCode, modifiers, display: buildDisplayString(modifiers, keyCode) });
+  }
 
-    const newHotkey: HotkeyConfig = {
-      keyCode,
-      modifiers,
-      display: modParts.join('+'),
-    };
+  function handleKeyUp(e: KeyboardEvent) {
+    if (!isRecording) return;
 
-    value = newHotkey;
-    onchange?.(newHotkey);
+    // Use recordedModifiers, not e.*Key — the released modifier is already gone from the event.
+    if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key) && recordedModifiers !== 0) {
+      e.preventDefault();
+      e.stopPropagation();
+      const modifiers = recordedModifiers;
+      commit({ keyCode: 0, modifiers, display: buildDisplayString(modifiers, 0) });
+    }
+  }
+
+  function handleBlur() {
     isRecording = false;
+    recordedModifiers = 0;
   }
 </script>
 
@@ -139,9 +153,10 @@
     class="hotkey-input"
     class:recording={isRecording}
     {disabled}
-    onclick={() => !disabled && (isRecording = true)}
+    onclick={() => { if (!disabled) { isRecording = true; recordedModifiers = 0; } }}
     onkeydown={handleKeyDown}
-    onblur={() => isRecording = false}
+    onkeyup={handleKeyUp}
+    onblur={handleBlur}
   >
     {#if isRecording}
       <span class="recording-text">Press keys...</span>

@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
-use crate::hotkeys::HotkeyState;
+use crate::hotkeys::{EditModeState, HotkeyState};
 use crate::logger::{error as log_error, info as log_info};
 
 use notifier::{DropScanner, ItemsDictionary};
@@ -394,6 +394,21 @@ fn get_item_filter_action(
     config.decide(&ctx)
 }
 
+#[tauri::command]
+fn set_overlay_interactive(app: AppHandle, active: bool) -> Result<(), String> {
+    OVERLAY_CLICK_THROUGH.store(!active, Ordering::SeqCst);
+    // Re-sync immediately so the style change doesn't wait ~250 ms for the next tick.
+    #[cfg(target_os = "windows")]
+    {
+        let _ = sync_overlay_with_game_impl(&app);
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+    }
+    Ok(())
+}
+
 /// Sync the transparent overlay window with the Diablo II game window.
 ///
 /// - Positions and resizes the `overlay` window to match Diablo II bounds
@@ -415,6 +430,10 @@ fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
 
 /// Track if overlay was visible in the previous sync call
 static OVERLAY_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
+
+// Read by sync_overlay_with_game_impl so its 250 ms style re-apply loop
+// honors whatever set_overlay_interactive last set.
+static OVERLAY_CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
 
 #[cfg(target_os = "windows")]
 fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
@@ -474,13 +493,16 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     // Check if overlay was hidden before (transition from hidden -> visible)
     let was_visible = OVERLAY_WAS_VISIBLE.swap(true, Ordering::SeqCst);
 
-    // Apply extended styles: layered + transparent (click-through) + toolwindow (hide from Alt+Tab)
+    // WS_EX_TRANSPARENT is toggled by OVERLAY_CLICK_THROUGH so the edit-mode
+    // hotkey can make the overlay receive input.
     unsafe {
         let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
-        let new_ex_style = ex_style
-            | WS_EX_LAYERED.0 as i32
-            | WS_EX_TRANSPARENT.0 as i32
-            | WS_EX_TOOLWINDOW.0 as i32;
+        let base_style = ex_style | WS_EX_LAYERED.0 as i32 | WS_EX_TOOLWINDOW.0 as i32;
+        let new_ex_style = if OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst) {
+            base_style | WS_EX_TRANSPARENT.0 as i32
+        } else {
+            base_style & !(WS_EX_TRANSPARENT.0 as i32)
+        };
 
         SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex_style);
 
@@ -743,22 +765,33 @@ fn main() {
 
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
+            let edit_mode_state = EditModeState::new();
 
             // Load settings and start hotkey listener
             let app_handle_for_hotkeys = app.handle().clone();
+            let app_handle_for_edit_mode = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
                 Ok(loaded_settings) => {
                     hotkey_state
                         .start(app_handle_for_hotkeys, loaded_settings.toggle_window_hotkey);
+                    edit_mode_state.start(
+                        app_handle_for_edit_mode,
+                        loaded_settings.edit_overlay_hotkey,
+                    );
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
-                    // Start with default hotkey
+                    // Start with default hotkeys
                     hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
+                    edit_mode_state.start(
+                        app_handle_for_edit_mode,
+                        settings::AppSettings::default().edit_overlay_hotkey,
+                    );
                 }
             }
 
             app.manage(hotkey_state);
+            app.manage(edit_mode_state);
 
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
@@ -827,6 +860,7 @@ fn main() {
             set_filter_config,
             set_filter_enabled,
             sync_overlay_with_game,
+            set_overlay_interactive,
             parse_filter_dsl,
             validate_filter_dsl,
             get_item_filter_action,
@@ -835,6 +869,7 @@ fn main() {
             settings::get_window_state,
             settings::save_window_state,
             hotkeys::update_hotkey,
+            hotkeys::update_edit_mode_hotkey,
             profiles::list_profiles,
             profiles::load_profile,
             profiles::save_profile,
