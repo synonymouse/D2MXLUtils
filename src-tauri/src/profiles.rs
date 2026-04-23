@@ -17,10 +17,37 @@ const PROFILE_EXT: &str = "rules";
 
 const NEW_PROFILE_TEMPLATE: &str = "\
 # D2MXLUtils Loot Filter
+# Lines starting with # are comments. Rules match last-wins.
 # Uncomment the next line to hide unmatched items by default:
 # hide default
 
+# Hide trash on the ground
+normal hide
+low hide
+
+# Highlight uniques and sets in-game (silent)
+unique gold
+set lime
+
+# Announce rare rings with +skills
+\"Ring$\" rare {Skills} lime notify sound2 stat
+
+# Ethereal sacred items get the full treatment
+sacred eth gold notify sound1
+
+# All runes
+\"Rune$\" gold notify sound3
+
+# Group: always call out the named uniques
+[unique gold notify sound1 stat] {
+  \"Jordan\"
+  \"Tyrael\"
+  \"Windforce\"
+}
 ";
+
+/// Default profile name seeded on first run.
+pub const DEFAULT_PROFILE_NAME: &str = "Default";
 
 /// Profile metadata (returned when listing profiles)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +111,25 @@ fn modified_iso(entry: &fs::DirEntry) -> Option<String> {
 
 fn now_iso() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+pub fn seed_default_profile(app: &AppHandle) -> Result<String, String> {
+    let profiles_dir = get_profiles_dir(app)?;
+    let path = profile_path(&profiles_dir, DEFAULT_PROFILE_NAME);
+
+    if path.exists() {
+        return Ok(DEFAULT_PROFILE_NAME.to_string());
+    }
+
+    fs::write(&path, NEW_PROFILE_TEMPLATE)
+        .map_err(|e| format!("Failed to write default profile: {}", e))?;
+
+    log_info(&format!(
+        "Seeded default profile '{}'",
+        DEFAULT_PROFILE_NAME
+    ));
+
+    Ok(DEFAULT_PROFILE_NAME.to_string())
 }
 
 /// List all available profiles.

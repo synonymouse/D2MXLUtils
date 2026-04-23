@@ -831,6 +831,32 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let cached_items = items_cache::load_items_cache(app.handle());
+
+            // First-run: if the settings file has never been written, drop a
+            // ready-to-use Default profile and mark it active
+            if let Ok(dir) = app.handle().path().app_data_dir() {
+                let settings_path = dir.join("settings.json");
+                if !settings_path.exists() {
+                    match profiles::seed_default_profile(app.handle()) {
+                        Ok(name) => {
+                            let mut s = settings::load_settings(app.handle().clone())
+                                .unwrap_or_default();
+                            s.active_profile = Some(name);
+                            if let Err(e) = settings::save_settings(app.handle().clone(), s) {
+                                log_error(&format!(
+                                    "First-run seed: failed to persist active profile: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        Err(e) => log_error(&format!(
+                            "First-run seed: failed to create Default profile: {}",
+                            e
+                        )),
+                    }
+                }
+            }
+
             let initial_filter_config = load_initial_filter_config(app.handle());
 
             // Shared scanner state

@@ -5,39 +5,7 @@
   import { ProfileSelector } from "../components";
   import { settingsStore } from "../stores";
 
-  // Default example filter for new/empty profiles. Spec-aligned:
-  // `notify` is now explicit — color/sound alone do not alert.
-  const DEFAULT_FILTER = `# D2MXLUtils Loot Filter
-# Lines starting with # are comments. Rules match last-wins.
-# Uncomment the next line to hide unmatched items by default:
-# hide default
-
-# Hide trash on the ground
-normal hide
-low hide
-
-# Highlight uniques and sets in-game (silent)
-unique gold
-set lime
-
-# Announce rare rings with +skills
-"Ring$" rare {Skills} lime notify sound2 stat
-
-# Ethereal sacred items get the full treatment
-sacred eth gold notify sound1
-
-# All runes
-"Rune$" gold notify sound3
-
-# Group: always call out the named uniques
-[unique gold notify sound1 stat] {
-  "Jordan"
-  "Tyrael"
-  "Windforce"
-}
-`;
-
-  let dslText = $state(DEFAULT_FILTER);
+  let dslText = $state("");
   let selectedProfile = $state(settingsStore.settings.activeProfile || "");
   let validationStatus = $state<"idle" | "valid" | "error">("idle");
   let errorCount = $state(0);
@@ -103,7 +71,7 @@ sacred eth gold notify sound1
    * Handle profile load from ProfileSelector
    */
   async function handleProfileLoad(name: string, rulesText: string) {
-    dslText = rulesText || DEFAULT_FILTER;
+    dslText = rulesText;
     selectedProfile = name;
     hasUnsavedChanges = false;
     validationStatus = "idle";
