@@ -70,7 +70,7 @@ pub struct DropScanner {
     map_marker: MapMarkerManager,
     /// Enriched `ItemDropEvent` per `unit_id` from the primary `pPaths`
     /// pass. The map-marker BFS pass reads this instead of re-calling
-    /// `GetItemName` per tick. Cleared via `clear_cache` on area change.
+    /// `GetItemName` per tick.
     recent_events: HashMap<u32, ItemDropEvent>,
 }
 
@@ -360,6 +360,8 @@ impl DropScanner {
             _ => return events,
         };
 
+        let mut current_item_ids: HashSet<u32> = HashSet::new();
+
         // Iterate through each path/room
         for i in 0..i_paths {
             let p_path = match self.ctx.process.read_memory::<u32>(p_paths + 4 * i) {
@@ -378,7 +380,16 @@ impl DropScanner {
 
             // Iterate through units in this room
             while p_unit != 0 {
-                if let Some(scanned) = self.scan_unit(p_unit) {
+                let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
+                    Ok(u) => u,
+                    Err(_) => break,
+                };
+
+                if unit.unit_type == unit_type::ITEM {
+                    current_item_ids.insert(unit.unit_id);
+                }
+
+                if let Some(scanned) = self.scan_unit(p_unit, &unit) {
                     let event = self.to_event(scanned);
                     let unit_id = event.unit_id;
 
@@ -474,14 +485,14 @@ impl DropScanner {
                     }
                 }
 
-                // Move to next unit (use struct layout for safety instead of hardcoded offset)
-                let unit: UnitAny = match self.ctx.process.read_memory(p_unit as usize) {
-                    Ok(u) => u,
-                    Err(_) => break,
-                };
                 p_unit = unit.p_next_unit;
             }
         }
+
+        // dwUnitId stays stable when an item moves between ground and
+        // inventory, so without pruning a re-dropped item would never notify.
+        self.seen_items.retain(|id| current_item_ids.contains(id));
+        self.recent_events.retain(|id, _| current_item_ids.contains(id));
 
         self.run_map_marker_pass();
 
@@ -568,10 +579,7 @@ impl DropScanner {
     }
 
     /// Process a single unit, returning a fully scanned item if it's a new item.
-    fn scan_unit(&mut self, p_unit: u32) -> Option<ScannedItem> {
-        // Read UnitAny structure
-        let unit: UnitAny = self.ctx.process.read_memory(p_unit as usize).ok()?;
-
+    fn scan_unit(&mut self, p_unit: u32, unit: &UnitAny) -> Option<ScannedItem> {
         // Only process items (unit_type == 4)
         if unit.unit_type != unit_type::ITEM {
             return None;
@@ -594,7 +602,7 @@ impl DropScanner {
             .ok()?;
 
         // Create scanned item and try to enrich it using injected game functions.
-        let mut scanned = ScannedItem::from_unit(&unit, &item_data, p_unit);
+        let mut scanned = ScannedItem::from_unit(unit, &item_data, p_unit);
 
         // Try to resolve item name via injected GetItemName.
         if let Ok(raw_name) = self.injector.get_item_name(&self.ctx.process, p_unit) {
