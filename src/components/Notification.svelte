@@ -5,7 +5,7 @@
     color?: string | null;
     sound?: number | null;
     display_stats: boolean;
-    matched_stat_line?: number | null;
+    matched_stat_lines?: number[] | null;
   }
 
   interface ItemDrop {
@@ -76,7 +76,7 @@
 
   const showStats = $derived(item.filter?.display_stats === true && item.stats.length > 0);
   const statLines = $derived(showStats ? item.stats.split('\n') : []);
-  const matchedLineIdx = $derived(item.filter?.matched_stat_line ?? null);
+  const matchedLineIdxSet = $derived(new Set(item.filter?.matched_stat_lines ?? []));
 
   // Compact-name yields a single line, but the stat-flag exception keeps
   // the full two-line header so the drop reads cleanly above its stats.
@@ -108,7 +108,7 @@
   {#if showStats}
     <div class="item-stats">
       {#each statLines as line, i}
-        <div class="stat-line" class:matched={i === matchedLineIdx}>{line}</div>
+        <div class="stat-line" class:matched={matchedLineIdxSet.has(i)}>{line}</div>
       {/each}
     </div>
   {/if}

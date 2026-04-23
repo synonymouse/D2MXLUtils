@@ -59,7 +59,7 @@ pub enum ValidationSeverity {
 /// `Option` distinguishes "unset" (inherit from group) from "explicitly set".
 #[derive(Debug, Clone, Default)]
 struct Attrs {
-    stat_pattern: Option<String>,
+    stat_patterns: Option<Vec<String>>,
     qualities: Option<Vec<ItemQuality>>,
     tiers: Option<Vec<ItemTier>>,
     ethereal: Option<bool>,
@@ -73,8 +73,8 @@ struct Attrs {
 
 impl Attrs {
     fn apply_to(&self, rule: &mut Rule) {
-        if let Some(ref s) = self.stat_pattern {
-            rule.stat_pattern = Some(s.clone());
+        if let Some(ref sp) = self.stat_patterns {
+            rule.stat_patterns = sp.clone();
         }
         if let Some(ref q) = self.qualities {
             rule.qualities = q.clone();
@@ -108,8 +108,8 @@ impl Attrs {
     /// Merge `group` into `self` only where `self` is unset. Used to flatten
     /// `[header] { rule }` bodies: rule-level values win over the header.
     fn fill_from_group(&mut self, group: &Attrs) {
-        if self.stat_pattern.is_none() {
-            self.stat_pattern = group.stat_pattern.clone();
+        if self.stat_patterns.is_none() {
+            self.stat_patterns = group.stat_patterns.clone();
         }
         if self.qualities.is_none() {
             self.qualities = group.qualities.clone();
@@ -472,10 +472,9 @@ fn parse_attrs_into(
         return;
     }
 
-    // Pull out stat pattern from any {...} occurrence.
-    let (remainder, stat) = extract_stat_pattern(src);
-    if let Some(s) = stat {
-        attrs.stat_pattern = Some(s);
+    let (remainder, stats) = extract_stat_patterns(src);
+    if !stats.is_empty() {
+        attrs.stat_patterns = Some(stats);
     }
 
     for token in remainder.split_whitespace() {
@@ -586,16 +585,17 @@ fn strip_inline_comment(line: &str) -> &str {
     line
 }
 
-/// Extract the first `{...}` from `s`. Braces are balanced (so regex
-/// quantifiers like `{n,m}` survive); `\{` / `\}` / `\\` escape literals.
-fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
+/// Extract every `{...}` from `s`, in source order. Braces are balanced
+/// (so regex quantifiers like `{n,m}` survive as part of an outer pattern);
+/// `\{` / `\}` / `\\` escape literals. Empty `{}` groups and unterminated
+/// `{...<EOF>` are silently dropped (validator warns separately).
+fn extract_stat_patterns(s: &str) -> (String, Vec<String>) {
     let mut remainder = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
-    let mut pattern = None;
-    let mut captured = false;
+    let mut patterns: Vec<String> = Vec::new();
 
     while let Some(c) = chars.next() {
-        if c == '{' && !captured {
+        if c == '{' {
             let mut inner = String::new();
             let mut depth = 1usize;
             while let Some(nc) = chars.next() {
@@ -614,8 +614,9 @@ fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
                 if nc == '}' {
                     depth -= 1;
                     if depth == 0 {
-                        if !inner.trim().is_empty() {
-                            pattern = Some(inner.trim().to_string());
+                        let trimmed = inner.trim();
+                        if !trimmed.is_empty() {
+                            patterns.push(trimmed.to_string());
                         }
                         break;
                     }
@@ -624,13 +625,12 @@ fn extract_stat_pattern(s: &str) -> (String, Option<String>) {
                 }
                 inner.push(nc);
             }
-            captured = true;
         } else {
             remainder.push(c);
         }
     }
 
-    (remainder, pattern)
+    (remainder, patterns)
 }
 
 fn strip_leading_name(s: &str) -> (String, bool) {
@@ -645,13 +645,17 @@ fn strip_leading_name(s: &str) -> (String, bool) {
 }
 
 fn strip_stat_brace(s: String) -> String {
-    let (rest, _) = extract_stat_pattern(&s);
+    let (rest, _) = extract_stat_patterns(&s);
     rest
 }
 
 fn attrs_from_rule(rule: &Rule) -> Attrs {
     Attrs {
-        stat_pattern: rule.stat_pattern.clone(),
+        stat_patterns: if rule.stat_patterns.is_empty() {
+            None
+        } else {
+            Some(rule.stat_patterns.clone())
+        },
         qualities: if rule.qualities.is_empty() {
             None
         } else {
@@ -696,7 +700,7 @@ fn validate_tokens(
         return;
     }
 
-    let (remainder, _) = extract_stat_pattern(src);
+    let (remainder, _) = extract_stat_patterns(src);
     for token in remainder.split_whitespace() {
         let lower = token.to_lowercase();
         if is_known_token(&lower) {
@@ -725,7 +729,7 @@ fn is_known_token(lower: &str) -> bool {
 }
 
 fn info_warn_notify_independence(src: &str, line_num: usize, errors: &mut Vec<ValidationError>) {
-    let (remainder, _) = extract_stat_pattern(src);
+    let (remainder, _) = extract_stat_patterns(src);
     let mut has_color = false;
     let mut has_sound = false;
     let mut has_notify = false;
@@ -920,7 +924,10 @@ mod tests {
     #[test]
     fn stat_pattern_extraction_handles_escapes() {
         let cfg = parse_dsl("rare {test\\}inside}").unwrap();
-        assert_eq!(cfg.rules[0].stat_pattern.as_deref(), Some("test\\}inside"));
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec!["test\\}inside".to_string()]
+        );
     }
 
     #[test]
@@ -1035,8 +1042,8 @@ mod tests {
     fn stat_pattern_allows_regex_quantifier() {
         let cfg = parse_dsl("rare {All Skills.{2,5}}").unwrap();
         assert_eq!(
-            cfg.rules[0].stat_pattern.as_deref(),
-            Some("All Skills.{2,5}")
+            cfg.rules[0].stat_patterns,
+            vec!["All Skills.{2,5}".to_string()]
         );
     }
 
@@ -1091,5 +1098,75 @@ mod tests {
         assert!(errs
             .iter()
             .any(|e| e.message.contains("cannot have additional tokens")));
+    }
+
+    #[test]
+    fn multi_stat_patterns_parsed_as_vec_in_source_order() {
+        let cfg = parse_dsl("rare {All Skills} {Faster Cast} {Resist}").unwrap();
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec![
+                "All Skills".to_string(),
+                "Faster Cast".to_string(),
+                "Resist".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_braces_silently_dropped_between_valid_groups() {
+        let cfg = parse_dsl("rare {} {foo}").unwrap();
+        assert_eq!(cfg.rules[0].stat_patterns, vec!["foo".to_string()]);
+    }
+
+    #[test]
+    fn stat_patterns_preserve_escapes_per_group() {
+        let cfg = parse_dsl(r#"rare {a\}} {b}"#).unwrap();
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec![r"a\}".to_string(), "b".to_string()]
+        );
+    }
+
+    #[test]
+    fn multi_stat_in_group_header_inherited_by_child_unset() {
+        let src = "[rare {X} {Y}] {\n  \"foo\"\n}";
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        assert_eq!(cfg.rules[0].name_pattern.as_deref(), Some("foo"));
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec!["X".to_string(), "Y".to_string()]
+        );
+    }
+
+    #[test]
+    fn child_stat_patterns_fully_replace_group() {
+        let src = "[rare {X}] {\n  \"foo\" {Y} {Z}\n}";
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec!["Y".to_string(), "Z".to_string()]
+        );
+    }
+
+    #[test]
+    fn child_without_stat_inherits_group_patterns() {
+        let src = "[rare {X} {Y}] {\n  \"foo\"\n  \"bar\" {Z}\n}";
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(cfg.rules.len(), 2);
+        assert_eq!(
+            cfg.rules[0].stat_patterns,
+            vec!["X".to_string(), "Y".to_string()]
+        );
+        assert_eq!(cfg.rules[1].stat_patterns, vec!["Z".to_string()]);
+    }
+
+    #[test]
+    fn single_braced_pattern_still_parses_as_one_element_vec() {
+        // Regression guard: old profiles using `{(?s)a.*b.*c}` workarounds
+        // must keep parsing identically under the new Vec-based model.
+        let cfg = parse_dsl("rare {(?s)a.*b.*c}").unwrap();
+        assert_eq!(cfg.rules[0].stat_patterns, vec!["(?s)a.*b.*c".to_string()]);
     }
 }

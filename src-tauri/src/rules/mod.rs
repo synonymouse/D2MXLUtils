@@ -156,8 +156,8 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_pattern: Option<String>,
 
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stat_pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stat_patterns: Vec<String>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub qualities: Vec<ItemQuality>,
@@ -206,8 +206,8 @@ pub struct Notification {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound: Option<u8>,
     pub display_stats: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub matched_stat_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_stat_lines: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,18 +265,19 @@ impl FilterConfig {
             Some(rule) => FilterDecision {
                 visibility: resolve_visibility(rule.visibility, self.hide_all),
                 notification: if rule.notify {
-                    let matched_stat_line = rule
-                        .stat_pattern
-                        .as_deref()
-                        .and_then(|p| ctx.matching_stat_line_index(p));
+                    let matched_stat_lines = if rule.stat_patterns.is_empty() {
+                        Vec::new()
+                    } else {
+                        ctx.matching_stat_lines(&rule.stat_patterns)
+                    };
                     // Collapse the `sound_none` silence marker so consumers
                     // only see 1..=6.
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound.filter(|&s| s != 0),
                         display_stats: rule.display_stats
-                            || rule.stat_pattern.is_some(),
-                        matched_stat_line,
+                            || !rule.stat_patterns.is_empty(),
+                        matched_stat_lines,
                     })
                 } else {
                     None
@@ -441,7 +442,7 @@ mod tests {
             rules: vec![Rule {
                 name_pattern: Some("Ring$".into()),
                 qualities: vec![ItemQuality::Rare],
-                stat_pattern: Some("Skills".into()),
+                stat_patterns: vec!["Skills".into()],
                 notify: true,
                 ..Rule::default()
             }],
@@ -456,9 +457,9 @@ mod tests {
         let n = d.notification.expect("rule should notify");
         assert!(
             n.display_stats,
-            "stat_pattern implies display_stats even without explicit flag"
+            "stat_patterns implies display_stats even without explicit flag"
         );
-        assert_eq!(n.matched_stat_line, Some(1));
+        assert_eq!(n.matched_stat_lines, vec![1]);
     }
 
     #[test]
@@ -479,7 +480,7 @@ mod tests {
         let d = config.decide(&ctx);
         let n = d.notification.expect("rule should notify");
         assert!(n.display_stats);
-        assert_eq!(n.matched_stat_line, None);
+        assert!(n.matched_stat_lines.is_empty());
     }
 
     #[test]
@@ -561,5 +562,42 @@ mod tests {
         let ctx = MatchContext::new(&sup);
         let d = config.decide(&ctx);
         assert_eq!(d.visibility, Visibility::Hide, "superior item hidden");
+    }
+
+    #[test]
+    fn multi_stat_rule_highlights_all_matching_lines() {
+        let config = FilterConfig {
+            rules: vec![Rule {
+                qualities: vec![ItemQuality::Unique],
+                stat_patterns: vec!["All Skills".into(), "Faster Cast".into()],
+                notify: true,
+                ..Rule::default()
+            }],
+            ..FilterConfig::default()
+        };
+        let mut ring = item("Ring", ItemQuality::Unique, false);
+        ring.stats =
+            "+3 to All Skills\n+15% Faster Cast Rate\n+30 to Strength".to_string();
+        let ctx = MatchContext::new(&ring);
+        let n = config.decide(&ctx).notification.expect("should notify");
+        assert!(n.display_stats, "multi-stat implies display_stats");
+        assert_eq!(n.matched_stat_lines, vec![0, 1]);
+    }
+
+    #[test]
+    fn multi_stat_rule_with_partial_match_does_not_fire() {
+        let config = FilterConfig {
+            rules: vec![Rule {
+                qualities: vec![ItemQuality::Unique],
+                stat_patterns: vec!["All Skills".into(), "Life Steal".into()],
+                notify: true,
+                ..Rule::default()
+            }],
+            ..FilterConfig::default()
+        };
+        let mut ring = item("Ring", ItemQuality::Unique, false);
+        ring.stats = "+3 to All Skills\n+15% Faster Cast Rate".to_string();
+        let ctx = MatchContext::new(&ring);
+        assert!(config.decide(&ctx).notification.is_none());
     }
 }

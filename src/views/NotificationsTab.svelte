@@ -48,7 +48,7 @@
     is_ethereal: false,
     is_identified: true,
     unique_kind: null,
-    filter: { display_stats: true, matched_stat_line: 1 },
+    filter: { display_stats: true, matched_stat_lines: [0, 1] },
   };
 
   // Local reactive bindings to store values

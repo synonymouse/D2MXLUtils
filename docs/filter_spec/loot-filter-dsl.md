@@ -24,6 +24,9 @@ attr          := quality
 stat_pattern  := '{' regex '}'
 ```
 
+`attr*` permits repetition, so a rule may carry **multiple** `{regex}` stat
+patterns. All listed patterns must match the item's stat text (AND).
+
 Groups cannot be nested. The `default_mode` directive is only valid at file scope and may appear at most once per file.
 
 ---
@@ -126,6 +129,26 @@ Regex in braces, matched case-insensitively against the item's stat text.
 {\+[3-5] to All Skills}
 {(Fire|Cold|Lightning) Resist}
 ```
+
+A rule may list **multiple** stat patterns. All of them must match the
+item's stat blob for the rule to fire (AND). Each pattern is matched
+independently — the patterns may appear in any order in the item's stats.
+
+```
+rare {All Skills} {Faster Cast Rate}                 # both required
+"Amulet" rare {[3-9] to All Skills} {focus} {enemy fire} stat notify
+```
+
+Use alternation inside a single `{…}` to express OR:
+
+```
+rare {(Fire|Cold|Lightning) Resist}                  # any one of three
+```
+
+Every line whose text matches **any** of the rule's patterns is highlighted
+in the notification when `stat` (or an implicit stat-pattern trigger) is
+active. Cross-line patterns (e.g. `{(?s)a.*b}`) can still cause the rule
+to match but don't highlight any single line.
 
 ---
 
@@ -271,7 +294,7 @@ hide default      # hide unmatched items
 show default      # show unmatched items (implicit default)
 
 # General rule form
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat] [map]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
 
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor

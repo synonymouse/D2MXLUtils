@@ -56,7 +56,7 @@ A group header accepts all rule attributes **except a name pattern**. Name patte
 ## Rule Anatomy
 
 ```
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat] [map]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
 ```
 
 All components are optional. A line with zero attributes is valid but is a no-op (matches everything, does nothing).
@@ -70,7 +70,7 @@ A rule matches an item when **all** specified criteria are satisfied.
 | Criterion | DSL | Condition |
 |---|---|---|
 | Name | `"regex"` | regex matches either the runtime display name or the items.txt base type name (case-insensitive OR) |
-| Stat | `{regex}` | item stat text matches regex, case-insensitive |
+| Stat | `{regex}...` | every listed regex matches the item stat text (AND), case-insensitive |
 | Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals one of the listed keywords (OR) |
 | Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals one of the listed keywords (OR) |
 | Ethereal | `eth` | item is ethereal |
@@ -180,7 +180,7 @@ enum Visibility { Default, Show, Hide }
 Rule {
     // matching
     name_pattern:  Option<String>,
-    stat_pattern:  Option<String>,
+    stat_patterns: Vec<String>,   // empty = any; non-empty = AND-match (all must hit)
     qualities:     Vec<Quality>,  // empty = any; non-empty = OR-match
     tiers:         Vec<Tier>,     // empty = any; non-empty = OR-match
     ethereal:      bool,
@@ -206,7 +206,7 @@ When flattening a group into its rules, for each contained rule:
 1. Each field not set on the rule takes the group's value.
 2. Each field set on the rule keeps the rule's value (overrides group).
 3. `visibility` is one field — `show` on a rule replaces `hide` from a group, and vice versa.
-4. `stat_pattern` on a rule replaces the group's `stat_pattern` entirely (no AND-merge). Combine via regex if needed.
+4. `stat_patterns` on a rule replace the group's `stat_patterns` entirely (override, same as every other field). If a child rule has any `{…}`, the group's patterns are dropped for that child — repeat them on the child line to keep them. Use regex alternation inside one `{…}` for OR.
 
 After flattening, rules keep their original source-order position for the last-match algorithm.
 
@@ -216,5 +216,4 @@ After flattening, rules keep their original source-order position for the last-m
 
 - Ethereal "forbidden" mode (only `eth` = required is supported).
 - Item level (`ilvl`) and character level (`clvl`) filtering.
-- Multiple stat patterns per rule (use one regex with alternation).
 - Nested groups.

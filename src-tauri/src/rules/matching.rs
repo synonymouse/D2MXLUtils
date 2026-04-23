@@ -42,7 +42,7 @@ impl<'a> MatchContext<'a> {
                 return false;
             }
         }
-        if let Some(ref pattern) = rule.stat_pattern {
+        for pattern in &rule.stat_patterns {
             if !pattern_matches(pattern, &self.stats_lower) {
                 return false;
             }
@@ -50,11 +50,22 @@ impl<'a> MatchContext<'a> {
         true
     }
 
-    /// `None` even after a successful `matches()` if the pattern spans line boundaries.
-    pub fn matching_stat_line_index(&self, pattern: &str) -> Option<usize> {
-        self.stats_lower
+    /// Empty for patterns that only match across line boundaries (e.g.
+    /// `(?s)a.*b`), even if the rule matched the blob as a whole.
+    pub fn matching_stat_lines(&self, patterns: &[String]) -> Vec<usize> {
+        if patterns.is_empty() {
+            return Vec::new();
+        }
+        let mut hits: Vec<usize> = self
+            .stats_lower
             .split('\n')
-            .position(|line| pattern_matches(pattern, line))
+            .enumerate()
+            .filter(|(_, line)| patterns.iter().any(|p| pattern_matches(p, line)))
+            .map(|(i, _)| i)
+            .collect();
+        hits.sort_unstable();
+        hits.dedup();
+        hits
     }
 
     fn qualities_match(&self, rule_qualities: &[ItemQuality]) -> bool {
@@ -296,7 +307,7 @@ mod tests {
         let r = Rule {
             name_pattern: Some("Ring$".into()),
             qualities: vec![ItemQuality::Rare],
-            stat_pattern: Some("Skills".into()),
+            stat_patterns: vec!["Skills".into()],
             notify: true,
             ..Rule::default()
         };
@@ -335,14 +346,14 @@ mod tests {
         );
         let ctx = MatchContext::new(&it);
         let r = Rule {
-            stat_pattern: Some(r"\+\d+ to All Skills".into()),
+            stat_patterns: vec![r"\+\d+ to All Skills".into()],
             ..Rule::default()
         };
         assert!(ctx.matches(&r));
     }
 
     #[test]
-    fn matching_stat_line_index_finds_later_line() {
+    fn matching_stat_lines_finds_later_line() {
         let it = item(
             "Ring",
             "Unique",
@@ -350,11 +361,14 @@ mod tests {
             false,
         );
         let ctx = MatchContext::new(&it);
-        assert_eq!(ctx.matching_stat_line_index("Faster Cast"), Some(1));
+        assert_eq!(
+            ctx.matching_stat_lines(&["Faster Cast".to_string()]),
+            vec![1]
+        );
     }
 
     #[test]
-    fn matching_stat_line_index_none_when_no_line_matches() {
+    fn matching_stat_lines_empty_when_no_line_matches() {
         let it = item(
             "Ring",
             "Unique",
@@ -362,6 +376,62 @@ mod tests {
             false,
         );
         let ctx = MatchContext::new(&it);
-        assert_eq!(ctx.matching_stat_line_index("Life Steal"), None);
+        let hits = ctx.matching_stat_lines(&["Life Steal".to_string()]);
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn multi_stat_patterns_all_must_match() {
+        let it = item(
+            "Ring",
+            "Unique",
+            "+3 to All Skills\n+15% Faster Cast Rate",
+            false,
+        );
+        let ctx = MatchContext::new(&it);
+
+        let both_present = Rule {
+            stat_patterns: vec!["All Skills".into(), "Faster Cast".into()],
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&both_present));
+
+        let one_missing = Rule {
+            stat_patterns: vec!["All Skills".into(), "Life Steal".into()],
+            ..Rule::default()
+        };
+        assert!(!ctx.matches(&one_missing));
+    }
+
+    #[test]
+    fn matching_stat_lines_returns_union_sorted_deduped() {
+        let it = item(
+            "Ring",
+            "Unique",
+            "+10 to Strength\n+5 to Strength\n+1 to All Skills",
+            false,
+        );
+        let ctx = MatchContext::new(&it);
+
+        assert_eq!(
+            ctx.matching_stat_lines(&["Strength".into(), "Skills".into()]),
+            vec![0, 1, 2]
+        );
+        assert!(ctx
+            .matching_stat_lines(&["nothing".into()])
+            .is_empty());
+        assert!(ctx.matching_stat_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn multi_line_regex_pattern_contributes_no_line_highlight() {
+        let it = item("Ring", "Unique", "+3 to All Skills\n+15% FCR", false);
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            stat_patterns: vec!["(?s)All Skills.*FCR".into()],
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&r));
+        assert!(ctx.matching_stat_lines(&r.stat_patterns).is_empty());
     }
 }
