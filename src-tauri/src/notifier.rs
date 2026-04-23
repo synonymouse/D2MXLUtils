@@ -267,8 +267,13 @@ impl DropScanner {
         &self.ctx
     }
 
-    /// Scan for ground items and return new items found
-    pub fn tick(&mut self) -> Vec<ItemDropEvent> {
+    /// Scan ground items (pPaths pass) and return fresh notification events.
+    ///
+    /// Intentionally excludes the map-marker BFS pass so callers can emit
+    /// `item-drop` events before the (potentially expensive) marker
+    /// reconciliation runs. Pair with a subsequent call to
+    /// [`tick_map_markers`].
+    pub fn tick_items(&mut self) -> Vec<ItemDropEvent> {
         let mut events = Vec::new();
 
         if !self.is_ingame() {
@@ -494,9 +499,18 @@ impl DropScanner {
         self.seen_items.retain(|id| current_item_ids.contains(id));
         self.recent_events.retain(|id, _| current_item_ids.contains(id));
 
-        self.run_map_marker_pass();
-
         events
+    }
+
+    /// Run the map-marker BFS pass. Split from [`tick_items`] so that
+    /// `item-drop` events can be emitted to the frontend before the
+    /// (potentially expensive) marker reconciliation blocks the scanner
+    /// thread. No-op outside of a live game.
+    pub fn tick_map_markers(&mut self) {
+        if !self.is_ingame() {
+            return;
+        }
+        self.run_map_marker_pass();
     }
 
     /// Rebuild the automap marker chain for items matched by rules with
@@ -1032,7 +1046,9 @@ impl DropScanner {
         panic!("Not supported on this OS")
     }
 
-    pub fn tick(&mut self) -> Vec<ItemDropEvent> {
+    pub fn tick_items(&mut self) -> Vec<ItemDropEvent> {
         Vec::new()
     }
+
+    pub fn tick_map_markers(&mut self) {}
 }

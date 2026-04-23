@@ -227,13 +227,17 @@ fn start_scanner_internal(
 
                 // Scan for items
                 if ingame {
-                    let items = scanner.tick();
+                    // Split pass: emit notifications first, then run the
+                    // (potentially expensive) map-marker BFS. Otherwise
+                    // `item-drop` events would wait on the marker pass and
+                    // appear with noticeable lag on crowded maps.
+                    let items = scanner.tick_items();
                     for item in items {
-                        // Emit item-drop event to frontend
                         if let Err(e) = app_handle.emit("item-drop", &item) {
                             log_error(&format!("Failed to emit item-drop event: {}", e));
                         }
                     }
+                    scanner.tick_map_markers();
 
                     if !dict_published {
                         if let Some(dict) = scanner.items_dictionary_snapshot() {
