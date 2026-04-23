@@ -37,6 +37,9 @@
 
     // Load settings from backend (applies theme automatically)
     await settingsStore.load();
+    // Cross-window sync: each webview has its own store instance, so without
+    // this a change in one window would be clobbered by a stale save from the other.
+    await settingsStore.initSync();
   });
 </script>
 

@@ -127,10 +127,6 @@
       }
     }).then(u => unlisteners.push(u));
 
-    listen('settings-updated', () => {
-      settingsStore.load();
-    }).then(u => unlisteners.push(u));
-
     // Periodically sync overlay position with Diablo II window
     syncTimer = window.setInterval(() => {
       invoke('sync_overlay_with_game').catch(() => {

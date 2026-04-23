@@ -6,6 +6,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
 /** Hotkey configuration interface */
 export interface HotkeyConfig {
@@ -94,6 +95,10 @@ class SettingsStore {
   private _isLoaded = $state(false);
   private _isLoading = $state(false);
   private _saveTimeout: ReturnType<typeof setTimeout> | null = null;
+  /** Locally-modified-not-yet-saved keys; merged last so the overlay's drag
+   *  doesn't get clobbered by the main window's stale save (and vice versa). */
+  private _dirtyKeys = new Set<keyof AppSettings>();
+  private _syncUnlisten: UnlistenFn | null = null;
 
   /** Current settings (reactive) */
   get settings(): AppSettings {
@@ -133,17 +138,23 @@ class SettingsStore {
     }
   }
 
-  /** Save settings to backend (debounced) */
+  /** Save settings to backend (debounced). Re-reads disk and applies dirty
+   *  keys on top so another window's concurrent changes survive. */
   async save(): Promise<void> {
-    // Clear any pending save
     if (this._saveTimeout) {
       clearTimeout(this._saveTimeout);
     }
 
-    // Debounce saves by 500ms
     this._saveTimeout = setTimeout(async () => {
       try {
-        await invoke('save_settings', { settings: this._settings });
+        const disk = await invoke<AppSettings>('load_settings');
+        const merged: AppSettings = { ...DEFAULT_SETTINGS, ...disk };
+        for (const key of this._dirtyKeys) {
+          (merged as AppSettings)[key] = this._settings[key] as never;
+        }
+        await invoke('save_settings', { settings: merged });
+        this._settings = merged;
+        this._dirtyKeys.clear();
       } catch (error) {
         console.error('[Settings] Failed to save:', error);
       }
@@ -153,12 +164,13 @@ class SettingsStore {
   /** Update a single setting */
   set<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
     this._settings = { ...this._settings, [key]: value };
-    
+    this._dirtyKeys.add(key);
+
     // Special handling for theme changes
     if (key === 'theme') {
       this.applyTheme(value as string);
     }
-    
+
     // Auto-save after change
     this.save();
   }
@@ -166,14 +178,42 @@ class SettingsStore {
   /** Update multiple settings at once */
   update(partial: Partial<AppSettings>): void {
     this._settings = { ...this._settings, ...partial };
-    
+    for (const key of Object.keys(partial) as Array<keyof AppSettings>) {
+      this._dirtyKeys.add(key);
+    }
+
     // Special handling for theme changes
     if ('theme' in partial) {
       this.applyTheme(partial.theme as string);
     }
-    
+
     // Auto-save after change
     this.save();
+  }
+
+  /** Listen for `settings-updated` events from other windows and merge them
+   *  in, keeping any locally-dirty keys (pending debounce) intact. */
+  async initSync(): Promise<void> {
+    if (this._syncUnlisten) return;
+    this._syncUnlisten = await listen<AppSettings>('settings-updated', (event) => {
+      const external = event.payload;
+      const merged: AppSettings = { ...DEFAULT_SETTINGS, ...external };
+      for (const key of this._dirtyKeys) {
+        (merged as AppSettings)[key] = this._settings[key] as never;
+      }
+      if (this._settings.theme !== merged.theme) {
+        this.applyTheme(merged.theme);
+      }
+      this._settings = merged;
+    });
+  }
+
+  /** Tear down the cross-window sync listener. */
+  destroySync(): void {
+    if (this._syncUnlisten) {
+      this._syncUnlisten();
+      this._syncUnlisten = null;
+    }
   }
 
   /** Apply theme to the document */
