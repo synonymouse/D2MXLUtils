@@ -51,12 +51,12 @@ export const darkTheme = EditorView.theme(
       fontFamily: "var(--font-mono, 'Fira Code', 'Consolas', monospace)",
     },
     ".cm-content": {
-      caretColor: "var(--accent, #c7b377)",
+      caretColor: "var(--accent-primary, #c7b377)",
       padding: "12px",
       lineHeight: "1.6",
     },
     ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: "var(--accent, #c7b377)",
+      borderLeftColor: "var(--accent-primary, #c7b377)",
       borderLeftWidth: "2px",
     },
     ".cm-activeLine": {
@@ -67,9 +67,9 @@ export const darkTheme = EditorView.theme(
     },
     ".cm-gutters": {
       backgroundColor: "var(--bg-tertiary, #12121a)",
-      color: "var(--text-tertiary, #666)",
+      color: "var(--text-muted, #666)",
       border: "none",
-      borderRight: "1px solid var(--border, #2a2a35)",
+      borderRight: "1px solid var(--border-primary, #2a2a35)",
     },
     ".cm-lineNumbers .cm-gutterElement": {
       padding: "0 12px 0 16px",
@@ -79,7 +79,7 @@ export const darkTheme = EditorView.theme(
       width: "16px",
     },
     "&.cm-focused .cm-cursor": {
-      borderLeftColor: "var(--accent, #c7b377)",
+      borderLeftColor: "var(--accent-primary, #c7b377)",
     },
     "&.cm-focused": {
       outline: "none",
@@ -87,14 +87,14 @@ export const darkTheme = EditorView.theme(
     // Scrollbar styling
     ".cm-scroller": {
       scrollbarWidth: "thin",
-      scrollbarColor: "var(--border, #2a2a35) transparent",
+      scrollbarColor: "var(--border-primary, #2a2a35) transparent",
     },
     ".cm-scroller::-webkit-scrollbar": {
       width: "8px",
       height: "8px",
     },
     ".cm-scroller::-webkit-scrollbar-thumb": {
-      backgroundColor: "var(--border, #2a2a35)",
+      backgroundColor: "var(--border-primary, #2a2a35)",
       borderRadius: "4px",
     },
     ".cm-scroller::-webkit-scrollbar-track": {
@@ -116,12 +116,12 @@ export const lightTheme = EditorView.theme(
       fontFamily: "var(--font-mono, 'Fira Code', 'Consolas', monospace)",
     },
     ".cm-content": {
-      caretColor: "var(--accent, #9a7b4f)",
+      caretColor: "var(--accent-primary, #9a7b4f)",
       padding: "12px",
       lineHeight: "1.6",
     },
     ".cm-cursor, .cm-dropCursor": {
-      borderLeftColor: "var(--accent, #9a7b4f)",
+      borderLeftColor: "var(--accent-primary, #9a7b4f)",
       borderLeftWidth: "2px",
     },
     ".cm-activeLine": {
@@ -132,16 +132,35 @@ export const lightTheme = EditorView.theme(
     },
     ".cm-gutters": {
       backgroundColor: "var(--bg-tertiary, #f5f5f5)",
-      color: "var(--text-tertiary, #999)",
+      color: "var(--text-muted, #999)",
       border: "none",
-      borderRight: "1px solid var(--border, #e0e0e0)",
+      borderRight: "1px solid var(--border-primary, #e0e0e0)",
     },
     ".cm-lineNumbers .cm-gutterElement": {
       padding: "0 12px 0 16px",
       minWidth: "3em",
     },
+    "&.cm-focused .cm-cursor": {
+      borderLeftColor: "var(--accent-primary, #9a7b4f)",
+    },
     "&.cm-focused": {
       outline: "none",
+    },
+    // Scrollbar styling — mirrors dark theme so both use theme vars.
+    ".cm-scroller": {
+      scrollbarWidth: "thin",
+      scrollbarColor: "var(--border-primary, #e0e0e0) transparent",
+    },
+    ".cm-scroller::-webkit-scrollbar": {
+      width: "8px",
+      height: "8px",
+    },
+    ".cm-scroller::-webkit-scrollbar-thumb": {
+      backgroundColor: "var(--border-primary, #e0e0e0)",
+      borderRadius: "4px",
+    },
+    ".cm-scroller::-webkit-scrollbar-track": {
+      backgroundColor: "transparent",
     },
   },
   { dark: false }
@@ -214,7 +233,7 @@ export const qualityHighlighting = EditorView.baseTheme({
 export const autocompleteTheme = EditorView.baseTheme({
   ".cm-tooltip.cm-tooltip-autocomplete": {
     backgroundColor: "var(--bg-elevated, #252530)",
-    border: "1px solid var(--border, #2a2a35)",
+    border: "1px solid var(--border-primary, #2a2a35)",
     borderRadius: "var(--radius-sm, 4px)",
     fontFamily: "var(--font-mono, 'Fira Code', 'Consolas', monospace)",
     fontSize: "var(--text-sm, 13px)",
@@ -233,7 +252,7 @@ export const autocompleteTheme = EditorView.baseTheme({
     cursor: "pointer",
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected]": {
-    backgroundColor: "var(--accent, #c7b377)",
+    backgroundColor: "var(--accent-primary, #c7b377)",
     color: "var(--bg-primary, #0a0a0f)",
   },
   ".cm-completionLabel": {
@@ -242,7 +261,7 @@ export const autocompleteTheme = EditorView.baseTheme({
   ".cm-completionMatchedText": {
     textDecoration: "none",
     fontWeight: "700",
-    color: "var(--accent, #c7b377)",
+    color: "var(--accent-primary, #c7b377)",
   },
   ".cm-tooltip.cm-tooltip-autocomplete > ul > li[aria-selected] .cm-completionMatchedText":
     {

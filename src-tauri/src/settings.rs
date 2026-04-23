@@ -64,6 +64,10 @@ pub struct AppSettings {
     /// Hotkey held to enter overlay edit mode (drag notification anchor)
     #[serde(default = "default_edit_overlay_hotkey")]
     pub edit_overlay_hotkey: HotkeyConfig,
+
+    /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
+    #[serde(default)]
+    pub verbose_filter_logging: bool,
 }
 
 /// Window state for persistence
@@ -133,6 +137,7 @@ impl Default for AppSettings {
             compact_name: false,
             toggle_window_hotkey: HotkeyConfig::default(),
             edit_overlay_hotkey: default_edit_overlay_hotkey(),
+            verbose_filter_logging: false,
         }
     }
 }

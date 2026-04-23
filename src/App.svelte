@@ -10,12 +10,30 @@
   onMount(async () => {
     const current = getCurrentWebviewWindow();
     windowType = current.label === 'overlay' ? 'overlay' : 'main';
-    
+
     // Add class to html element for overlay styling
     if (windowType === 'overlay') {
       document.documentElement.classList.add('overlay-mode');
       document.body.style.background = 'transparent';
     }
+
+    // Desktop-feel: suppress the browser context menu except inside the
+    // rules editor, inputs/textareas, and the DSL help content where users
+    // legitimately need copy/paste.
+    window.addEventListener('contextmenu', (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      if (
+        target.closest('.cm-editor') ||
+        target.closest('input') ||
+        target.closest('textarea') ||
+        target.closest('.syntax-help') ||
+        target.closest('.help-content')
+      ) {
+        return;
+      }
+      e.preventDefault();
+    });
 
     // Load settings from backend (applies theme automatically)
     await settingsStore.load();

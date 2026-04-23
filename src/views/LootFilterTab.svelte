@@ -210,7 +210,11 @@ sacred eth gold notify sound1
           <div class="help-column">
             <h4>Tier</h4>
             <ul>
-              <li><span class="kw-tier">sacred</span>, angelic, master</li>
+              <li>
+                <span class="kw-flag">sacred</span>,
+                <span class="kw-flag">angelic</span>,
+                <span class="kw-flag">master</span>
+              </li>
               <li>0, 1, 2, 3, 4</li>
             </ul>
           </div>
@@ -218,26 +222,41 @@ sacred eth gold notify sound1
           <div class="help-column">
             <h4>Colors</h4>
             <ul>
-              <li><span class="kw-color">gold</span>, lime, red, blue</li>
-              <li>white, yellow, orange, pink</li>
-              <li>grey, black, purple, green</li>
+              <li>
+                <span class="kw-c-gold">gold</span>,
+                <span class="kw-c-lime">lime</span>,
+                <span class="kw-c-red">red</span>,
+                <span class="kw-c-blue">blue</span>
+              </li>
+              <li>
+                <span class="kw-c-white">white</span>,
+                <span class="kw-c-yellow">yellow</span>,
+                <span class="kw-c-orange">orange</span>,
+                <span class="kw-c-pink">pink</span>
+              </li>
+              <li>
+                <span class="kw-c-grey">grey</span>,
+                <span class="kw-c-black">black</span>,
+                <span class="kw-c-purple">purple</span>,
+                <span class="kw-c-green">green</span>
+              </li>
             </ul>
           </div>
 
           <div class="help-column">
             <h4>Visibility / Notify</h4>
             <ul>
-              <li><span class="kw-visibility">show</span>, <span class="kw-visibility">hide</span></li>
-              <li><span class="kw-notify">notify</span> (required for alerts)</li>
-              <li><span class="kw-map">map</span> (automap marker)</li>
+              <li><span class="kw-flag">show</span>, <span class="kw-flag">hide</span></li>
+              <li><span class="kw-flag">notify</span> (required for alerts)</li>
+              <li><span class="kw-flag">map</span> (automap marker)</li>
             </ul>
           </div>
 
           <div class="help-column">
             <h4>Sounds</h4>
             <ul>
-              <li><span class="kw-sound">sound1</span> - sound6</li>
-              <li>sound_none</li>
+              <li><span class="kw-flag">sound1</span> - <span class="kw-flag">sound6</span></li>
+              <li><span class="kw-flag">sound_none</span></li>
             </ul>
           </div>
         </div>
@@ -245,10 +264,10 @@ sacred eth gold notify sound1
         <p class="help-note">
           <strong>eth</strong> — match ethereal items only<br />
           <strong>stat</strong> — include item stats in the notification<br />
-          <strong>map</strong> — drop a red-cross marker on the in-game automap at the item's location (independent of <span class="kw-notify">notify</span>)<br />
+          <strong>map</strong> — drop a red-cross marker on the in-game automap at the item's location (independent of <span class="kw-flag">notify</span>)<br />
           <strong>&#123;pattern&#125;</strong> — regex match on stat text<br />
           <strong>Groups:</strong> <code class="inline-code">[unique gold notify] &#123; "Jordan" "Mara" &#125;</code> — shared attributes for each rule inside<br />
-          <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-visibility">show</span> reveal items.
+          <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-flag">show</span> reveal items.
         </p>
       </div>
     </details>
@@ -346,12 +365,18 @@ sacred eth gold notify sound1
   }
 
   .syntax-help {
-    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
 
   .syntax-help details {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     background: var(--bg-tertiary, #12121a);
-    border: 1px solid var(--border, #2a2a35);
+    border: 1px solid var(--border-primary, #2a2a35);
     border-radius: var(--radius-md, 8px);
   }
 
@@ -362,6 +387,7 @@ sacred eth gold notify sound1
     color: var(--text-secondary);
     cursor: pointer;
     user-select: none;
+    flex-shrink: 0;
   }
 
   .syntax-help summary:hover {
@@ -373,6 +399,9 @@ sacred eth gold notify sound1
     padding-top: 0;
     font-size: var(--text-sm, 13px);
     color: var(--text-secondary);
+    overflow-y: auto;
+    min-height: 0;
+    max-height: 55vh;
   }
 
   .help-content p {
@@ -414,50 +443,37 @@ sacred eth gold notify sound1
     padding: 2px 0;
   }
 
-  .kw-unique {
-    color: #c7b377;
+  /* Quality keywords — match the D2 item-rarity palette so the reference
+     echoes what each quality looks like in-game. */
+  .kw-unique { color: #c7a84c; font-weight: 600; }
+  .kw-set    { color: #3d9d4a; font-weight: 600; }
+  .kw-rare   { color: #d4a72c; font-weight: 600; }
+  .kw-magic  { color: #5080ff; font-weight: 600; }
+
+  /* Unified flag color for tier / visibility / notify / map / sound — these
+     are structural keywords, not semantically colored concepts. */
+  .kw-flag {
+    color: var(--accent-primary);
     font-weight: 600;
   }
 
-  .kw-set {
-    color: #00ff00;
-    font-weight: 600;
-  }
-
-  .kw-rare {
-    color: #ffff00;
-  }
-
-  .kw-magic {
-    color: #6969ff;
-  }
-
-  .kw-tier {
-    color: #bd93f9;
-  }
-
-  .kw-color {
-    color: #ff79c6;
-  }
-
-  .kw-sound {
-    color: #8be9fd;
-  }
-
-  .kw-visibility {
-    color: #ff6b6b;
-    font-weight: 600;
-  }
-
-  .kw-notify {
-    color: #f1fa8c;
-    font-weight: 600;
-  }
-
-  .kw-map {
-    color: #ff4d4f;
-    font-weight: 600;
-  }
+  /* Literal color swatches: each color name is rendered in its own color
+     so the reference doubles as a color palette. Values picked to stay
+     readable on both the parchment light theme and the deep-black dark
+     theme; black/white/grey use mid-tones instead of pure values for
+     visibility on both backgrounds. */
+  .kw-c-gold   { color: #c7a84c; font-weight: 600; }
+  .kw-c-lime   { color: #4fbf2e; font-weight: 600; }
+  .kw-c-red    { color: #d83a3a; font-weight: 600; }
+  .kw-c-blue   { color: #4a6fe0; font-weight: 600; }
+  .kw-c-white  { color: #bfbfbf; font-weight: 600; }
+  .kw-c-yellow { color: #d6a517; font-weight: 600; }
+  .kw-c-orange { color: #d97518; font-weight: 600; }
+  .kw-c-pink   { color: #d56bb0; font-weight: 600; }
+  .kw-c-grey   { color: #8a8a8a; font-weight: 600; }
+  .kw-c-black  { color: #303030; font-weight: 600; }
+  .kw-c-purple { color: #8a5fb8; font-weight: 600; }
+  .kw-c-green  { color: #3d9050; font-weight: 600; }
 
   .inline-code {
     display: inline;

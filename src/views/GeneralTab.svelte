@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { Button, HotkeyInput } from '../components';
+  import { Button, HotkeyInput, Toggle } from '../components';
   import { settingsStore, updaterStore, type HotkeyConfig } from '../stores';
   import { playSound } from '../lib/sound-player';
 
@@ -8,6 +8,7 @@
   let soundVolume = $derived(settingsStore.settings.soundVolume);
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
   let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
+  let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
 
   let updaterState = $derived(updaterStore.state);
   let checkDisabled = $derived(
@@ -57,6 +58,20 @@
       await invoke('open_app_folder');
     } catch (err) {
       console.error('Failed to open app folder:', err);
+    }
+  }
+
+  function handleVerboseLoggingChange(enabled: boolean) {
+    settingsStore.setVerboseFilterLogging(enabled);
+  }
+
+  async function handleOpenChangelog() {
+    try {
+      await invoke('open_external_url', {
+        url: `https://github.com/synonymouse/D2MXLUtils/releases/tag/v${__APP_VERSION__}`,
+      });
+    } catch (err) {
+      console.error('Failed to open changelog:', err);
     }
   }
 </script>
@@ -126,6 +141,14 @@
   <div class="settings-section">
     <div class="setting-row">
       <div class="setting-info">
+        <span class="setting-label">Verbose filter logging</span>
+        <span class="setting-hint">Log per-item filter decisions to d2mxlutils.log. Useful when debugging rules.</span>
+      </div>
+      <Toggle checked={verboseFilterLogging} onchange={handleVerboseLoggingChange} />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
         <span class="setting-label">App data folder</span>
         <span class="setting-hint">Settings, profiles, logs</span>
       </div>
@@ -139,7 +162,10 @@
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-label">Current version</span>
-        <span class="setting-hint">v{__APP_VERSION__}</span>
+        <span class="setting-hint">
+          v{__APP_VERSION__}
+          <button type="button" class="link-button" onclick={handleOpenChangelog}>Changelog</button>
+        </span>
       </div>
       <div class="update-control">
         <Button variant="secondary" size="sm" disabled={checkDisabled} onclick={handleCheckForUpdates}>
@@ -232,5 +258,20 @@
 
   .update-status.is-error {
     color: var(--status-error-text);
+  }
+
+  .link-button {
+    margin-left: var(--space-2);
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent-primary);
+    font: inherit;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+
+  .link-button:hover {
+    opacity: 0.85;
   }
 </style>

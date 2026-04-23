@@ -66,6 +66,8 @@ struct AppState {
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     /// Whether filtering is enabled
     filter_enabled: Arc<AtomicBool>,
+    /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
+    verbose_filter_logging: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -99,6 +101,7 @@ fn start_scanner_internal(
     is_scanning: Arc<AtomicBool>,
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
+    verbose_filter_logging: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -163,6 +166,7 @@ fn start_scanner_internal(
                 }
             }
             scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
+            scanner.set_verbose_filter_logging(verbose_filter_logging.load(Ordering::SeqCst));
 
             let mut was_ingame = false;
             let mut dict_published = false;
@@ -217,6 +221,9 @@ fn start_scanner_internal(
                 // Sync filter_enabled state from AppState
                 let current_filter_enabled = filter_enabled.load(Ordering::SeqCst);
                 scanner.set_filter_enabled(current_filter_enabled);
+                scanner.set_verbose_filter_logging(
+                    verbose_filter_logging.load(Ordering::SeqCst),
+                );
 
                 // Scan for items
                 if ingame {
@@ -287,6 +294,7 @@ fn spawn_auto_scanner(
     should_auto_scan: Arc<AtomicBool>,
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
+    verbose_filter_logging: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -301,6 +309,7 @@ fn spawn_auto_scanner(
                     is_scanning.clone(),
                     filter_config.clone(),
                     filter_enabled.clone(),
+                    verbose_filter_logging.clone(),
                     filter_config_generation.clone(),
                     scanner_thread.clone(),
                     game_status.clone(),
@@ -366,6 +375,14 @@ fn set_filter_config(
 #[tauri::command]
 fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
     state.filter_enabled.store(enabled, Ordering::SeqCst);
+}
+
+/// Enable or disable the per-item `[Filter] ...` log line.
+#[tauri::command]
+fn set_verbose_filter_logging(enabled: bool, state: tauri::State<AppState>) {
+    state
+        .verbose_filter_logging
+        .store(enabled, Ordering::SeqCst);
 }
 
 // ===== DSL Parser Commands =====
@@ -786,6 +803,23 @@ fn open_app_folder(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Open an http(s) URL in the user's default browser.
+/// Scheme validation prevents `start` from being coaxed into launching a
+/// local file or custom handler via attacker-controlled URLs.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("Only http(s) URLs are allowed".into());
+    }
+    // `cmd /c start "" <url>` — the empty "" arg is the window title slot that
+    // `start` consumes before the target, so the URL is parsed as the target.
+    std::process::Command::new("cmd")
+        .args(["/c", "start", "", &url])
+        .spawn()
+        .map_err(|e| format!("Failed to open url: {}", e))?;
+    Ok(())
+}
+
 fn main() {
     // Enable SeDebugPrivilege so OpenProcess has the same behavior as legacy tools.
     enable_debug_privilege();
@@ -805,6 +839,7 @@ fn main() {
                 should_auto_scan: Arc::new(AtomicBool::new(true)),
                 filter_config: Arc::new(RwLock::new(initial_filter_config)),
                 filter_enabled: Arc::new(AtomicBool::new(true)),
+                verbose_filter_logging: Arc::new(AtomicBool::new(false)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
@@ -814,6 +849,7 @@ fn main() {
             let should_auto_scan = state.should_auto_scan.clone();
             let filter_config = state.filter_config.clone();
             let filter_enabled = state.filter_enabled.clone();
+            let verbose_filter_logging = state.verbose_filter_logging.clone();
             let filter_config_generation = state.filter_config_generation.clone();
             let scanner_thread = state.scanner_thread.clone();
             let game_status = state.game_status.clone();
@@ -835,6 +871,8 @@ fn main() {
                         app_handle_for_edit_mode,
                         loaded_settings.edit_overlay_hotkey,
                     );
+                    verbose_filter_logging
+                        .store(loaded_settings.verbose_filter_logging, Ordering::SeqCst);
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
@@ -857,6 +895,7 @@ fn main() {
                 should_auto_scan.clone(),
                 filter_config.clone(),
                 filter_enabled.clone(),
+                verbose_filter_logging.clone(),
                 filter_config_generation.clone(),
                 scanner_thread.clone(),
                 game_status.clone(),
@@ -916,6 +955,7 @@ fn main() {
             get_items_dictionary,
             set_filter_config,
             set_filter_enabled,
+            set_verbose_filter_logging,
             sync_overlay_with_game,
             set_overlay_interactive,
             parse_filter_dsl,
@@ -937,7 +977,8 @@ fn main() {
             updater::check_for_updates,
             updater::start_update,
             updater::restart_app,
-            open_app_folder
+            open_app_folder,
+            open_external_url
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

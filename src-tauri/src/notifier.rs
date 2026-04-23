@@ -59,6 +59,8 @@ pub struct DropScanner {
     filter_config: Option<Arc<RwLock<FilterConfig>>>,
     /// Whether automatic filtering is enabled
     filter_enabled: bool,
+    /// When true, log per-item filter decisions (opt-in; noisy).
+    verbose_filter_logging: bool,
     /// Loot filter hook for D2Sigma.dll
     loot_hook: LootFilterHook,
     /// Indexed by `UnitAny.class`. Built lazily on first in-game tick.
@@ -177,6 +179,7 @@ impl DropScanner {
             seen_items: HashSet::new(),
             filter_config: None,
             filter_enabled: false,
+            verbose_filter_logging: false,
             loot_hook,
             class_cache: None,
             unique_cache: None,
@@ -220,6 +223,10 @@ impl DropScanner {
     /// Check if filtering is enabled
     pub fn is_filter_enabled(&self) -> bool {
         self.filter_enabled && self.filter_config.is_some()
+    }
+
+    pub fn set_verbose_filter_logging(&mut self, enabled: bool) {
+        self.verbose_filter_logging = enabled;
     }
 
     /// Check if filter config is set
@@ -384,31 +391,35 @@ impl DropScanner {
                                 let ctx = MatchContext::new(&event);
                                 let decision = filter.decide(&ctx);
 
-                                let winner = filter.rules.iter().rev().find(|r| ctx.matches(r));
-                                let reason = match winner {
-                                    Some(r) => format!(
-                                        "winner={}",
-                                        r.name_pattern.as_deref().unwrap_or("<any>")
-                                    ),
-                                    None => {
-                                        format!("no rule matched (hide_all={})", filter.hide_all)
-                                    }
-                                };
-                                let vis_label = match decision.visibility {
-                                    Visibility::Show => "SHOW",
-                                    Visibility::Hide => "HIDE",
-                                    Visibility::Default => "DEFAULT",
-                                };
-                                log_info(&format!(
-                                    "[Filter] \"{} {}\" ({}, class={}) -> {} notify={} | {}",
-                                    event.name,
-                                    event.base_name,
-                                    event.quality,
-                                    event.class,
-                                    vis_label,
-                                    decision.notification.is_some(),
-                                    reason
-                                ));
+                                if self.verbose_filter_logging {
+                                    let winner =
+                                        filter.rules.iter().rev().find(|r| ctx.matches(r));
+                                    let reason = match winner {
+                                        Some(r) => format!(
+                                            "winner={}",
+                                            r.name_pattern.as_deref().unwrap_or("<any>")
+                                        ),
+                                        None => format!(
+                                            "no rule matched (hide_all={})",
+                                            filter.hide_all
+                                        ),
+                                    };
+                                    let vis_label = match decision.visibility {
+                                        Visibility::Show => "SHOW",
+                                        Visibility::Hide => "HIDE",
+                                        Visibility::Default => "DEFAULT",
+                                    };
+                                    log_info(&format!(
+                                        "[Filter] \"{} {}\" ({}, class={}) -> {} notify={} | {}",
+                                        event.name,
+                                        event.base_name,
+                                        event.quality,
+                                        event.class,
+                                        vis_label,
+                                        decision.notification.is_some(),
+                                        reason
+                                    ));
+                                }
 
                                 if self.loot_hook.is_injected() {
                                     match decision.visibility {
@@ -996,6 +1007,8 @@ impl DropScanner {
     pub fn on_filter_config_changed(&mut self) {}
 
     pub fn set_filter_enabled(&mut self, _enabled: bool) {}
+
+    pub fn set_verbose_filter_logging(&mut self, _enabled: bool) {}
 
     pub fn is_filter_enabled(&self) -> bool {
         false

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
-  import { EditorState, type Extension } from "@codemirror/state";
+  import { Compartment, EditorState, type Extension } from "@codemirror/state";
   import {
     EditorView,
     keymap,
@@ -23,10 +23,23 @@
   import { lintGutter, setDiagnostics } from "@codemirror/lint";
 
   import { d2rules } from "./d2rules-language";
-  import { getDarkThemeExtensions } from "./d2rules-theme";
+  import {
+    getDarkThemeExtensions,
+    getLightThemeExtensions,
+  } from "./d2rules-theme";
   import { d2rulesLinter, type ValidationResult } from "./d2rules-linter";
   import { d2rulesAutocomplete } from "./d2rules-autocomplete";
   import { itemsDictionaryStore } from "../stores";
+
+  /** Pick the editor theme that matches the active app theme. Reads the
+   *  `data-theme` attribute on `<html>`, which `settingsStore.applyTheme`
+   *  keeps in sync. */
+  function themeExtensionsForCurrentMode(): Extension[] {
+    const mode = document.documentElement.getAttribute("data-theme");
+    return mode === "light"
+      ? getLightThemeExtensions()
+      : getDarkThemeExtensions();
+  }
 
   interface Props {
     /** Editor content (two-way bindable) */
@@ -54,6 +67,8 @@
 
   let container: HTMLDivElement;
   let view: EditorView | null = null;
+  const themeCompartment = new Compartment();
+  let themeObserver: MutationObserver | null = null;
 
   // Track if we're updating from external value change
   let isExternalUpdate = false;
@@ -94,8 +109,8 @@
       // D2 Rules DSL language
       d2rules(),
 
-      // Theme (dark mode by default)
-      ...getDarkThemeExtensions(),
+      // Theme (swapped dynamically via compartment on app theme change)
+      themeCompartment.of(themeExtensionsForCurrentMode()),
 
       d2rulesAutocomplete(() => itemsDictionaryStore.options),
 
@@ -147,9 +162,23 @@
       }),
       parent: container,
     });
+
+    // Watch <html data-theme> for changes and reconfigure the editor's theme
+    // compartment so the editor tracks the app-wide theme toggle.
+    themeObserver = new MutationObserver(() => {
+      view?.dispatch({
+        effects: themeCompartment.reconfigure(themeExtensionsForCurrentMode()),
+      });
+    });
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
   });
 
   onDestroy(() => {
+    themeObserver?.disconnect();
+    themeObserver = null;
     view?.destroy();
     view = null;
   });
@@ -191,7 +220,7 @@
     height: 100%;
     overflow: hidden;
     border-radius: var(--radius-md, 8px);
-    border: 1px solid var(--border, #2a2a35);
+    border: 1px solid var(--border-primary, #2a2a35);
     background: var(--bg-secondary, #1a1a1f);
   }
 
@@ -216,7 +245,7 @@
   /* Diagnostic tooltip styling */
   .rules-editor :global(.cm-tooltip-lint) {
     background: var(--bg-elevated, #252530);
-    border: 1px solid var(--border, #2a2a35);
+    border: 1px solid var(--border-primary, #2a2a35);
     border-radius: var(--radius-sm, 4px);
     padding: 4px 8px;
     font-size: var(--text-sm, 13px);

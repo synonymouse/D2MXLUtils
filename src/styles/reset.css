@@ -91,3 +91,37 @@ ul, ol {
   color: var(--bg-primary);
 }
 
+/* Native-feel defaults: no text drag-select or I-beam cursor on chrome.
+   Whitelist text-editing widgets and the rules editor + help content
+   so users can still copy examples and type into inputs. */
+:root {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.cm-editor,
+.cm-editor *,
+.syntax-help,
+.syntax-help *,
+.help-content,
+.help-content * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+input,
+textarea,
+.cm-editor .cm-content,
+.cm-editor .cm-line {
+  cursor: text;
+}
+
+img {
+  -webkit-user-drag: none;
+  user-drag: none;
+}
+

@@ -44,6 +44,8 @@ export interface AppSettings {
   toggleWindowHotkey: HotkeyConfig;
   /** Hotkey held to enter overlay edit mode (drag notification anchor) */
   editOverlayHotkey: HotkeyConfig;
+  /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
+  verboseFilterLogging: boolean;
 }
 
 /** Window state interface */
@@ -83,6 +85,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   compactName: false,
   toggleWindowHotkey: DEFAULT_HOTKEY,
   editOverlayHotkey: DEFAULT_EDIT_OVERLAY_HOTKEY,
+  verboseFilterLogging: false,
 };
 
 /** Settings store singleton */
@@ -239,6 +242,18 @@ class SettingsStore {
   /** Set notification anchor position (percentages 0-100) */
   setNotificationPosition(x: number, y: number): void {
     this.update({ notificationX: x, notificationY: y });
+  }
+
+  /** Enable/disable verbose per-item filter logging. Persists and flips the
+   *  scanner-side atomic immediately (saved settings only seed on next
+   *  startup, so we also push the change through a dedicated command). */
+  async setVerboseFilterLogging(enabled: boolean): Promise<void> {
+    this.set('verboseFilterLogging', enabled);
+    try {
+      await invoke('set_verbose_filter_logging', { enabled });
+    } catch (error) {
+      console.error('[Settings] Failed to update verbose filter logging:', error);
+    }
   }
 }
 
