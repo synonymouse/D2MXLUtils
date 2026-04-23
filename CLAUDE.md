@@ -37,7 +37,7 @@ The backend handles all low-level Windows operations:
 - **`logger.rs`** — File logger writing to `d2mxlutils.log` next to the exe
 - **`settings.rs`** — App settings persistence
 - **`profiles.rs`** — Loot filter profile management
-- **`items_cache.rs`** — On-disk mirror of the items-dictionary snapshot (`items-cache.json` in `app_data_dir`) so editor autocomplete works in sessions without D2 attached. See `docs/autocomplete.md`.
+- **`items_cache.rs`** — On-disk mirror of the items-dictionary snapshot (`items-cache.json` in `app_data_dir`) so editor autocomplete works in sessions without D2 attached.
 - **`hotkeys.rs`** — Global hotkey handling
 
 ### Svelte Frontend (`src/`)
@@ -93,16 +93,6 @@ log_error(&format!("Failed to open process: {}", err));
 
 Exception: `logger.rs` itself may use println/eprintln for stdout mirroring.
 
-### Working with Legacy Code (`D2Stats.au3`)
-
-The file is ~3000 lines. **Never load it fully** — it will overflow context.
-
-1. First, check `docs/index_d2Stats.md` for section line ranges
-2. Read only the needed section using `offset` and `limit` parameters
-3. Use grep for specific searches instead of full file reads
-
 ### Documentation
 
-- `docs/index_d2Stats.md` — Index of legacy AutoIt code sections
 - `docs/filter_spec/` — Loot filter DSL specification
-- `docs/autocomplete.md` — Editor autocomplete: data flow, cache lifecycle, extension points
