@@ -5,14 +5,20 @@
   import { ProfileSelector } from "../components";
   import { settingsStore } from "../stores";
 
+  type SaveState = "saved" | "unsaved" | "invalid" | "saving" | "error";
+
   let dslText = $state("");
   let selectedProfile = $state(settingsStore.settings.activeProfile || "");
   let validationStatus = $state<"idle" | "valid" | "error">("idle");
   let errorCount = $state(0);
   let ruleCount = $state(0);
-  let hasUnsavedChanges = $state(false);
   // Default-mode state derived from the parsed DSL (mirrors FilterConfig.hide_all).
   let hideAll = $state(false);
+
+  let saveState = $state<SaveState>("saved");
+  let saveError = $state<string | null>(null);
+  let lastSavedText = $state("");
+  let inflightSave: Promise<void> | null = null;
 
   onMount(async () => {
     try {
@@ -33,10 +39,57 @@
     }
   }
 
-  /**
-   * Handle validation results from the editor's linter.
-   * Only hard errors block sync; warnings/info are advisory.
-   */
+  // Saves are dispatched from handleValidation, not here, so we piggy-back on
+  // the linter's debounce and never race a stale validation verdict.
+  function updateSaveState() {
+    if (saveState === "saving" || saveState === "error") return;
+    if (!selectedProfile) return;
+    if (dslText === lastSavedText) { saveState = "saved"; return; }
+    // Treat "idle" optimistically — don't flash "fix errors" before the linter runs.
+    saveState = validationStatus === "error" ? "invalid" : "unsaved";
+  }
+
+  async function doSave(profileName: string, text: string) {
+    if (inflightSave) {
+      try { await inflightSave; } catch { /* ignore */ }
+    }
+    saveState = "saving";
+    saveError = null;
+    const p = (async () => {
+      try {
+        await invoke("save_profile", { name: profileName, rulesText: text });
+        if (selectedProfile === profileName) {
+          lastSavedText = text;
+          if (dslText === text) {
+            saveState = "saved";
+            await syncFilterConfig();
+          } else {
+            // Edits landed mid-save; next handleValidation pass will re-save.
+            saveState = validationStatus === "valid" ? "unsaved" : "invalid";
+          }
+        }
+      } catch (e) {
+        saveError = String(e);
+        if (selectedProfile === profileName) saveState = "error";
+        console.error("[LootFilterTab] auto-save failed:", e);
+      }
+    })();
+    inflightSave = p;
+    try { await p; } finally { if (inflightSave === p) inflightSave = null; }
+  }
+
+  function retrySave() {
+    if (saveState !== "error") return;
+    saveError = null;
+    if (!selectedProfile) return;
+    if (dslText === lastSavedText) { saveState = "saved"; return; }
+    if (validationStatus !== "valid") { saveState = "invalid"; return; }
+    void doSave(selectedProfile, dslText);
+  }
+
+  // Only hard errors block save; warnings/info are advisory. This is also
+  // the sole kick-off point for auto-save — the linter's 500 ms debounce
+  // doubles as the save debounce, so the save always sees a fresh verdict.
   function handleValidation(result: ValidationResult) {
     const hardErrors = result.errors.filter((e) => e.severity === "error");
     if (hardErrors.length > 0) {
@@ -46,37 +99,43 @@
       validationStatus = "valid";
       ruleCount = result.ruleCount;
     }
+
+    if (!selectedProfile) return;
+    if (dslText === lastSavedText) {
+      if (saveState !== "saving" && saveState !== "error") saveState = "saved";
+      return;
+    }
+    if (saveState === "saving" || saveState === "error") return;
+    if (validationStatus === "valid") {
+      void doSave(selectedProfile, dslText);
+    } else {
+      saveState = "invalid";
+    }
   }
 
-  /**
-   * Handle editor content changes
-   */
   function handleChange(_newValue: string) {
-    // Reset status when content changes (will be updated by linter after debounce)
-    validationStatus = "idle";
-    hasUnsavedChanges = true;
+    // Do NOT reset validationStatus here — it makes the rule-count badge
+    // flicker to "—" on every keystroke.
+    updateSaveState();
   }
 
-  /**
-   * Handle Ctrl+S save shortcut
-   */
+  // Ctrl+S: flush the save now instead of waiting for the linter debounce.
   async function handleSave(newValue: string) {
     dslText = newValue;
-    // Trigger profile save via ProfileSelector
-    const profileSelector = document.querySelector('.profile-selector button[class*="primary"]') as HTMLButtonElement | null;
-    profileSelector?.click();
+    if (!selectedProfile) return;
+    if (dslText === lastSavedText) { saveState = "saved"; return; }
+    if (validationStatus !== "valid") { saveState = "invalid"; return; }
+    await doSave(selectedProfile, dslText);
   }
 
-  /**
-   * Handle profile load from ProfileSelector
-   */
   async function handleProfileLoad(name: string, rulesText: string) {
     dslText = rulesText;
+    lastSavedText = rulesText;
     selectedProfile = name;
-    hasUnsavedChanges = false;
+    saveState = "saved";
+    saveError = null;
     validationStatus = "idle";
 
-    // Update settings with active profile
     if (name) {
       settingsStore.set('activeProfile', name);
     }
@@ -86,29 +145,8 @@
     await syncFilterConfig();
   }
 
-  /**
-   * Handle profile selection change
-   */
-  function handleProfileSelect(_profile: { name: string } | null) {
-    hasUnsavedChanges = false;
-  }
-
-  /**
-   * Get current DSL for saving
-   */
-  function getCurrentDsl(): string {
-    return dslText;
-  }
-
-  /**
-   * Handle save completion
-   */
-  async function handleSaveComplete() {
-    hasUnsavedChanges = false;
-
-    // Sync filter config to backend
-    await syncFilterConfig();
-  }
+  // handleProfileLoad covers everything; this callback is just API plumbing.
+  function handleProfileSelect(_profile: { name: string } | null) {}
 </script>
 
 <section class="loot-filter-tab">
@@ -130,19 +168,42 @@
       >
         Default: {hideAll ? "hide" : "show"} unmatched
       </span>
-      {#if hasUnsavedChanges}
-        <span class="unsaved-indicator" title="Unsaved changes">●</span>
-      {/if}
     </div>
 
     <div class="header-actions">
+      {#if saveState === "error"}
+        <button
+          type="button"
+          class="save-status error"
+          onclick={retrySave}
+          title={saveError ?? "Save failed"}
+        >
+          ⚠ Save failed — retry
+        </button>
+      {:else}
+        <span
+          class="save-status"
+          class:saved={saveState === "saved"}
+          class:unsaved={saveState === "unsaved"}
+          class:invalid={saveState === "invalid"}
+          class:saving={saveState === "saving"}
+        >
+          {#if saveState === "saved"}
+            ✓ Saved
+          {:else if saveState === "unsaved"}
+            ● Unsaved
+          {:else if saveState === "invalid"}
+            ⚠ Unsaved — fix errors
+          {:else if saveState === "saving"}
+            … Saving
+          {/if}
+        </span>
+      {/if}
+
       <ProfileSelector
         bind:selectedProfile
         onselect={handleProfileSelect}
         onload={handleProfileLoad}
-        getCurrentDsl={getCurrentDsl}
-        onsave={handleSaveComplete}
-        canSave={validationStatus === "valid"}
       />
     </div>
   </header>
@@ -294,6 +355,7 @@
   .status-badge {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: var(--space-1, 4px);
     padding: 4px 10px;
     border-radius: var(--radius-full, 9999px);
@@ -302,6 +364,9 @@
     /* Neutral state */
     background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
     color: var(--text-secondary);
+    /* Reserve enough width so "✓ 0 rules" / "✗ 3 errors" / "—" don't shove
+       the surrounding badges as their text length changes. */
+    min-width: 84px;
   }
 
   .status-badge.valid {
@@ -315,15 +380,49 @@
     color: var(--status-error-text);
   }
 
-  .unsaved-indicator {
-    color: var(--accent);
-    font-size: 12px;
-    animation: pulse 2s ease-in-out infinite;
+  .save-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1, 4px);
+    padding: 4px 10px;
+    border-radius: var(--radius-full, 9999px);
+    font-size: var(--text-xs, 12px);
+    font-weight: 500;
+    background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    user-select: none;
+    line-height: 1.5;
+    border: none;
+    font-family: inherit;
   }
 
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
+  .save-status.saved {
+    background: color-mix(in srgb, var(--status-success-text) 16%, transparent);
+    color: var(--status-success-text);
+  }
+
+  .save-status.unsaved,
+  .save-status.saving {
+    /* Transient neutral state — stay calm so typing doesn't feel noisy. */
+    background: color-mix(in srgb, var(--text-secondary) 14%, transparent);
+    color: var(--text-secondary);
+  }
+
+  .save-status.invalid {
+    background: color-mix(in srgb, var(--status-error-text) 16%, transparent);
+    color: var(--status-error-text);
+  }
+
+  .save-status.error {
+    background: color-mix(in srgb, var(--status-error-text) 22%, transparent);
+    color: var(--status-error-text);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .save-status.error:hover {
+    background: color-mix(in srgb, var(--status-error-text) 30%, transparent);
   }
 
   .editor-container {

@@ -12,25 +12,16 @@
   interface Props {
     /** Currently selected profile name */
     selectedProfile: string;
-    /** Whether saving is allowed (e.g. valid content) */
-    canSave?: boolean;
     /** Callback when profile selection changes */
     onselect?: (profile: ProfileInfo | null) => void;
     /** Callback when profile is loaded (with raw DSL text) */
     onload?: (name: string, rulesText: string) => void;
-    /** Callback to get current DSL for saving */
-    getCurrentDsl?: () => string;
-    /** Callback when save is completed */
-    onsave?: () => void;
   }
 
   let {
     selectedProfile = $bindable(""),
-    canSave = true,
     onselect,
     onload,
-    getCurrentDsl,
-    onsave,
   }: Props = $props();
 
   let profiles = $state<ProfileInfo[]>([]);
@@ -111,27 +102,6 @@
       showDropdown = false;
     } catch (e) {
       error = String(e);
-    } finally {
-      isLoading = false;
-    }
-  }
-
-  async function saveCurrentProfile() {
-    if (!selectedProfile || !getCurrentDsl || !canSave) return;
-
-    isLoading = true;
-    error = null;
-
-    try {
-      await invoke("save_profile", {
-        name: selectedProfile,
-        rulesText: getCurrentDsl(),
-      });
-      await loadProfiles(); // Reload to update rule count/modified time
-      onsave?.();
-    } catch (e) {
-      error = String(e);
-      console.error("[ProfileSelector] Failed to save profile:", e);
     } finally {
       isLoading = false;
     }
@@ -313,16 +283,6 @@
       </div>
     {/if}
   </div>
-
-  <!-- Save button -->
-  <Button
-    variant="primary"
-    size="sm"
-    onclick={saveCurrentProfile}
-    disabled={!selectedProfile || isLoading || !canSave}
-  >
-    {isLoading ? "..." : "Save"}
-  </Button>
 
   {#if error}
     <span class="error-text" title={error}>⚠️</span>
