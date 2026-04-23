@@ -70,6 +70,9 @@ const DISPLAY_KEYWORDS = ["stat"];
 // Modifier keywords
 const MODIFIER_KEYWORDS = ["eth"];
 
+// Map-marker keyword (drops an automap cross on matched items).
+const MAP_KEYWORDS = ["map"];
+
 /**
  * StreamLanguage tokenizer for D2 Rules DSL
  *
@@ -196,6 +199,9 @@ const d2rulesLanguage = StreamLanguage.define({
 
       // Modifier keywords
       if (MODIFIER_KEYWORDS.includes(word)) return "keyword modifier";
+
+      // Map-marker keyword
+      if (MAP_KEYWORDS.includes(word)) return "keyword map";
 
       // Unknown word - may be flagged by linter
       return "keyword unknown";

@@ -6,6 +6,7 @@ mod injection;
 mod items_cache;
 mod logger;
 mod loot_filter_hook;
+mod map_marker;
 mod notifier;
 mod offsets;
 mod process;

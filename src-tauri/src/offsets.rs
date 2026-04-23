@@ -15,12 +15,20 @@ pub mod d2client {
     /// Base address for code injection area
     pub const INJECT_BASE: usize = 0xCDE00;
 
+    /// Pointer to the current `AutomapLayer` (dword → AutomapLayer*). NULL
+    /// outside of gameplay (loading screens, main menu). See
+    /// `docs/map-marker-reverse-engineering.md`.
+    pub const AUTOMAP_LAYER: usize = 0x11C1C4;
+
     /// Injection function offsets (relative to INJECT_BASE)
     pub mod inject {
         pub const PRINT: usize = 0x01;
         pub const GET_STRING: usize = 0x11;
         pub const GET_ITEM_NAME: usize = 0x21;
         pub const GET_ITEM_STAT: usize = 0x3E;
+        /// 6-byte stub: `call NewAutomapCell; ret`. EAX on return = AutomapCell*.
+        /// Placed well past INJECT_GET_UNIT_STAT (`0x54` + ~17 bytes) with pad.
+        pub const NEW_AUTOMAP_CELL: usize = 0x70;
     }
 
     /// Internal D2Client functions
@@ -29,8 +37,12 @@ pub mod d2client {
         pub const PRINT_STRING: usize = 0x7D850;
         /// GetItemName internal
         pub const GET_ITEM_NAME: usize = 0x914F0;
-        /// GetItemStats internal  
+        /// GetItemStats internal
         pub const GET_ITEM_STAT: usize = 0x560B0;
+        /// `AutomapCell* __fastcall NewAutomapCell(void)` — pool alloc, cell
+        /// returned uninitialized. Do NOT call AddAutomapCell (0x61320): it
+        /// crashes when invoked from a remote thread in our setup.
+        pub const NEW_AUTOMAP_CELL: usize = 0x5F6B0;
     }
 }
 
@@ -75,7 +87,11 @@ pub mod d2lang {
     pub const GET_STRING_BY_ID: usize = 0x9450;
 }
 
-/// Path/Room iteration offsets for finding ground items
+/// Path/Room iteration offsets for finding ground items.
+///
+/// Chain: `pPlayer → +0x2C (pPath) → +0x1C (pRoom1) → +0x00 (ppRoomsNear)` —
+/// step `[2] = 0x1C` is the same `pRoom1` link that the automap BFS
+/// (`room1::*`) uses.
 pub mod paths {
     /// Offsets to reach pPaths: [0, 0x2C, 0x1C, 0x0]
     pub const TO_PATHS_PTR: [usize; 4] = [0x00, 0x2C, 0x1C, 0x00];
@@ -92,8 +108,65 @@ pub mod unit {
     pub const CLASS: usize = 0x04; // dword
     pub const UNIT_ID: usize = 0x0C; // dword
     pub const UNIT_DATA: usize = 0x14; // dword (pointer to type-specific data)
+    pub const PATH: usize = 0x2C; // dword (pointer to Path/Path2/static path)
     pub const INVENTORY: usize = 0x60; // dword (pointer to inventory)
-    pub const NEXT_UNIT: usize = 0xE4; // dword (pointer to next unit in list) - at offset 0x14 + 52*4 = 0xE4
+    pub const NEXT_UNIT: usize = 0xE4; // pListNext — walks the game-wide hash-table bucket chain
+    /// pRoomNext — walks the unit list belonging to a single `Room1`.
+    /// Distinct from `NEXT_UNIT (0xE4, pListNext)`, which leaves the room.
+    /// Use this when iterating ground items inside a room.
+    pub const ROOM_NEXT: usize = 0xE8;
+}
+
+/// `Room1` field offsets used by the automap-marker BFS.
+pub mod room1 {
+    /// `Room1** ppRoomsNear` — array of neighbouring Room1 pointers.
+    pub const PP_ROOMS_NEAR: usize = 0x00;
+    /// `u32 dwRoomsNear` — length of the `ppRoomsNear` array.
+    pub const DW_ROOMS_NEAR: usize = 0x24;
+    /// Head of the mixed-type unit linked list. Walk it via `unit::ROOM_NEXT`.
+    pub const UNIT_FIRST: usize = 0x74;
+}
+
+/// `AutomapLayer` field offsets (at `*pAutomapLayer`).
+///
+/// **Only `P_OBJECTS` is safe to mutate.** Touching `P_FLOORS` / `P_WALLS`
+/// corrupts revealed terrain.
+pub mod automap_layer {
+    pub const P_FLOORS: usize = 0x08; // read-only
+    pub const P_WALLS: usize = 0x0C; // read-only
+    pub const P_OBJECTS: usize = 0x10; // BST root for icon cells — OK to splice
+}
+
+/// `AutomapCell` field offsets (20-byte struct). Calibrated against live
+/// 1.13c MXL memory — **do not use the D2BS layout**, which has `nCellNo` at
+/// `+0x02` and is wrong for this build.
+pub mod automap_cell {
+    pub const F_SAVED: usize = 0x00; // u32
+    pub const N_CELL_NO: usize = 0x04; // u16
+    pub const X_PIXEL: usize = 0x06; // u16
+    pub const Y_PIXEL: usize = 0x08; // u16
+    pub const W_WEIGHT: usize = 0x0A; // u16
+    pub const P_LESS: usize = 0x0C; // AutomapCell*
+    pub const P_MORE: usize = 0x10; // AutomapCell*
+    pub const SIZE: usize = 20;
+    /// Sprite id that renders as a small red cross (good default for loot).
+    pub const CROSS_CELL_NO: u16 = 300;
+}
+
+/// Static-path layout for **items**. NB: player and item paths share the
+/// `UnitAny + 0x2C` pointer but have different struct shapes (player is a
+/// dynamic path with fixed-point fields, items are static with raw u32
+/// subtiles).
+pub mod item_path {
+    pub const SUB_X: usize = 0x0C; // u32
+    pub const SUB_Y: usize = 0x10; // u32
+}
+
+/// Dynamic-path layout for the **player**. Subtile coordinates are the upper
+/// word of fixed-point xPos/yPos fields, read as u16.
+pub mod player_path {
+    pub const SUB_X: usize = 0x02; // u16 (upper word of fixed-point xPos @ +0x00)
+    pub const SUB_Y: usize = 0x06; // u16 (upper word of fixed-point yPos @ +0x04)
 }
 
 /// ItemData structure offsets (pUnitData for items)

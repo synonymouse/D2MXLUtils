@@ -56,7 +56,7 @@ A group header accepts all rule attributes **except a name pattern**. Name patte
 ## Rule Anatomy
 
 ```
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat] [map]
 ```
 
 All components are optional. A line with zero attributes is valid but is a no-op (matches everything, does nothing).
@@ -127,6 +127,24 @@ The unique/set name line shown above the base type for Set/TU/SU/SSU/SSSU drops 
 
 ---
 
+## Map Marker
+
+A rule tagged with `map` drops a red-cross marker on the in-game automap at the matched item's world position.
+
+- Independent of `notify` — silent map pings are supported. A rule with `map` only places the marker without firing an overlay notification.
+- Marker placement is skipped for items resolved to `hide` (displaying a cross for something you chose to hide would be contradictory).
+- Markers auto-clear on area change (the engine reclaims the entire automap layer). Within an area they're rebuilt as items drop or are picked up.
+- BFS scan range covers up to 10 rooms outward from the player — effectively "as far as the engine loads rooms".
+- **Markers are sticky within an area**: walking past a marked item keeps the marker on the map even after the room unloads. It returns to the visible automap when you come back. A marker is only removed when the item is picked up (detected by heuristic: missing from BFS while the player is within ~32 subtiles of the marker's position).
+
+| Rule | Marker | Notification |
+|---|---|---|
+| `unique map` | red cross at drop | none |
+| `"Stone of Jordan" unique notify map` | red cross + gold overlay | yes |
+| `[sssu map] { . }` | red cross on every SSSU | none |
+
+---
+
 ## Evaluation Algorithm
 
 ```
@@ -173,6 +191,7 @@ Rule {
     sound:         Option<u8>,
     notify:        bool,
     display_stats: bool,
+    map:           bool,   // drop an automap marker at the item's position
 }
 ```
 

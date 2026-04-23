@@ -182,6 +182,9 @@ pub struct Rule {
 
     #[serde(default, skip_serializing_if = "is_false")]
     pub display_stats: bool,
+
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub map: bool,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -212,6 +215,11 @@ pub struct FilterDecision {
     pub visibility: Visibility,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub notification: Option<Notification>,
+    /// `map` flag from the winning rule — drop an automap marker at the
+    /// item's world position. Independent of `notify` on purpose: a silent
+    /// map ping is a valid use case.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub place_on_map: bool,
 }
 
 // =====================================================================
@@ -252,6 +260,7 @@ impl FilterConfig {
                     Visibility::Default
                 },
                 notification: None,
+                place_on_map: false,
             },
             Some(rule) => FilterDecision {
                 visibility: resolve_visibility(rule.visibility, self.hide_all),
@@ -272,6 +281,7 @@ impl FilterConfig {
                 } else {
                     None
                 },
+                place_on_map: rule.map,
             },
         }
     }
@@ -470,6 +480,58 @@ mod tests {
         let n = d.notification.expect("rule should notify");
         assert!(n.display_stats);
         assert_eq!(n.matched_stat_line, None);
+    }
+
+    #[test]
+    fn map_flag_independent_of_notify() {
+        let config = FilterConfig {
+            rules: vec![Rule {
+                qualities: vec![ItemQuality::Unique],
+                map: true,
+                // no notify
+                ..Rule::default()
+            }],
+            ..FilterConfig::default()
+        };
+        let it = item("Unique Ring", ItemQuality::Unique, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert!(d.place_on_map, "map flag must fire without notify");
+        assert!(d.notification.is_none(), "notify should not be auto-set");
+    }
+
+    #[test]
+    fn map_false_when_no_rule_matches() {
+        let config = FilterConfig::default();
+        let it = item("Anything", ItemQuality::Normal, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert!(!d.place_on_map);
+    }
+
+    #[test]
+    fn last_match_wins_for_map() {
+        // Two rules both match a Unique Ring; the later one (no map) should win.
+        let config = FilterConfig {
+            rules: vec![
+                Rule {
+                    qualities: vec![ItemQuality::Unique],
+                    map: true,
+                    ..Rule::default()
+                },
+                Rule {
+                    name_pattern: Some("Ring$".into()),
+                    qualities: vec![ItemQuality::Unique],
+                    // map defaults to false
+                    ..Rule::default()
+                },
+            ],
+            ..FilterConfig::default()
+        };
+        let it = item("Stone of Jordan Ring", ItemQuality::Unique, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert!(!d.place_on_map, "later matching rule overrides map flag");
     }
 
     #[test]

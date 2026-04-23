@@ -284,6 +284,31 @@ rare {All Skills} show purple notify stat
 
 ---
 
+## Scenario N — Automap markers
+
+Drop a red cross on the in-game automap at the location of every matched item.
+
+```
+# Silent map ping for SSSUs — no overlay spam, just a marker.
+[sssu map] {
+  .
+}
+
+# Full treatment for specific chase items: overlay + sound + marker.
+"Stone of Jordan" unique notify sound1 map
+"Tyrael" unique notify sound1 map
+```
+
+| Rule | Marker | Overlay |
+|---|---|---|
+| `unique map` | yes, for every unique | no |
+| `unique notify map` | yes | yes |
+| `rare {All Skills} map` | yes, only on rares with "All Skills" | no |
+
+Markers are cleared automatically on area change and rebuilt as items drop or get picked up. Items resolved to `hide` are never marked — the marker respects the visibility resolution.
+
+---
+
 ## Edge Cases
 
 ### No attributes

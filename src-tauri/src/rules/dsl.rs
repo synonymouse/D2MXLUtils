@@ -68,6 +68,7 @@ struct Attrs {
     sound: Option<u8>,
     notify: Option<bool>,
     display_stats: Option<bool>,
+    map: Option<bool>,
 }
 
 impl Attrs {
@@ -98,6 +99,9 @@ impl Attrs {
         }
         if let Some(ds) = self.display_stats {
             rule.display_stats = ds;
+        }
+        if let Some(m) = self.map {
+            rule.map = m;
         }
     }
 
@@ -130,6 +134,9 @@ impl Attrs {
         }
         if self.display_stats.is_none() {
             self.display_stats = group.display_stats;
+        }
+        if self.map.is_none() {
+            self.map = group.map;
         }
     }
 }
@@ -509,6 +516,10 @@ fn parse_attrs_into(
                 attrs.display_stats = Some(true);
                 continue;
             }
+            "map" => {
+                attrs.map = Some(true);
+                continue;
+            }
             // `Some(0)` = silence marker; normalized to `None` in
             // `FilterConfig::decide`. Lets a rule override group-level sound.
             "sound_none" => {
@@ -661,6 +672,7 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
         sound: rule.sound,
         notify: if rule.notify { Some(true) } else { None },
         display_stats: if rule.display_stats { Some(true) } else { None },
+        map: if rule.map { Some(true) } else { None },
     }
 }
 
@@ -708,7 +720,7 @@ fn is_known_token(lower: &str) -> bool {
     }
     matches!(
         lower,
-        "eth" | "show" | "hide" | "notify" | "stat" | "sound_none"
+        "eth" | "show" | "hide" | "notify" | "stat" | "sound_none" | "map"
     ) || parse_sound_keyword(lower).is_some()
 }
 
@@ -1026,6 +1038,51 @@ mod tests {
             cfg.rules[0].stat_pattern.as_deref(),
             Some("All Skills.{2,5}")
         );
+    }
+
+    #[test]
+    fn parses_map_token() {
+        let cfg = parse_dsl("unique map").unwrap();
+        assert!(cfg.rules[0].map);
+    }
+
+    #[test]
+    fn map_survives_group_flatten() {
+        let src = r#"[unique map] {
+  "Jordan"
+  "Tyrael"
+}"#;
+        let cfg = parse_dsl(src).unwrap();
+        assert_eq!(cfg.rules.len(), 2);
+        assert!(cfg.rules.iter().all(|r| r.map));
+    }
+
+    #[test]
+    fn validator_accepts_map() {
+        let errors = validate_dsl("unique map notify");
+        assert!(
+            errors.iter().all(|e| !e.message.contains("Unknown flag")),
+            "`map` should not be an unknown token: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn map_serializes_only_when_true() {
+        use super::super::Rule;
+        let r = Rule {
+            map: false,
+            ..Rule::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(!json.contains("\"map\""), "map=false must not serialize: {}", json);
+
+        let r = Rule {
+            map: true,
+            ..Rule::default()
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains("\"map\":true"), "map=true must serialize: {}", json);
     }
 
     #[test]

@@ -20,6 +20,7 @@ attr          := quality
                | sound
                | 'notify'
                | 'stat'
+               | 'map'
 stat_pattern  := '{' regex '}'
 ```
 
@@ -180,6 +181,16 @@ The unique/set name line is shown automatically for Set/TU/SU/SSU/SSSU drops, co
 
 ---
 
+### Map marker
+
+```
+map    # drop a red-cross marker on the automap at the item's position
+```
+
+Independent from `notify`. Markers are placed on the native in-game automap, cleared automatically on area change, and refreshed as items drop or are picked up. Items resolved to `hide` are not marked.
+
+---
+
 ## Groups
 
 ```
@@ -260,7 +271,7 @@ hide default      # hide unmatched items
 show default      # show unmatched items (implicit default)
 
 # General rule form
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat]
+[name-pattern] [quality] [tier] [eth] [{stat-pattern}] [color] [show|hide] [sound] [notify] [stat] [map]
 
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor

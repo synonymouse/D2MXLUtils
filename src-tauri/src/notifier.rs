@@ -2,7 +2,7 @@
 //!
 //! This module implements the core NotifierMain logic from D2Stats.au3
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "windows")]
@@ -14,8 +14,10 @@ use crate::logger::{error as log_error, info as log_info};
 #[cfg(target_os = "windows")]
 use crate::loot_filter_hook::LootFilterHook;
 #[cfg(target_os = "windows")]
+use crate::map_marker::{self, MapMarkerManager, MarkerItem};
+#[cfg(target_os = "windows")]
 use crate::offsets::{
-    d2client, d2common, data_tables, item_quality, items_txt, paths, set_items_txt,
+    d2client, d2common, data_tables, item_quality, items_txt, paths, set_items_txt, unit,
     unique_items_txt, unit_type,
 };
 #[cfg(target_os = "windows")]
@@ -63,6 +65,11 @@ pub struct DropScanner {
     class_cache: Option<Vec<ClassInfo>>,
     unique_cache: Option<Vec<UniqueInfo>>,
     set_cache: Option<Vec<String>>,
+    map_marker: MapMarkerManager,
+    /// Enriched `ItemDropEvent` per `unit_id` from the primary `pPaths`
+    /// pass. The map-marker BFS pass reads this instead of re-calling
+    /// `GetItemName` per tick. Cleared via `clear_cache` on area change.
+    recent_events: HashMap<u32, ItemDropEvent>,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +181,8 @@ impl DropScanner {
             class_cache: None,
             unique_cache: None,
             set_cache: None,
+            map_marker: MapMarkerManager::new(),
+            recent_events: HashMap::new(),
         })
     }
 
@@ -199,6 +208,13 @@ impl DropScanner {
                 log_error(&format!("Failed to set hook filter_enabled: {}", e));
             }
         }
+
+        // Yank any placed markers immediately when the filter goes off.
+        if !enabled {
+            if let Err(e) = self.map_marker.clear(&self.ctx) {
+                log_error(&format!("map_marker clear on disable failed: {}", e));
+            }
+        }
     }
 
     /// Check if filtering is enabled
@@ -222,6 +238,10 @@ impl DropScanner {
 
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
+        self.recent_events.clear();
+        if let Err(e) = self.map_marker.clear(&self.ctx) {
+            log_error(&format!("map_marker clear on clear_cache failed: {}", e));
+        }
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.clear_hidden_items(&self.ctx) {
                 log_error(&format!("Failed to clear hide mask: {}", e));
@@ -426,6 +446,9 @@ impl DropScanner {
                         }
                     }
 
+                    // Cache enriched event for the map-marker pass.
+                    self.recent_events.insert(event.unit_id, event.clone());
+
                     if should_emit {
                         events.push(event);
                     }
@@ -449,7 +472,88 @@ impl DropScanner {
             }
         }
 
+        self.run_map_marker_pass();
+
         events
+    }
+
+    /// Rebuild the automap marker chain for items matched by rules with
+    /// `map` set. Runs after the primary pPaths pass so `recent_events` is
+    /// up-to-date for name/stat regex matching.
+    fn run_map_marker_pass(&mut self) {
+        if !self.filter_enabled {
+            if let Err(e) = self.map_marker.clear(&self.ctx) {
+                log_error(&format!("map_marker clear (disabled) failed: {}", e));
+            }
+            return;
+        }
+        let Some(ref filter_arc) = self.filter_config else {
+            return;
+        };
+        let filter = match filter_arc.read() {
+            Ok(f) => f,
+            Err(_) => return,
+        };
+
+        // Depth 10 reaches past what the engine typically keeps loaded; BFS
+        // stops early when `ppRoomsNear` runs out.
+        let positions = match map_marker::bfs_item_positions(&self.ctx, 10) {
+            Ok(v) => v,
+            Err(e) => {
+                log_error(&format!("map_marker BFS failed: {}", e));
+                return;
+            }
+        };
+
+        let mut unit_ids: HashMap<u32, u32> = HashMap::new();
+        let mut bfs_unit_ids: HashSet<u32> = HashSet::new();
+        for &(p_unit, _, _) in &positions {
+            if let Ok(uid) = self
+                .ctx
+                .process
+                .read_memory::<u32>(p_unit as usize + unit::UNIT_ID)
+            {
+                unit_ids.insert(p_unit, uid);
+                bfs_unit_ids.insert(uid);
+            }
+        }
+
+        let mut newly_matched: Vec<MarkerItem> = Vec::new();
+        for (p_unit, sub_x, sub_y) in positions {
+            let Some(&unit_id) = unit_ids.get(&p_unit) else {
+                continue;
+            };
+            // Needs the enriched event for regex matching; if the primary
+            // pass hasn't seen it yet, the next tick will pick it up.
+            let Some(event) = self.recent_events.get(&unit_id) else {
+                continue;
+            };
+            let ctx = MatchContext::new(event);
+            let decision = filter.decide(&ctx);
+            if !decision.place_on_map || decision.visibility == Visibility::Hide {
+                continue;
+            }
+            let (cx, cy) = map_marker::sub_to_cell(sub_x, sub_y);
+            newly_matched.push(MarkerItem {
+                unit_id,
+                cell_x: cx,
+                cell_y: cy,
+                sub_x,
+                sub_y,
+            });
+        }
+
+        let player_sub = map_marker::read_player_subtile(&self.ctx);
+
+        if let Err(e) = self.map_marker.tick(
+            &self.ctx,
+            &self.injector,
+            &newly_matched,
+            &bfs_unit_ids,
+            player_sub,
+        ) {
+            log_error(&format!("map_marker tick failed: {}", e));
+        }
     }
 
     /// Process a single unit, returning a fully scanned item if it's a new item.
@@ -859,6 +963,11 @@ fn strip_color_codes(s: &str) -> String {
 #[cfg(target_os = "windows")]
 impl Drop for DropScanner {
     fn drop(&mut self) {
+        // Detach any lingering map markers so the game doesn't keep rendering
+        // stale crosses after the scanner is torn down mid-session.
+        if let Err(e) = self.map_marker.clear(&self.ctx) {
+            log_error(&format!("map_marker clear on scanner drop failed: {}", e));
+        }
         // Eject the loot filter hook when scanner is destroyed
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.eject(&self.ctx) {

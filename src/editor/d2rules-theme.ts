@@ -31,6 +31,7 @@ const colors = {
   tier: "#bd93f9", // Purple (tier keywords)
   modifier: "#c7b377", // Gold italic (eth)
   display: "#aaaaaa", // Light gray (name/stat)
+  map: "#ff4d4f", // Red (map — matches the in-game red-cross marker)
   groupBracket: "#8899aa", // Muted blue-grey for [] {} in groups
   invalid: "#cc0000",
   unknown: "#888888", // Unknown tokens (gray)
@@ -199,6 +200,7 @@ export const qualityHighlighting = EditorView.baseTheme({
   ".tok-sound": { color: colors.sound },
   ".tok-modifier": { color: colors.modifier, fontStyle: "italic" },
   ".tok-display": { color: colors.display },
+  ".tok-map": { color: colors.map, fontWeight: "600" },
   ".tok-groupBracket": { color: colors.groupBracket, fontWeight: "700" },
 
   // Invalid tokens

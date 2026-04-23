@@ -193,7 +193,7 @@ sacred eth gold notify sound1
       <summary>Syntax Reference</summary>
       <div class="help-content">
         <p>Rule format (all parts optional — rules are matched last-wins):</p>
-        <code>["name"] [quality] [tier] [eth] &#123;stat&#125; [color] [show|hide] [sound] [notify] [name] [stat]</code>
+        <code>["name"] [quality] [tier] [eth] &#123;stat&#125; [color] [show|hide] [sound] [notify] [stat] [map]</code>
 
         <div class="help-columns">
           <div class="help-column">
@@ -229,6 +229,7 @@ sacred eth gold notify sound1
             <ul>
               <li><span class="kw-visibility">show</span>, <span class="kw-visibility">hide</span></li>
               <li><span class="kw-notify">notify</span> (required for alerts)</li>
+              <li><span class="kw-map">map</span> (automap marker)</li>
             </ul>
           </div>
 
@@ -243,7 +244,8 @@ sacred eth gold notify sound1
 
         <p class="help-note">
           <strong>eth</strong> — match ethereal items only<br />
-          <strong>name</strong> / <strong>stat</strong> — include item name / stats in the notification<br />
+          <strong>stat</strong> — include item stats in the notification<br />
+          <strong>map</strong> — drop a red-cross marker on the in-game automap at the item's location (independent of <span class="kw-notify">notify</span>)<br />
           <strong>&#123;pattern&#125;</strong> — regex match on stat text<br />
           <strong>Groups:</strong> <code class="inline-code">[unique gold notify] &#123; "Jordan" "Mara" &#125;</code> — shared attributes for each rule inside<br />
           <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-visibility">show</span> reveal items.
@@ -449,6 +451,11 @@ sacred eth gold notify sound1
 
   .kw-notify {
     color: #f1fa8c;
+    font-weight: 600;
+  }
+
+  .kw-map {
+    color: #ff4d4f;
     font-weight: 600;
   }
 

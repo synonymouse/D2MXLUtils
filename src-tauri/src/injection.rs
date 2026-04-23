@@ -113,6 +113,7 @@ pub struct D2Injector {
     pub inject_get_item_name: usize,
     pub inject_get_item_stat: usize,
     pub inject_get_unit_stat: usize,
+    pub inject_new_automap_cell: usize,
 }
 
 #[cfg(target_os = "windows")]
@@ -136,6 +137,7 @@ impl D2Injector {
         let inject_get_item_name = inject_base + d2client::inject::GET_ITEM_NAME;
         let inject_get_item_stat = inject_base + d2client::inject::GET_ITEM_STAT;
         let inject_get_unit_stat = inject_base + d2common::INJECT_GET_UNIT_STAT;
+        let inject_new_automap_cell = inject_base + d2client::inject::NEW_AUTOMAP_CELL;
 
         let injector = Self {
             string_buffer,
@@ -144,6 +146,7 @@ impl D2Injector {
             inject_get_item_name,
             inject_get_item_stat,
             inject_get_unit_stat,
+            inject_new_automap_cell,
         };
 
         // Inject the code
@@ -232,6 +235,15 @@ impl D2Injector {
         get_unit_stat_code.push(0xC3);
         process.write_buffer(self.inject_get_unit_stat, &get_unit_stat_code)?;
 
+        // NewAutomapCell: `E8 [rel32]; C3` — call + ret. `__fastcall` with
+        // no args, so no setup needed. EAX on return = AutomapCell*.
+        let new_cell_offset = (d2_client + d2client::func::NEW_AUTOMAP_CELL) as i32
+            - (inject_base + d2client::inject::NEW_AUTOMAP_CELL + 5) as i32;
+        let mut new_cell_code: Vec<u8> = vec![0xE8];
+        new_cell_code.extend_from_slice(&(new_cell_offset as u32).to_le_bytes());
+        new_cell_code.push(0xC3);
+        process.write_buffer(self.inject_new_automap_cell, &new_cell_code)?;
+
         Ok(())
     }
 
@@ -308,6 +320,13 @@ impl D2Injector {
             .collect();
 
         Ok(String::from_utf16_lossy(&wide))
+    }
+
+    /// Allocate a fresh `AutomapCell` from the game's pool. Caller fills
+    /// the fields; the engine reclaims the cell on area change.
+    pub fn new_automap_cell(&self, process: &ProcessHandle) -> Result<u32, String> {
+        let cell = remote_thread(process, self.inject_new_automap_cell, 0)?;
+        Ok(cell)
     }
 
     /// Get a unit stat value
