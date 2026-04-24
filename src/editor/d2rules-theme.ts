@@ -20,7 +20,7 @@ const colors = {
   normal: "#888888", // Gray
 
   // Syntax colors
-  comment: "#6a737d", // Dim gray (italic)
+  comment: "#753501", // Dim warm gray (italic) — recedes below the brighter keyword gray
   string: "#e09956", // Orange (item patterns)
   regex: "#56d364", // Green (stat patterns)
   color: "#ff79c6", // Pink (color keywords)
@@ -184,7 +184,7 @@ export const darkHighlighting = syntaxHighlighting(
  */
 export const lightHighlighting = syntaxHighlighting(
   HighlightStyle.define([
-    { tag: tags.comment, color: "#6a737d", fontStyle: "italic" },
+    { tag: tags.comment, color: "#aa805d", fontStyle: "italic" },
     { tag: tags.string, color: "#b35900" },
     { tag: tags.regexp, color: "#116611" },
     { tag: tags.keyword, color: "#555555" },
