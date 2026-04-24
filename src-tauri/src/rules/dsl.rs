@@ -287,6 +287,7 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
     let mut in_group = false;
     let mut group_open_line = 0usize;
     let mut default_mode_line: Option<usize> = None;
+    let mut group_flags = NotifyFlags::default();
 
     for (idx, line) in text.lines().enumerate() {
         let line_num = idx + 1;
@@ -305,6 +306,7 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
                 });
             }
             in_group = false;
+            group_flags = NotifyFlags::default();
             continue;
         }
 
@@ -359,6 +361,7 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
             }
             in_group = true;
             group_open_line = line_num;
+            group_flags = scan_notify_flags(header);
             validate_tokens(
                 header,
                 line_num,
@@ -397,7 +400,12 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
         validate_tokens(&after_braces, line_num, false, &mut errors);
 
         // Info: color/sound present without notify is legal but usually a mistake.
-        info_warn_notify_independence(&after_braces, line_num, &mut errors);
+        let inherited = if in_group {
+            group_flags
+        } else {
+            NotifyFlags::default()
+        };
+        info_warn_notify_independence(&after_braces, line_num, inherited, &mut errors);
     }
 
     if in_group {
@@ -728,22 +736,47 @@ fn is_known_token(lower: &str) -> bool {
     ) || parse_sound_keyword(lower).is_some()
 }
 
-fn info_warn_notify_independence(src: &str, line_num: usize, errors: &mut Vec<ValidationError>) {
+#[derive(Debug, Clone, Copy, Default)]
+struct NotifyFlags {
+    color: bool,
+    sound: bool,
+    notify: bool,
+}
+
+impl NotifyFlags {
+    fn merge(self, other: NotifyFlags) -> NotifyFlags {
+        NotifyFlags {
+            color: self.color || other.color,
+            sound: self.sound || other.sound,
+            notify: self.notify || other.notify,
+        }
+    }
+}
+
+fn scan_notify_flags(src: &str) -> NotifyFlags {
     let (remainder, _) = extract_stat_patterns(src);
-    let mut has_color = false;
-    let mut has_sound = false;
-    let mut has_notify = false;
+    let mut flags = NotifyFlags::default();
     for token in remainder.split_whitespace() {
         let lower = token.to_lowercase();
         if NotifyColor::from_str(&lower).is_some() {
-            has_color = true;
+            flags.color = true;
         } else if lower == "sound_none" || parse_sound_keyword(&lower).is_some() {
-            has_sound = true;
+            flags.sound = true;
         } else if lower == "notify" {
-            has_notify = true;
+            flags.notify = true;
         }
     }
-    if (has_color || has_sound) && !has_notify {
+    flags
+}
+
+fn info_warn_notify_independence(
+    src: &str,
+    line_num: usize,
+    inherited: NotifyFlags,
+    errors: &mut Vec<ValidationError>,
+) {
+    let effective = scan_notify_flags(src).merge(inherited);
+    if (effective.color || effective.sound) && !effective.notify {
         errors.push(ValidationError {
             line: line_num,
             column: 0,
@@ -919,6 +952,35 @@ mod tests {
         assert!(errors
             .iter()
             .any(|e| e.severity == ValidationSeverity::Info && e.message.contains("notify")));
+    }
+
+    #[test]
+    fn validator_notify_inherited_from_group_header_suppresses_info() {
+        let src = r#"[notify] {
+  "Cycle"
+  "Medium Cycle" sound1
+  "Large Cycle" sound2
+}"#;
+        let errors = validate_dsl(src);
+        assert!(errors
+            .iter()
+            .all(|e| !(e.severity == ValidationSeverity::Info
+                && e.message.contains("notify"))));
+    }
+
+    #[test]
+    fn validator_group_flags_clear_after_close() {
+        let src = r#"[notify] {
+  "Cycle"
+}
+"foo" sound1"#;
+        let errors = validate_dsl(src);
+        let infos: Vec<_> = errors
+            .iter()
+            .filter(|e| e.severity == ValidationSeverity::Info && e.message.contains("notify"))
+            .collect();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[0].line, 4);
     }
 
     #[test]
