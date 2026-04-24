@@ -25,8 +25,8 @@ const NEW_PROFILE_TEMPLATE: &str = r#"# ==================== TRASH HIDES =======
 # hide sacred non eth
 sacred normal superior magic rare hide
 
-# show sacred eth except magic
-sacred normal superior rare eth notify
+# show sacred eth
+sacred normal superior eth notify
 
 # ==================== ANNOUNCEMENTS ====================
 
