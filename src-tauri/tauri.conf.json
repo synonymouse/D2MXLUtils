@@ -1,6 +1,6 @@
 {
   "productName": "D2MXLUtils",
-  "version": "1.14.0",
+  "version": "1.14.1",
   "identifier": "com.d2mxlutils.app",
   "build": {
     "beforeDevCommand": "pnpm dev",
