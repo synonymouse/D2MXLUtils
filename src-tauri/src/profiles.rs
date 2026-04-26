@@ -96,7 +96,7 @@ master show notify map purple sound1
 }
 
 # Quest items
-[notify map] {
+[notify orange map] {
   "Ring of the Five"
   "Sigil$"
   "Tome of Possession"
@@ -104,6 +104,8 @@ master show notify map purple sound1
   "Book of Cain"
   "Positronic Brain"
 }
+
+"Quest Item|Cube Reagent" notify orange map
 
 "Riftstone" red notify map
 "Relic" red notify map sound3
