@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
-  import { NotificationStack, OverlayEditGrid } from '../components';
+  import { AlwaysShowItemsIndicator, NotificationStack, OverlayEditGrid } from '../components';
   import { settingsStore } from '../stores';
   import { playSound } from '../lib/sound-player';
 
@@ -156,6 +156,7 @@
     opacity={notificationOpacity}
     {compactName}
   />
+  <AlwaysShowItemsIndicator />
   {#if editActive}
     <OverlayEditGrid
       x={pendingX}

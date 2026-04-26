@@ -17,7 +17,7 @@ use crate::loot_filter_hook::LootFilterHook;
 use crate::map_marker::{self, MapMarkerManager, MarkerItem};
 #[cfg(target_os = "windows")]
 use crate::offsets::{
-    d2client, d2common, data_tables, item_quality, items_txt, paths, set_items_txt, unit,
+    d2client, d2common, d2sigma, data_tables, item_quality, items_txt, paths, set_items_txt, unit,
     unique_items_txt, unit_type,
 };
 #[cfg(target_os = "windows")]
@@ -241,6 +241,37 @@ impl DropScanner {
             Ok(ptr) => ptr != 0,
             Err(_) => false,
         }
+    }
+
+    fn always_show_items_addr(&self) -> Result<Option<usize>, String> {
+        if self.ctx.d2_sigma == 0 {
+            return Ok(None);
+        }
+        let base = self.ctx.d2_sigma + d2sigma::ALWAYS_SHOW_ITEMS_PTR;
+        let struct_ptr = self.ctx.process.read_memory::<u32>(base)?;
+        if struct_ptr == 0 {
+            return Ok(None);
+        }
+        Ok(Some(struct_ptr as usize + d2sigma::ALWAYS_SHOW_ITEMS_FLAG))
+    }
+
+    /// Ok(false) = base ptr NULL (caller should retry next tick).
+    pub fn set_always_show_items(&self, on: bool) -> Result<bool, String> {
+        let Some(addr) = self.always_show_items_addr()? else {
+            return Ok(false);
+        };
+        let value: u32 = if on { 1 } else { 0 };
+        self.ctx.process.write_buffer(addr, &value.to_le_bytes())?;
+        Ok(true)
+    }
+
+    /// Ok(None) = struct not allocated yet.
+    pub fn read_always_show_items(&self) -> Result<Option<bool>, String> {
+        let Some(addr) = self.always_show_items_addr()? else {
+            return Ok(None);
+        };
+        let value = self.ctx.process.read_memory::<u32>(addr)?;
+        Ok(Some(value != 0))
     }
 
     pub fn clear_cache(&mut self) {
@@ -1038,6 +1069,14 @@ impl DropScanner {
 
     pub fn is_ingame(&self) -> bool {
         false
+    }
+
+    pub fn set_always_show_items(&self, _on: bool) -> Result<bool, String> {
+        Ok(false)
+    }
+
+    pub fn read_always_show_items(&self) -> Result<Option<bool>, String> {
+        Ok(None)
     }
 
     pub fn clear_cache(&mut self) {}

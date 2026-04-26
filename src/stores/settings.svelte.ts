@@ -47,6 +47,7 @@ export interface AppSettings {
   editOverlayHotkey: HotkeyConfig;
   /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
   verboseFilterLogging: boolean;
+  autoAlwaysShowItems: boolean;
 }
 
 /** Window state interface */
@@ -87,6 +88,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   toggleWindowHotkey: DEFAULT_HOTKEY,
   editOverlayHotkey: DEFAULT_EDIT_OVERLAY_HOTKEY,
   verboseFilterLogging: false,
+  autoAlwaysShowItems: true,
 };
 
 /** Settings store singleton */
@@ -293,6 +295,15 @@ class SettingsStore {
       await invoke('set_verbose_filter_logging', { enabled });
     } catch (error) {
       console.error('[Settings] Failed to update verbose filter logging:', error);
+    }
+  }
+
+  async setAutoAlwaysShowItems(enabled: boolean): Promise<void> {
+    this.set('autoAlwaysShowItems', enabled);
+    try {
+      await invoke('set_auto_always_show_items', { enabled });
+    } catch (error) {
+      console.error('[Settings] Failed to update auto always show items:', error);
     }
   }
 }

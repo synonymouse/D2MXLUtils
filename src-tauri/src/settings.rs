@@ -68,6 +68,9 @@ pub struct AppSettings {
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     #[serde(default)]
     pub verbose_filter_logging: bool,
+
+    #[serde(default = "default_auto_always_show_items")]
+    pub auto_always_show_items: bool,
 }
 
 /// Window state for persistence
@@ -114,6 +117,10 @@ fn default_notification_y() -> f32 {
     1.0
 }
 
+fn default_auto_always_show_items() -> bool {
+    true
+}
+
 fn default_edit_overlay_hotkey() -> HotkeyConfig {
     HotkeyConfig {
         key_code: 0,
@@ -138,6 +145,7 @@ impl Default for AppSettings {
             toggle_window_hotkey: HotkeyConfig::default(),
             edit_overlay_hotkey: default_edit_overlay_hotkey(),
             verbose_filter_logging: false,
+            auto_always_show_items: default_auto_always_show_items(),
         }
     }
 }

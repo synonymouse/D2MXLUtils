@@ -9,6 +9,7 @@
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
   let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
+  let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
 
   let updaterState = $derived(updaterStore.state);
   let checkDisabled = $derived(
@@ -63,6 +64,10 @@
 
   function handleVerboseLoggingChange(enabled: boolean) {
     settingsStore.setVerboseFilterLogging(enabled);
+  }
+
+  function handleAutoAlwaysShowItemsChange(enabled: boolean) {
+    settingsStore.setAutoAlwaysShowItems(enabled);
   }
 
   async function handleOpenChangelog() {
@@ -139,6 +144,14 @@
   </div>
 
   <div class="settings-section">
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Auto-toggle item highlight (alt) on new game</span>
+        <span class="setting-hint">Highlights ground drops automatically without pressing Alt.</span>
+      </div>
+      <Toggle checked={autoAlwaysShowItems} onchange={handleAutoAlwaysShowItemsChange} />
+    </div>
+
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-label">Verbose filter logging</span>

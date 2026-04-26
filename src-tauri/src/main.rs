@@ -68,6 +68,7 @@ struct AppState {
     filter_enabled: Arc<AtomicBool>,
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     verbose_filter_logging: Arc<AtomicBool>,
+    auto_always_show_items: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -102,6 +103,7 @@ fn start_scanner_internal(
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
     verbose_filter_logging: Arc<AtomicBool>,
+    auto_always_show_items: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -170,6 +172,8 @@ fn start_scanner_internal(
 
             let mut was_ingame = false;
             let mut dict_published = false;
+            let mut pending_set_always_show = false;
+            let mut last_emitted_always_show: Option<bool> = None;
 
             // Main scanning loop
             while is_scanning.load(Ordering::SeqCst) {
@@ -194,10 +198,14 @@ fn start_scanner_internal(
                 if ingame && !was_ingame {
                     log_info("Entered game");
                     scanner.clear_cache();
+                    pending_set_always_show = true;
+                    last_emitted_always_show = None;
                     if let Err(e) = app_handle.emit("game-status", "ingame") {
                         log_error(&format!("Failed to emit event (ingame): {}", e));
                     }
                 } else if !ingame && was_ingame {
+                    pending_set_always_show = false;
+                    last_emitted_always_show = None;
                     if let Err(e) = app_handle.emit("game-status", "menu") {
                         log_error(&format!("Failed to emit event (menu): {}", e));
                     }
@@ -227,6 +235,47 @@ fn start_scanner_internal(
 
                 // Scan for items
                 if ingame {
+                    if pending_set_always_show
+                        && auto_always_show_items.load(Ordering::SeqCst)
+                    {
+                        match scanner.set_always_show_items(true) {
+                            Ok(true) => {
+                                pending_set_always_show = false;
+                            }
+                            Ok(false) => {}
+                            Err(e) => {
+                                log_error(&format!(
+                                    "set_always_show_items failed: {}",
+                                    e
+                                ));
+                                pending_set_always_show = false;
+                            }
+                        }
+                    }
+
+                    match scanner.read_always_show_items() {
+                        Ok(Some(state)) => {
+                            if last_emitted_always_show != Some(state) {
+                                if let Err(e) = app_handle
+                                    .emit("always-show-items-state", state)
+                                {
+                                    log_error(&format!(
+                                        "Failed to emit always-show-items-state: {}",
+                                        e
+                                    ));
+                                }
+                                last_emitted_always_show = Some(state);
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            log_error(&format!(
+                                "read_always_show_items failed: {}",
+                                e
+                            ));
+                        }
+                    }
+
                     // Split pass: emit notifications first, then run the
                     // (potentially expensive) map-marker BFS. Otherwise
                     // `item-drop` events would wait on the marker pass and
@@ -299,6 +348,7 @@ fn spawn_auto_scanner(
     filter_config: Arc<RwLock<Option<rules::FilterConfig>>>,
     filter_enabled: Arc<AtomicBool>,
     verbose_filter_logging: Arc<AtomicBool>,
+    auto_always_show_items: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -314,6 +364,7 @@ fn spawn_auto_scanner(
                     filter_config.clone(),
                     filter_enabled.clone(),
                     verbose_filter_logging.clone(),
+                    auto_always_show_items.clone(),
                     filter_config_generation.clone(),
                     scanner_thread.clone(),
                     game_status.clone(),
@@ -386,6 +437,14 @@ fn set_filter_enabled(enabled: bool, state: tauri::State<AppState>) {
 fn set_verbose_filter_logging(enabled: bool, state: tauri::State<AppState>) {
     state
         .verbose_filter_logging
+        .store(enabled, Ordering::SeqCst);
+}
+
+/// Enable or disable auto-toggling of MXL's "always show items" on game entry.
+#[tauri::command]
+fn set_auto_always_show_items(enabled: bool, state: tauri::State<AppState>) {
+    state
+        .auto_always_show_items
         .store(enabled, Ordering::SeqCst);
 }
 
@@ -870,6 +929,7 @@ fn main() {
                 filter_config: Arc::new(RwLock::new(initial_filter_config)),
                 filter_enabled: Arc::new(AtomicBool::new(true)),
                 verbose_filter_logging: Arc::new(AtomicBool::new(false)),
+                auto_always_show_items: Arc::new(AtomicBool::new(true)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
@@ -880,6 +940,7 @@ fn main() {
             let filter_config = state.filter_config.clone();
             let filter_enabled = state.filter_enabled.clone();
             let verbose_filter_logging = state.verbose_filter_logging.clone();
+            let auto_always_show_items = state.auto_always_show_items.clone();
             let filter_config_generation = state.filter_config_generation.clone();
             let scanner_thread = state.scanner_thread.clone();
             let game_status = state.game_status.clone();
@@ -903,6 +964,8 @@ fn main() {
                     );
                     verbose_filter_logging
                         .store(loaded_settings.verbose_filter_logging, Ordering::SeqCst);
+                    auto_always_show_items
+                        .store(loaded_settings.auto_always_show_items, Ordering::SeqCst);
                 }
                 Err(e) => {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
@@ -926,6 +989,7 @@ fn main() {
                 filter_config.clone(),
                 filter_enabled.clone(),
                 verbose_filter_logging.clone(),
+                auto_always_show_items.clone(),
                 filter_config_generation.clone(),
                 scanner_thread.clone(),
                 game_status.clone(),
@@ -986,6 +1050,7 @@ fn main() {
             set_filter_config,
             set_filter_enabled,
             set_verbose_filter_logging,
+            set_auto_always_show_items,
             sync_overlay_with_game,
             set_overlay_interactive,
             parse_filter_dsl,
