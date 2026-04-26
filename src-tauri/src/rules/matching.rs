@@ -9,6 +9,7 @@ pub struct MatchContext<'a> {
     pub item: &'a ItemDropEvent,
     name_lower: String,
     base_name_lower: String,
+    category_lower: String,
     stats_lower: String,
 }
 
@@ -18,6 +19,11 @@ impl<'a> MatchContext<'a> {
             item,
             name_lower: item.name.to_lowercase(),
             base_name_lower: item.base_name.to_lowercase(),
+            category_lower: item
+                .category
+                .as_deref()
+                .map(str::to_lowercase)
+                .unwrap_or_default(),
             stats_lower: item.stats.to_lowercase(),
         }
     }
@@ -33,12 +39,14 @@ impl<'a> MatchContext<'a> {
             return false;
         }
         if let Some(ref pattern) = rule.name_pattern {
-            // OR across runtime display name and items.txt base type:
-            // a rare's affix name wouldn't otherwise match `"Ring$"`.
+            // OR across runtime name, items.txt base type, and category prefix
+            // (e.g. "Great Rune" for Rhal Rune).
             let name_hit = pattern_matches(pattern, &self.name_lower);
             let base_hit =
                 !self.base_name_lower.is_empty() && pattern_matches(pattern, &self.base_name_lower);
-            if !(name_hit || base_hit) {
+            let category_hit = !self.category_lower.is_empty()
+                && pattern_matches(pattern, &self.category_lower);
+            if !(name_hit || base_hit || category_hit) {
                 return false;
             }
         }
@@ -106,6 +114,7 @@ mod tests {
             quality: quality.to_string(),
             name: name.to_string(),
             base_name: String::new(),
+            category: None,
             stats: stats.to_string(),
             is_ethereal: eth,
             is_identified: true,
@@ -123,6 +132,7 @@ mod tests {
             quality: quality.to_string(),
             name: name.to_string(),
             base_name: base.to_string(),
+            category: None,
             stats: stats.to_string(),
             is_ethereal: false,
             is_identified: true,
@@ -326,6 +336,28 @@ mod tests {
     }
 
     #[test]
+    fn name_pattern_matches_against_class_category() {
+        let mut rhal = item_with_base("Rhal Rune", "Rhal Rune", "Normal", "");
+        rhal.category = Some("Great Rune".to_string());
+        let ctx = MatchContext::new(&rhal);
+
+        let r = Rule {
+            name_pattern: Some("Great Rune".into()),
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&r));
+
+        let unrelated = Rule {
+            name_pattern: Some("Enchanted Rune".into()),
+            ..Rule::default()
+        };
+        assert!(!ctx.matches(&unrelated));
+
+        let plain = item_with_base("Random Item", "Random Item", "Normal", "");
+        assert!(!MatchContext::new(&plain).matches(&r));
+    }
+
+#[test]
     fn name_pattern_fails_when_neither_name_nor_base_match() {
         let it = item_with_base("Rune Turn", "Ring", "Rare", "");
         let ctx = MatchContext::new(&it);

@@ -314,6 +314,7 @@ mod tests {
             quality: quality.d2_quality_name().to_string(),
             name: name.to_string(),
             base_name: String::new(),
+            category: None,
             stats: String::new(),
             is_ethereal: eth,
             is_identified: true,

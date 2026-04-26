@@ -34,6 +34,10 @@ pub struct ItemDropEvent {
     pub name: String,
     #[serde(default)]
     pub base_name: String,
+    /// Prefix lines from items.txt's multi-line name (e.g. `"Great Rune"`
+    /// for Rhal Rune). Matched alongside `name`/`base_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
     pub stats: String,
     pub is_ethereal: bool,
     pub is_identified: bool,
@@ -77,6 +81,7 @@ pub struct DropScanner {
 #[derive(Debug, Clone)]
 struct ClassInfo {
     base_name: String,
+    category: Option<String>,
     tier: ItemTier,
 }
 
@@ -456,10 +461,16 @@ impl DropScanner {
                                         Visibility::Hide => "HIDE",
                                         Visibility::Default => "DEFAULT",
                                     };
+                                    let category_label = event
+                                        .category
+                                        .as_deref()
+                                        .map(|c| format!(" [{}]", c.replace('\n', "|")))
+                                        .unwrap_or_default();
                                     log_info(&format!(
-                                        "[Filter] \"{} {}\" ({}, class={}) -> {} notify={} | {}",
+                                        "[Filter] \"{} {}\"{} ({}, class={}) -> {} notify={} | {}",
                                         event.name,
                                         event.base_name,
+                                        category_label,
                                         event.quality,
                                         event.class,
                                         vis_label,
@@ -696,6 +707,7 @@ impl DropScanner {
             class,
             quality,
             base_name: self.class_base_name(class),
+            category: self.class_category(class),
             name,
             stats: scanned.stats.unwrap_or_default(),
             is_ethereal: scanned.is_ethereal,
@@ -729,6 +741,13 @@ impl DropScanner {
             .and_then(|cache| cache.get(class as usize))
             .map(|info| info.base_name.clone())
             .unwrap_or_default()
+    }
+
+    fn class_category(&self, class: u32) -> Option<String> {
+        self.class_cache
+            .as_ref()
+            .and_then(|cache| cache.get(class as usize))
+            .and_then(|info| info.category.clone())
     }
 
     pub fn items_dictionary_snapshot(&self) -> Option<ItemsDictionary> {
@@ -857,18 +876,27 @@ impl DropScanner {
                 Err(_) => {
                     cache.push(ClassInfo {
                         base_name: String::new(),
+                        category: None,
                         tier: ItemTier::Tier0,
                     });
                     continue;
                 }
             };
 
-            let base_name = raw_name
+            let mut non_empty_lines: Vec<&str> = raw_name
                 .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .map(|s| s.trim().to_string())
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .collect();
+            let base_name = non_empty_lines
+                .pop()
+                .map(|s| s.to_string())
                 .unwrap_or_default();
+            let category = if non_empty_lines.is_empty() {
+                None
+            } else {
+                Some(non_empty_lines.join("\n"))
+            };
 
             let tier = if misc == 0 {
                 ItemTier::Tier0
@@ -888,7 +916,11 @@ impl DropScanner {
                 }
             };
 
-            cache.push(ClassInfo { base_name, tier });
+            cache.push(ClassInfo {
+                base_name,
+                category,
+                tier,
+            });
         }
 
         Ok(cache)
