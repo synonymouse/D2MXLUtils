@@ -271,7 +271,7 @@ impl FilterConfig {
                         ctx.matching_stat_lines(&rule.stat_patterns)
                     };
                     // Collapse the `sound_none` silence marker so consumers
-                    // only see 1..=6.
+                    // only see 1..=7.
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound.filter(|&s| s != 0),

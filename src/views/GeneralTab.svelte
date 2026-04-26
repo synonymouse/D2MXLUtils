@@ -130,11 +130,11 @@
         <span class="setting-label">Test sounds</span>
         <span class="setting-hint">
           Preview each filter sound at the current volume. Filter rules reference them as
-          <code>sound1</code>..<code>sound6</code>.
+          <code>sound1</code>..<code>sound7</code>.
         </span>
       </div>
       <div class="test-buttons">
-        {#each [1, 2, 3, 4, 5, 6] as n (n)}
+        {#each [1, 2, 3, 4, 5, 6, 7] as n (n)}
           <Button variant="secondary" size="sm" onclick={() => playSound(n, soundVolume)}>
             {n}
           </Button>

@@ -1,7 +1,7 @@
 /**
  * Drop-notification sound player.
  *
- * The loot filter DSL lets rules specify `sound1`..`sound6` (see
+ * The loot filter DSL lets rules specify `sound1`..`sound7` (see
  * `docs/filter_spec/loot-filter-dsl.md`). This module resolves those indices
  * to the bundled MP3s under `/sounds/` and plays them at the given volume.
  *
@@ -9,7 +9,7 @@
  * a previous one.
  */
 
-const TOTAL_SOUNDS = 6;
+const TOTAL_SOUNDS = 7;
 
 let cache: HTMLAudioElement[] | null = null;
 

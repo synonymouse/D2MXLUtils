@@ -177,7 +177,7 @@ Absent → default visibility applies (game decides, or `hide default` applies).
 
 | Keyword | Effect |
 |---|---|
-| `sound1`–`sound6` | sound index used by notification |
+| `sound1`–`sound7` | sound index used by notification |
 | `sound_none` | explicit silence |
 
 Sound alone does not produce a notification. Pair with `notify`.
@@ -302,5 +302,5 @@ tier       := 0 | 1 | 2 | 3 | 4 | sacred | angelic | master
 color      := white | red | lime | blue | gold | grey | black
             | pink | orange | yellow | green | purple
 visibility := show | hide
-sound      := sound1 | sound2 | sound3 | sound4 | sound5 | sound6 | sound_none
+sound      := sound1 | sound2 | sound3 | sound4 | sound5 | sound6 | sound7 | sound_none
 ```

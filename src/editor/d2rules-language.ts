@@ -62,6 +62,7 @@ const SOUND_KEYWORDS = [
   "sound4",
   "sound5",
   "sound6",
+  "sound7",
 ];
 
 // Display mode keywords

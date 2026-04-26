@@ -284,7 +284,7 @@
           <div class="help-column">
             <h4>Sounds</h4>
             <ul>
-              <li><span class="kw-flag">sound1</span> - <span class="kw-flag">sound6</span></li>
+              <li><span class="kw-flag">sound1</span> - <span class="kw-flag">sound7</span></li>
               <li><span class="kw-flag">sound_none</span></li>
             </ul>
           </div>

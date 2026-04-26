@@ -553,7 +553,7 @@ fn parse_sound_keyword(lower: &str) -> Option<u8> {
     }
     let suffix = &lower[5..];
     let n: u8 = suffix.parse().ok()?;
-    if (1..=6).contains(&n) {
+    if (1..=7).contains(&n) {
         Some(n)
     } else {
         None

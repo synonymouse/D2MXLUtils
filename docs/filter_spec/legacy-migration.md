@@ -362,6 +362,7 @@ separate fields in the new DSL.
 | `sound4`     | `sound4`     |
 | `sound5`     | `sound5`     |
 | `sound6`     | `sound6`     |
+| `sound7`     | `sound7`     |
 | `sound_none` | `sound_none` |
 
 ### 6.7 Display flags
