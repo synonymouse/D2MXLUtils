@@ -20,7 +20,7 @@ const NEW_PROFILE_TEMPLATE: &str = r#"# ==================== TRASH HIDES =======
 "Gold" hide
 
 # Low-tier base items (pre-sacred)
-1 2 3 4 hide
+1 2 3 4 low normal superior hide
 magic hide
 
 sacred hide
