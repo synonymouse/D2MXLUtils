@@ -394,10 +394,28 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
             });
         }
 
-        // Strip quoted name pattern and stat-pattern braces, then scan flags.
+        let starts_with_quote = trimmed.starts_with('"');
         let (after_name, _name_ok) = strip_leading_name(trimmed);
         let after_braces = strip_stat_brace(after_name);
-        validate_tokens(&after_braces, line_num, false, &mut errors);
+
+        if after_braces.contains('"') {
+            let message = if starts_with_quote {
+                "Only one name pattern is allowed per rule; extra \"...\" must be removed"
+                    .to_string()
+            } else {
+                "Name pattern \"...\" must be the first token on the line (before quality/flags)"
+                    .to_string()
+            };
+            errors.push(ValidationError {
+                line: line_num,
+                column: 0,
+                message,
+                severity: ValidationSeverity::Error,
+            });
+        }
+
+        let cleaned = strip_quoted_segments(&after_braces);
+        validate_tokens(&cleaned, line_num, false, &mut errors);
 
         // Info: color/sound present without notify is legal but usually a mistake.
         let inherited = if in_group {
@@ -405,7 +423,7 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
         } else {
             NotifyFlags::default()
         };
-        info_warn_notify_independence(&after_braces, line_num, inherited, &mut errors);
+        info_warn_notify_independence(&cleaned, line_num, inherited, &mut errors);
     }
 
     if in_group {
@@ -655,6 +673,22 @@ fn strip_leading_name(s: &str) -> (String, bool) {
 fn strip_stat_brace(s: String) -> String {
     let (rest, _) = extract_stat_patterns(&s);
     rest
+}
+
+fn strip_quoted_segments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_quote = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_quote = !in_quote;
+            out.push(' ');
+            continue;
+        }
+        if !in_quote {
+            out.push(c);
+        }
+    }
+    out
 }
 
 fn attrs_from_rule(rule: &Rule) -> Attrs {
@@ -1222,6 +1256,34 @@ mod tests {
             vec!["X".to_string(), "Y".to_string()]
         );
         assert_eq!(cfg.rules[1].stat_patterns, vec!["Z".to_string()]);
+    }
+
+    #[test]
+    fn validator_errors_on_name_pattern_not_at_start() {
+        let errors = validate_dsl(r#"unique set "Ring$" gold notify"#);
+        let name_errs: Vec<_> = errors
+            .iter()
+            .filter(|e| {
+                e.severity == ValidationSeverity::Error
+                    && e.message.contains("Name pattern")
+                    && e.message.contains("first token")
+            })
+            .collect();
+        assert_eq!(name_errs.len(), 1, "got: {:?}", errors);
+        assert!(errors.iter().all(|e| !e.message.contains("Unknown flag")));
+    }
+
+    #[test]
+    fn validator_errors_on_second_name_pattern_after_leading_one() {
+        let errors = validate_dsl(r#""Ring$" unique "Foo" gold notify"#);
+        let extra_errs: Vec<_> = errors
+            .iter()
+            .filter(|e| {
+                e.severity == ValidationSeverity::Error
+                    && e.message.contains("Only one name pattern")
+            })
+            .collect();
+        assert_eq!(extra_errs.len(), 1, "got: {:?}", errors);
     }
 
     #[test]
