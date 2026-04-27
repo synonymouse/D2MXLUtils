@@ -482,6 +482,14 @@ fn validate_filter_dsl(text: String) -> Vec<rules::ValidationError> {
     rules::validate_dsl(&text)
 }
 
+/// Plain-English explanation for a single rule line, used by the
+/// editor's hover tooltip. Returns `None` for blank lines, comments,
+/// group close `}`, and unparseable input.
+#[tauri::command]
+fn explain_filter_line(line: String) -> Option<String> {
+    rules::explain_line(&line)
+}
+
 /// Resolve the filter decision for a hypothetical item. Used by the UI
 /// to preview what the current filter would do without actually dropping
 /// anything in-game. See `docs/filter-preview-todo.md` for the planned UI
@@ -1083,6 +1091,7 @@ fn main() {
             set_overlay_interactive,
             parse_filter_dsl,
             validate_filter_dsl,
+            explain_filter_line,
             get_item_filter_action,
             settings::load_settings,
             settings::save_settings,

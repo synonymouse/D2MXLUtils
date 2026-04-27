@@ -15,9 +15,11 @@
 //!   priority / flag-count tie-breaking.
 
 mod dsl;
+mod explain;
 mod matching;
 
 pub use dsl::{parse_dsl, validate_dsl, ParseError, ValidationError, ValidationSeverity};
+pub use explain::explain_line;
 pub use matching::MatchContext;
 
 use serde::{Deserialize, Serialize};

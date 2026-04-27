@@ -1,40 +1,39 @@
 /**
- * CodeMirror 6 theme definitions for D2 Rules DSL editor
- *
- * Colors are inspired by Diablo 2 item quality palette
- *
- * @module d2rules-theme
+ * CodeMirror 6 theme definitions for the D2 Rules DSL editor.
  */
 import { EditorView } from "@codemirror/view";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import { d2rulesTags } from "./d2rules-language";
 
-// Diablo 2 palette colors
-const colors = {
-  // Item quality colors (from game)
-  unique: "#c7b377", // Gold
-  set: "#00ff00", // Bright green
-  rare: "#ffff00", // Yellow
-  magic: "#6969ff", // Blue
-  crafted: "#ffa500", // Orange
-  normal: "#888888", // Gray
-
-  // Syntax colors
-  comment: "#753501", // Dim warm gray (italic) — recedes below the brighter keyword gray
-  string: "#e09956", // Orange (item patterns)
-  regex: "#56d364", // Green (stat patterns)
-  color: "#ff79c6", // Pink (color keywords)
-  visibility: "#ff6b6b", // Red-ish (show/hide)
-  directive: "#ffb86c", // Warm orange (hide default / show default — file-scope)
-  notify: "#f1fa8c", // Yellow (notify — spec-critical keyword)
-  sound: "#8be9fd", // Cyan (sound keywords)
-  tier: "#bd93f9", // Purple (tier keywords)
-  modifier: "#c7b377", // Gold italic (eth)
-  display: "#aaaaaa", // Light gray (name/stat)
-  map: "#ff4d4f", // Red (map — matches the in-game red-cross marker)
-  groupBracket: "#8899aa", // Muted blue-grey for [] {} in groups
+const darkPalette = {
+  comment: "#753501",
+  string: "#e09956",
+  regex: "#7caa70",
   invalid: "#cc0000",
-  unknown: "#888888", // Unknown tokens (gray)
+  unknown: "#888888",
+  groupBracket: "#8899aa",
+  directive: "#ffb86c",
+  tier: "#bd93f9",
+  quality: "#888888",
+  ethereal: "#56d4b6",
+  action: "#e53935",
+  notification: "#c4b870",
+};
+
+const lightPalette = {
+  comment: "#aa805d",
+  string: "#b35900",
+  regex: "#116611",
+  invalid: "#cc0000",
+  unknown: "#7a7a7a",
+  groupBracket: "#5a6877",
+  directive: "#9c5a00",
+  tier: "#7b1fa2",
+  quality: "#555555",
+  ethereal: "#00838f",
+  action: "#d32f2f",
+  notification: "#ad1457",
 };
 
 /**
@@ -166,69 +165,50 @@ export const lightTheme = EditorView.theme(
   { dark: false }
 );
 
-/**
- * Syntax highlighting for dark theme
- */
-export const darkHighlighting = syntaxHighlighting(
-  HighlightStyle.define([
-    { tag: tags.comment, color: colors.comment, fontStyle: "italic" },
-    { tag: tags.string, color: colors.string },
-    { tag: tags.regexp, color: colors.regex },
-    { tag: tags.keyword, color: colors.normal },
-    { tag: tags.invalid, color: colors.invalid, textDecoration: "underline wavy" },
-  ])
-);
+function buildHighlighting(p: typeof darkPalette) {
+  return syntaxHighlighting(
+    HighlightStyle.define([
+      { tag: tags.comment, color: p.comment, fontStyle: "italic" },
+      { tag: tags.string, color: p.string },
+      { tag: tags.regexp, color: p.regex },
+      {
+        tag: tags.invalid,
+        color: p.invalid,
+        textDecoration: "underline wavy",
+      },
+      { tag: d2rulesTags.tier, color: p.tier, fontWeight: "600" },
+      { tag: d2rulesTags.quality, color: p.quality, fontWeight: "600" },
+      {
+        tag: d2rulesTags.ethereal,
+        color: p.ethereal,
+        fontStyle: "italic",
+        fontWeight: "600",
+      },
+      { tag: d2rulesTags.action, color: p.action, fontWeight: "600" },
+      {
+        tag: d2rulesTags.notification,
+        color: p.notification,
+        fontWeight: "600",
+      },
+      {
+        tag: d2rulesTags.directive,
+        color: p.directive,
+        fontWeight: "700",
+        textTransform: "uppercase",
+        letterSpacing: "0.5px",
+      },
+      {
+        tag: d2rulesTags.groupBracket,
+        color: p.groupBracket,
+        fontWeight: "700",
+      },
+      { tag: d2rulesTags.unknown, color: p.unknown },
+    ])
+  );
+}
 
-/**
- * Syntax highlighting for light theme (adjusted colors for visibility)
- */
-export const lightHighlighting = syntaxHighlighting(
-  HighlightStyle.define([
-    { tag: tags.comment, color: "#aa805d", fontStyle: "italic" },
-    { tag: tags.string, color: "#b35900" },
-    { tag: tags.regexp, color: "#116611" },
-    { tag: tags.keyword, color: "#555555" },
-    { tag: tags.invalid, color: "#cc0000", textDecoration: "underline wavy" },
-  ])
-);
-
-/**
- * Custom class-based styling for quality-specific tokens
- *
- * These are applied via `.tok-{className}` classes in the editor
- */
-export const qualityHighlighting = EditorView.baseTheme({
-  // Quality colors (Diablo 2 palette)
-  ".tok-qualityUnique": { color: colors.unique, fontWeight: "600" },
-  ".tok-qualitySet": { color: colors.set, fontWeight: "600" },
-  ".tok-qualityRare": { color: colors.rare },
-  ".tok-qualityMagic": { color: colors.magic },
-  ".tok-quality": { color: colors.normal },
-
-  // Other keyword types
-  ".tok-tier": { color: colors.tier },
-  ".tok-color": { color: colors.color },
-  ".tok-visibility": { color: colors.visibility, fontWeight: "600" },
-  ".tok-directive": {
-    color: colors.directive,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: "0.5px",
-  },
-  ".tok-notify": { color: colors.notify, fontWeight: "600" },
-  ".tok-sound": { color: colors.sound },
-  ".tok-modifier": { color: colors.modifier, fontStyle: "italic" },
-  ".tok-display": { color: colors.display },
-  ".tok-map": { color: colors.map, fontWeight: "600" },
-  ".tok-groupBracket": { color: colors.groupBracket, fontWeight: "700" },
-
-  // Invalid tokens
-  ".tok-invalid": {
-    color: colors.invalid,
-    textDecoration: "underline wavy",
-    textDecorationColor: colors.invalid,
-  },
-});
+export const darkHighlighting = buildHighlighting(darkPalette);
+export const lightHighlighting = buildHighlighting(lightPalette);
 
 export const autocompleteTheme = EditorView.baseTheme({
   ".cm-tooltip.cm-tooltip-autocomplete": {
@@ -299,14 +279,14 @@ export const autocompleteTheme = EditorView.baseTheme({
  * Get theme extensions for dark mode
  */
 export function getDarkThemeExtensions() {
-  return [darkTheme, darkHighlighting, qualityHighlighting, autocompleteTheme];
+  return [darkTheme, darkHighlighting, autocompleteTheme];
 }
 
 /**
  * Get theme extensions for light mode
  */
 export function getLightThemeExtensions() {
-  return [lightTheme, lightHighlighting, qualityHighlighting, autocompleteTheme];
+  return [lightTheme, lightHighlighting, autocompleteTheme];
 }
 
 

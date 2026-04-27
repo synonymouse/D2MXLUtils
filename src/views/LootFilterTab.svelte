@@ -228,11 +228,9 @@
           <div class="help-column">
             <h4>Quality</h4>
             <ul>
-              <li><span class="kw-unique">unique</span></li>
-              <li><span class="kw-set">set</span></li>
-              <li><span class="kw-rare">rare</span></li>
-              <li><span class="kw-magic">magic</span>, craft, honor</li>
-              <li>normal, low, superior</li>
+              <li><span class="kw-quality">unique</span>, <span class="kw-quality">set</span>, <span class="kw-quality">rare</span></li>
+              <li><span class="kw-quality">magic</span>, <span class="kw-quality">craft</span>, <span class="kw-quality">honor</span></li>
+              <li><span class="kw-quality">normal</span>, <span class="kw-quality">low</span>, <span class="kw-quality">superior</span></li>
             </ul>
           </div>
 
@@ -240,11 +238,17 @@
             <h4>Tier</h4>
             <ul>
               <li>
-                <span class="kw-flag">sacred</span>,
-                <span class="kw-flag">angelic</span>,
-                <span class="kw-flag">master</span>
+                <span class="kw-tier">sacred</span>,
+                <span class="kw-tier">angelic</span>,
+                <span class="kw-tier">master</span>
               </li>
-              <li>0, 1, 2, 3, 4</li>
+              <li>
+                <span class="kw-tier">0</span>,
+                <span class="kw-tier">1</span>,
+                <span class="kw-tier">2</span>,
+                <span class="kw-tier">3</span>,
+                <span class="kw-tier">4</span>
+              </li>
             </ul>
           </div>
 
@@ -273,30 +277,30 @@
           </div>
 
           <div class="help-column">
-            <h4>Visibility / Notify</h4>
+            <h4>Action / Notification</h4>
             <ul>
-              <li><span class="kw-flag">show</span>, <span class="kw-flag">hide</span></li>
-              <li><span class="kw-flag">notify</span> (required for alerts)</li>
-              <li><span class="kw-flag">map</span> (automap marker)</li>
+              <li><span class="kw-action">show</span>, <span class="kw-action">hide</span></li>
+              <li><span class="kw-notification">notify</span> (required for alerts)</li>
+              <li><span class="kw-notification">map</span> (automap marker)</li>
             </ul>
           </div>
 
           <div class="help-column">
             <h4>Sounds</h4>
             <ul>
-              <li><span class="kw-flag">sound1</span> - <span class="kw-flag">sound7</span></li>
-              <li><span class="kw-flag">sound_none</span></li>
+              <li><span class="kw-notification">sound1</span> - <span class="kw-notification">sound7</span></li>
+              <li><span class="kw-notification">sound_none</span></li>
             </ul>
           </div>
         </div>
 
         <p class="help-note">
-          <strong>eth</strong> — match ethereal items only<br />
-          <strong>stat</strong> — include item stats in the notification<br />
-          <strong>map</strong> — drop a red-cross marker on the in-game automap at the item's location (independent of <span class="kw-flag">notify</span>)<br />
-          <strong>&#123;pattern&#125;</strong> — regex match on stat text<br />
-          <strong>Groups:</strong> <code class="inline-code">[unique gold notify] &#123; "Jordan" "Mara" &#125;</code> — shared attributes for each rule inside<br />
-          <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-flag">show</span> reveal items.
+          <strong><span class="kw-ethereal">eth</span></strong> — match ethereal items only<br />
+          <strong><span class="kw-notification">stat</span></strong> — include item stats in the notification<br />
+          <strong><span class="kw-notification">map</span></strong> — drop a red-cross marker on the in-game automap at the item's location (independent of <span class="kw-notification">notify</span>)<br />
+          <strong><span class="kw-stat">&#123;pattern&#125;</span></strong> — regex match on stat text<br />
+          <strong>Groups:</strong> <code class="inline-code">[<span class="kw-quality">unique</span> <span class="kw-c-gold">gold</span> <span class="kw-notification">notify</span>] &#123; <span class="kw-name">"Jordan"</span> <span class="kw-name">"Mara"</span> &#125;</code> — shared attributes for each rule inside<br />
+          <strong>Default mode:</strong> place <code class="inline-code">hide default</code> (or <code class="inline-code">show default</code>) on its own line at the top of the file. With <code class="inline-code">hide default</code>, only rules with <span class="kw-action">show</span> reveal items.
         </p>
       </div>
     </details>
@@ -510,19 +514,21 @@
     padding: 2px 0;
   }
 
-  /* Quality keywords — match the D2 item-rarity palette so the reference
-     echoes what each quality looks like in-game. */
-  .kw-unique { color: #c7a84c; font-weight: 600; }
-  .kw-set    { color: #3d9d4a; font-weight: 600; }
-  .kw-rare   { color: #d4a72c; font-weight: 600; }
-  .kw-magic  { color: #5080ff; font-weight: 600; }
+  .kw-quality      { color: #888888; font-weight: 600; }
+  .kw-tier         { color: #bd93f9; font-weight: 600; }
+  .kw-ethereal     { color: #56d4b6; font-weight: 600; font-style: italic; }
+  .kw-action       { color: #e53935; font-weight: 600; }
+  .kw-notification { color: #c4b870; font-weight: 600; }
+  .kw-name         { color: #e09956; font-weight: 600; }
+  .kw-stat         { color: #7caa70; font-weight: 600; }
 
-  /* Unified flag color for tier / visibility / notify / map / sound — these
-     are structural keywords, not semantically colored concepts. */
-  .kw-flag {
-    color: var(--accent-primary);
-    font-weight: 600;
-  }
+  :global([data-theme="light"]) .kw-quality      { color: #555555; }
+  :global([data-theme="light"]) .kw-tier         { color: #7b1fa2; }
+  :global([data-theme="light"]) .kw-ethereal     { color: #00838f; }
+  :global([data-theme="light"]) .kw-action       { color: #d32f2f; }
+  :global([data-theme="light"]) .kw-notification { color: #ad1457; }
+  :global([data-theme="light"]) .kw-name         { color: #b35900; }
+  :global([data-theme="light"]) .kw-stat         { color: #116611; }
 
   /* Literal color swatches: each color name is rendered in its own color
      so the reference doubles as a color palette. Values picked to stay

@@ -1,36 +1,37 @@
 /**
- * CodeMirror 6 language definition for D2Stats-style loot filter DSL
- *
- * @module d2rules-language
+ * CodeMirror 6 language definition for D2Stats-style loot filter DSL.
  */
 import { StreamLanguage, LanguageSupport } from "@codemirror/language";
+import { Tag } from "@lezer/highlight";
 
-// Quality keywords (item quality)
+export const d2rulesTags = {
+  tier: Tag.define(),
+  quality: Tag.define(),
+  ethereal: Tag.define(),
+  action: Tag.define(),
+  notification: Tag.define(),
+  directive: Tag.define(),
+  groupBracket: Tag.define(),
+  unknown: Tag.define(),
+};
+
 const QUALITY_KEYWORDS = [
   "unique",
   "set",
   "rare",
   "magic",
   "craft",
+  "crafted",
   "honor",
+  "honorific",
   "low",
+  "inferior",
   "normal",
   "superior",
 ];
 
-// Tier keywords (item tier)
-const TIER_KEYWORDS = [
-  "sacred",
-  "angelic",
-  "master",
-  "0",
-  "1",
-  "2",
-  "3",
-  "4",
-];
+const TIER_KEYWORDS = ["sacred", "angelic", "master", "0", "1", "2", "3", "4"];
 
-// Color keywords (no longer include show/hide — those are visibility)
 const COLOR_KEYWORDS = [
   "white",
   "red",
@@ -47,13 +48,8 @@ const COLOR_KEYWORDS = [
   "purple",
 ];
 
-// Visibility keywords
 const VISIBILITY_KEYWORDS = ["show", "hide"];
-
-// Notify keyword (required to fire an overlay notification)
 const NOTIFY_KEYWORDS = ["notify"];
-
-// Sound keywords
 const SOUND_KEYWORDS = [
   "sound_none",
   "sound1",
@@ -64,28 +60,27 @@ const SOUND_KEYWORDS = [
   "sound6",
   "sound7",
 ];
-
-// Display mode keywords
 const DISPLAY_KEYWORDS = ["stat"];
-
-// Modifier keywords
 const MODIFIER_KEYWORDS = ["eth"];
-
-// Map-marker keyword (drops an automap cross on matched items).
 const MAP_KEYWORDS = ["map"];
 
-/**
- * StreamLanguage tokenizer for D2 Rules DSL
- *
- * Token types returned:
- * - comment: Lines starting with #
- * - string: Item name patterns in quotes ("...")
- * - regexp: Stat patterns in braces {...}
- * - keyword: Quality, tier, color, sound, display, modifier keywords
- * - invalid: Unknown tokens
- */
 const d2rulesLanguage = StreamLanguage.define({
   name: "d2rules",
+
+  tokenTable: {
+    tier: d2rulesTags.tier,
+    quality: d2rulesTags.quality,
+    modifier: d2rulesTags.ethereal,
+    visibility: d2rulesTags.action,
+    notify: d2rulesTags.notification,
+    color: d2rulesTags.notification,
+    sound: d2rulesTags.notification,
+    display: d2rulesTags.notification,
+    map: d2rulesTags.notification,
+    directive: d2rulesTags.directive,
+    unknown: d2rulesTags.unknown,
+    groupBracket: d2rulesTags.groupBracket,
+  },
 
   token(stream) {
     // Skip whitespace
@@ -164,11 +159,6 @@ const d2rulesLanguage = StreamLanguage.define({
         return "keyword unknown";
       }
 
-      // Quality keywords with specific styling
-      if (word === "unique") return "keyword qualityUnique";
-      if (word === "set") return "keyword qualitySet";
-      if (word === "rare") return "keyword qualityRare";
-      if (word === "magic" || word === "craft") return "keyword qualityMagic";
       if (QUALITY_KEYWORDS.includes(word)) return "keyword quality";
 
       // Tier keywords

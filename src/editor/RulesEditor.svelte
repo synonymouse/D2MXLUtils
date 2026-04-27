@@ -29,6 +29,7 @@
   } from "./d2rules-theme";
   import { d2rulesLinter, type ValidationResult } from "./d2rules-linter";
   import { d2rulesAutocomplete } from "./d2rules-autocomplete";
+  import { d2rulesHover } from "./d2rules-hover";
   import { itemsDictionaryStore } from "../stores";
 
   /** Pick the editor theme that matches the active app theme. Reads the
@@ -115,6 +116,8 @@
       d2rulesAutocomplete(() => itemsDictionaryStore.options),
 
       d2rulesLinter(500, onvalidate),
+
+      d2rulesHover(),
 
       // Listen for document changes
       EditorView.updateListener.of((update) => {
@@ -274,5 +277,18 @@
 
   .rules-editor :global(.cm-diagnostic-info) {
     border-left: 3px solid var(--quality-magic, #6969ff);
+  }
+
+  .rules-editor :global(.cm-tooltip-hover-explain) {
+    background: var(--bg-elevated, #252530);
+    border: 1px solid var(--border-primary, #2a2a35);
+    border-radius: var(--radius-sm, 4px);
+    padding: 8px 12px;
+    font-size: var(--text-sm, 13px);
+    line-height: 1.5;
+    color: var(--text-primary, #e8e6e3);
+    font-family: var(--font-sans, system-ui);
+    max-width: 480px;
+    white-space: pre-line;
   }
 </style>

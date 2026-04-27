@@ -18,7 +18,6 @@ export {
   lightTheme,
   darkHighlighting,
   lightHighlighting,
-  qualityHighlighting,
   autocompleteTheme,
   getDarkThemeExtensions,
   getLightThemeExtensions,

@@ -435,6 +435,9 @@ pub fn validate_dsl(text: &str) -> Vec<ValidationError> {
         });
     }
 
+    let rules = collect_rules_with_lines(text);
+    check_subsumption(&rules, &mut errors);
+
     errors
 }
 
@@ -855,6 +858,158 @@ fn parse_default_mode(trimmed: &str) -> DefaultModeParse {
         return DefaultModeParse::ExtraTokens(keyword);
     }
     DefaultModeParse::Directive(keyword == "hide")
+}
+
+// =====================================================================
+// Line classification (for the explainer module)
+// =====================================================================
+
+pub(super) enum ParsedLine {
+    Empty,
+    GroupClose,
+    Directive(bool),
+    GroupHeader(Rule),
+    Rule(Rule),
+    Unparseable,
+}
+
+pub(super) fn classify_line(line: &str) -> ParsedLine {
+    let trimmed = strip_inline_comment(line).trim();
+    if trimmed.is_empty() {
+        return ParsedLine::Empty;
+    }
+    if trimmed == "}" {
+        return ParsedLine::GroupClose;
+    }
+    if let DefaultModeParse::Directive(hide) = parse_default_mode(trimmed) {
+        return ParsedLine::Directive(hide);
+    }
+    if let Some(header_src) = parse_group_open(trimmed) {
+        let mut attrs = Attrs::default();
+        let mut sink: Vec<ParseError> = Vec::new();
+        parse_attrs_into(header_src, &mut attrs, true, 0, &mut sink);
+        let mut rule = Rule::default();
+        attrs.apply_to(&mut rule);
+        return ParsedLine::GroupHeader(rule);
+    }
+    match parse_rule_line(trimmed, 0) {
+        Ok(r) => ParsedLine::Rule(r),
+        Err(_) => ParsedLine::Unparseable,
+    }
+}
+
+// =====================================================================
+// Subsumption analysis
+// =====================================================================
+
+fn collect_rules_with_lines(text: &str) -> Vec<(Rule, usize)> {
+    let mut rules: Vec<(Rule, usize)> = Vec::new();
+    let mut current_group: Option<Attrs> = None;
+
+    for (idx, line) in text.lines().enumerate() {
+        let line_num = idx + 1;
+        let trimmed = strip_inline_comment(line).trim();
+
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed == "}" {
+            current_group = None;
+            continue;
+        }
+        match parse_default_mode(trimmed) {
+            DefaultModeParse::NotDirective => {}
+            DefaultModeParse::Directive(_) | DefaultModeParse::ExtraTokens(_) => continue,
+        }
+
+        if let Some(header_src) = parse_group_open(trimmed) {
+            let mut attrs = Attrs::default();
+            let mut _sink: Vec<ParseError> = Vec::new();
+            parse_attrs_into(header_src, &mut attrs, true, line_num, &mut _sink);
+            current_group = Some(attrs);
+            continue;
+        }
+
+        let mut rule = match parse_rule_line(trimmed, line_num) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Some(ref group_attrs) = current_group {
+            let mut merged = attrs_from_rule(&rule);
+            merged.fill_from_group(group_attrs);
+            let mut fresh = Rule::default();
+            fresh.name_pattern = rule.name_pattern.take();
+            merged.apply_to(&mut fresh);
+            rules.push((fresh, line_num));
+        } else {
+            rules.push((rule, line_num));
+        }
+    }
+    rules
+}
+
+fn rule_subsumes(later: &Rule, earlier: &Rule) -> bool {
+    if !later.tiers.is_empty() {
+        if earlier.tiers.is_empty() {
+            return false;
+        }
+        if !earlier.tiers.iter().all(|t| later.tiers.contains(t)) {
+            return false;
+        }
+    }
+    if !later.qualities.is_empty() {
+        if earlier.qualities.is_empty() {
+            return false;
+        }
+        if !earlier.qualities.iter().all(|q| later.qualities.contains(q)) {
+            return false;
+        }
+    }
+    if later.ethereal && !earlier.ethereal {
+        return false;
+    }
+    if let Some(ref l) = later.name_pattern {
+        match &earlier.name_pattern {
+            Some(e) if e == l => {}
+            _ => return false,
+        }
+    }
+    if !later
+        .stat_patterns
+        .iter()
+        .all(|p| earlier.stat_patterns.contains(p))
+    {
+        return false;
+    }
+    true
+}
+
+fn effects_differ(a: &Rule, b: &Rule) -> bool {
+    a.visibility != b.visibility
+        || a.notify != b.notify
+        || a.color != b.color
+        || a.sound != b.sound
+        || a.map != b.map
+        || a.display_stats != b.display_stats
+}
+
+fn check_subsumption(rules: &[(Rule, usize)], errors: &mut Vec<ValidationError>) {
+    for (i, (earlier, earlier_line)) in rules.iter().enumerate() {
+        for (later, later_line) in rules.iter().skip(i + 1) {
+            if rule_subsumes(later, earlier) && effects_differ(earlier, later) {
+                errors.push(ValidationError {
+                    line: *earlier_line,
+                    column: 0,
+                    message: format!(
+                        "Shadowed by rule on line {} — its broader match overrides this rule's effect",
+                        later_line
+                    ),
+                    severity: ValidationSeverity::Warning,
+                });
+                break;
+            }
+        }
+    }
 }
 
 // =====================================================================
@@ -1292,5 +1447,93 @@ mod tests {
         // must keep parsing identically under the new Vec-based model.
         let cfg = parse_dsl("rare {(?s)a.*b.*c}").unwrap();
         assert_eq!(cfg.rules[0].stat_patterns, vec!["(?s)a.*b.*c".to_string()]);
+    }
+
+    fn shadow_warnings(errors: &[ValidationError]) -> Vec<&ValidationError> {
+        errors
+            .iter()
+            .filter(|e| e.message.contains("Shadowed by rule on line"))
+            .collect()
+    }
+
+    #[test]
+    fn subsumption_warns_when_broader_rule_below_with_different_effect() {
+        let src = "\"Stone of Jordan\" unique gold notify\nunique";
+        let errors = validate_dsl(src);
+        let shadows = shadow_warnings(&errors);
+        assert_eq!(shadows.len(), 1, "got: {:?}", errors);
+        assert_eq!(shadows[0].line, 1);
+        assert_eq!(shadows[0].severity, ValidationSeverity::Warning);
+        assert!(shadows[0].message.contains("line 2"));
+    }
+
+    #[test]
+    fn subsumption_silent_when_effects_identical() {
+        let src = "unique gold notify\nunique gold notify";
+        let errors = validate_dsl(src);
+        assert!(shadow_warnings(&errors).is_empty(), "got: {:?}", errors);
+    }
+
+    #[test]
+    fn subsumption_silent_when_predicates_disjoint() {
+        // Real-world case from the user: hide sacred trash, then highlight
+        // sacred uniques. Quality sets are disjoint — no shadowing.
+        let src = "sacred low normal superior magic hide\nsacred unique notify map";
+        let errors = validate_dsl(src);
+        assert!(
+            shadow_warnings(&errors).is_empty(),
+            "disjoint quality sets must not warn: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn subsumption_only_emits_first_shadower_per_rule() {
+        // Line 1 is shadowed by every later `unique` line. Lines 2..=4 have
+        // identical (empty) effects, so they don't shadow each other. We
+        // expect exactly one warning, pointing at line 2.
+        let src = "unique gold notify\nunique\nunique\nunique";
+        let errors = validate_dsl(src);
+        let shadows = shadow_warnings(&errors);
+        assert_eq!(shadows.len(), 1, "got: {:?}", errors);
+        assert_eq!(shadows[0].line, 1);
+        assert!(shadows[0].message.contains("line 2"));
+    }
+
+    #[test]
+    fn subsumption_handles_group_inheritance() {
+        // The child rule effectively reads `"Jordan" unique gold notify`.
+        // The top-level `unique show` matches all uniques (predicate is a
+        // superset because it has no name pattern) and changes visibility,
+        // so the child should be flagged as shadowed.
+        let src = "[unique gold notify] {\n  \"Jordan\"\n}\nunique show";
+        let errors = validate_dsl(src);
+        let shadows = shadow_warnings(&errors);
+        assert_eq!(shadows.len(), 1, "got: {:?}", errors);
+        assert_eq!(shadows[0].line, 2);
+        assert!(shadows[0].message.contains("line 4"));
+    }
+
+    #[test]
+    fn subsumption_warns_when_later_rule_drops_name_pattern() {
+        // Later rule has no name pattern, so it matches every name —
+        // strict superset of the earlier `"Ring$"` rule.
+        let src = "\"Ring$\" unique gold notify\nunique hide";
+        let errors = validate_dsl(src);
+        let shadows = shadow_warnings(&errors);
+        assert_eq!(shadows.len(), 1, "got: {:?}", errors);
+        assert_eq!(shadows[0].line, 1);
+    }
+
+    #[test]
+    fn subsumption_stat_patterns_subset_logic() {
+        // Earlier rule constrains All Skills + FCR; later rule only
+        // constrains All Skills. Later's stat list is a subset, so it
+        // matches strictly more items — should subsume.
+        let src = "rare {All Skills} {Faster Cast} gold notify\nrare {All Skills} hide";
+        let errors = validate_dsl(src);
+        let shadows = shadow_warnings(&errors);
+        assert_eq!(shadows.len(), 1, "got: {:?}", errors);
+        assert_eq!(shadows[0].line, 1);
     }
 }
