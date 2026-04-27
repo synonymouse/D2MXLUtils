@@ -72,7 +72,7 @@
   );
 
   // Items that get the two-line "name + base" treatment.
-  const isLargeDrop = $derived(item.quality === 'Set' || item.unique_kind != null);
+  const isLargeDrop = $derived(item.quality === 'Set' || item.quality === 'Unique');
 
   const showStats = $derived(item.filter?.display_stats === true && item.stats.length > 0);
   const statLines = $derived(showStats ? item.stats.split('\n') : []);
