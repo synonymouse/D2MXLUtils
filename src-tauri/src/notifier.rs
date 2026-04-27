@@ -234,6 +234,13 @@ impl DropScanner {
         self.verbose_filter_logging = enabled;
     }
 
+    pub fn set_force_show_all(&self, value: bool) -> Result<(), String> {
+        if !self.loot_hook.is_injected() {
+            return Ok(());
+        }
+        self.loot_hook.set_force_show_all(&self.ctx, value)
+    }
+
     /// Check if filter config is set
     pub fn has_filter_config(&self) -> bool {
         self.filter_config.is_some()
@@ -1094,6 +1101,10 @@ impl DropScanner {
     pub fn set_filter_enabled(&mut self, _enabled: bool) {}
 
     pub fn set_verbose_filter_logging(&mut self, _enabled: bool) {}
+
+    pub fn set_force_show_all(&self, _value: bool) -> Result<(), String> {
+        Ok(())
+    }
 
     pub fn is_filter_enabled(&self) -> bool {
         false

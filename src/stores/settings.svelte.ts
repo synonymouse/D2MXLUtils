@@ -45,6 +45,8 @@ export interface AppSettings {
   toggleWindowHotkey: HotkeyConfig;
   /** Hotkey held to enter overlay edit mode (drag notification anchor) */
   editOverlayHotkey: HotkeyConfig;
+  /** Hotkey held to reveal every item on the ground, bypassing `hide` rules */
+  revealHiddenHotkey: HotkeyConfig;
   /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
   verboseFilterLogging: boolean;
   autoAlwaysShowItems: boolean;
@@ -73,6 +75,12 @@ const DEFAULT_EDIT_OVERLAY_HOTKEY: HotkeyConfig = {
   display: 'Ctrl+Alt',
 };
 
+const DEFAULT_REVEAL_HIDDEN_HOTKEY: HotkeyConfig = {
+  keyCode: 0x5A,
+  modifiers: 0,
+  display: 'Z',
+};
+
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -87,6 +95,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   compactName: false,
   toggleWindowHotkey: DEFAULT_HOTKEY,
   editOverlayHotkey: DEFAULT_EDIT_OVERLAY_HOTKEY,
+  revealHiddenHotkey: DEFAULT_REVEAL_HIDDEN_HOTKEY,
   verboseFilterLogging: false,
   autoAlwaysShowItems: true,
 };
@@ -278,6 +287,19 @@ class SettingsStore {
       await invoke('update_edit_mode_hotkey', { hotkey });
     } catch (error) {
       console.error('[Settings] Failed to update edit-mode hotkey:', error);
+    }
+  }
+
+  get revealHiddenHotkey(): HotkeyConfig {
+    return this._settings.revealHiddenHotkey;
+  }
+
+  async setRevealHiddenHotkey(hotkey: HotkeyConfig): Promise<void> {
+    this.set('revealHiddenHotkey', hotkey);
+    try {
+      await invoke('update_reveal_hidden_hotkey', { hotkey });
+    } catch (error) {
+      console.error('[Settings] Failed to update reveal-hidden hotkey:', error);
     }
   }
 

@@ -8,6 +8,7 @@
   let soundVolume = $derived(settingsStore.settings.soundVolume);
   let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
   let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
+  let revealHiddenHotkey = $derived(settingsStore.settings.revealHiddenHotkey);
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
   let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
 
@@ -48,6 +49,10 @@
 
   function handleEditOverlayHotkeyChange(hotkey: HotkeyConfig) {
     settingsStore.setEditOverlayHotkey(hotkey);
+  }
+
+  function handleRevealHiddenHotkeyChange(hotkey: HotkeyConfig) {
+    settingsStore.setRevealHiddenHotkey(hotkey);
   }
 
   function handleCheckForUpdates() {
@@ -99,6 +104,14 @@
         <span class="setting-hint">Hold to drag the drop-notification anchor on the overlay</span>
       </div>
       <HotkeyInput value={editOverlayHotkey} onchange={handleEditOverlayHotkeyChange} />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Reveal hidden items</span>
+        <span class="setting-hint">Hold to show every item on the ground, including those filtered out by <code>hide</code> rules</span>
+      </div>
+      <HotkeyInput value={revealHiddenHotkey} onchange={handleRevealHiddenHotkeyChange} />
     </div>
   </div>
 

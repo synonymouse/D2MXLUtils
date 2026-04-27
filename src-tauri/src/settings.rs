@@ -65,6 +65,10 @@ pub struct AppSettings {
     #[serde(default = "default_edit_overlay_hotkey")]
     pub edit_overlay_hotkey: HotkeyConfig,
 
+    /// Hotkey held to reveal every item on the ground, bypassing `hide` rules
+    #[serde(default = "default_reveal_hidden_hotkey")]
+    pub reveal_hidden_hotkey: HotkeyConfig,
+
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     #[serde(default)]
     pub verbose_filter_logging: bool,
@@ -129,6 +133,14 @@ fn default_edit_overlay_hotkey() -> HotkeyConfig {
     }
 }
 
+fn default_reveal_hidden_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        key_code: 0x5A, // 'Z'
+        modifiers: 0,
+        display: "Z".to_string(),
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -144,6 +156,7 @@ impl Default for AppSettings {
             compact_name: false,
             toggle_window_hotkey: HotkeyConfig::default(),
             edit_overlay_hotkey: default_edit_overlay_hotkey(),
+            reveal_hidden_hotkey: default_reveal_hidden_hotkey(),
             verbose_filter_logging: false,
             auto_always_show_items: default_auto_always_show_items(),
         }

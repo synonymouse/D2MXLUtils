@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
-use crate::hotkeys::{EditModeState, HotkeyState};
+use crate::hotkeys::{EditModeState, HotkeyState, RevealHiddenState};
 use crate::logger::{error as log_error, info as log_info};
 
 use notifier::{DropScanner, ItemsDictionary};
@@ -69,6 +69,8 @@ struct AppState {
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     verbose_filter_logging: Arc<AtomicBool>,
     auto_always_show_items: Arc<AtomicBool>,
+    /// Driven by the reveal-hidden hotkey watcher; mirrored into the hook.
+    reveal_hidden_active: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     // Joined on shutdown so DropScanner::drop → loot_hook.eject runs before exit.
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
@@ -104,6 +106,7 @@ fn start_scanner_internal(
     filter_enabled: Arc<AtomicBool>,
     verbose_filter_logging: Arc<AtomicBool>,
     auto_always_show_items: Arc<AtomicBool>,
+    reveal_hidden_active: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -170,6 +173,13 @@ fn start_scanner_internal(
             scanner.set_filter_enabled(filter_enabled.load(Ordering::SeqCst));
             scanner.set_verbose_filter_logging(verbose_filter_logging.load(Ordering::SeqCst));
 
+            // Seed the hook with the current flag so a key already held on
+            // attach (e.g. user reopened the game) works on frame one.
+            let mut last_reveal = reveal_hidden_active.load(Ordering::SeqCst);
+            if let Err(e) = scanner.set_force_show_all(last_reveal) {
+                log_error(&format!("Initial set_force_show_all failed: {}", e));
+            }
+
             let mut was_ingame = false;
             let mut dict_published = false;
             let mut pending_set_always_show = false;
@@ -232,6 +242,14 @@ fn start_scanner_internal(
                 scanner.set_verbose_filter_logging(
                     verbose_filter_logging.load(Ordering::SeqCst),
                 );
+
+                let current_reveal = reveal_hidden_active.load(Ordering::SeqCst);
+                if current_reveal != last_reveal {
+                    if let Err(e) = scanner.set_force_show_all(current_reveal) {
+                        log_error(&format!("set_force_show_all failed: {}", e));
+                    }
+                    last_reveal = current_reveal;
+                }
 
                 // Scan for items
                 if ingame {
@@ -349,6 +367,7 @@ fn spawn_auto_scanner(
     filter_enabled: Arc<AtomicBool>,
     verbose_filter_logging: Arc<AtomicBool>,
     auto_always_show_items: Arc<AtomicBool>,
+    reveal_hidden_active: Arc<AtomicBool>,
     filter_config_generation: Arc<AtomicU64>,
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
@@ -365,6 +384,7 @@ fn spawn_auto_scanner(
                     filter_enabled.clone(),
                     verbose_filter_logging.clone(),
                     auto_always_show_items.clone(),
+                    reveal_hidden_active.clone(),
                     filter_config_generation.clone(),
                     scanner_thread.clone(),
                     game_status.clone(),
@@ -930,6 +950,7 @@ fn main() {
                 filter_enabled: Arc::new(AtomicBool::new(true)),
                 verbose_filter_logging: Arc::new(AtomicBool::new(false)),
                 auto_always_show_items: Arc::new(AtomicBool::new(true)),
+                reveal_hidden_active: Arc::new(AtomicBool::new(false)),
                 filter_config_generation: Arc::new(AtomicU64::new(0)),
                 scanner_thread: Arc::new(Mutex::new(None)),
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
@@ -941,6 +962,7 @@ fn main() {
             let filter_enabled = state.filter_enabled.clone();
             let verbose_filter_logging = state.verbose_filter_logging.clone();
             let auto_always_show_items = state.auto_always_show_items.clone();
+            let reveal_hidden_active = state.reveal_hidden_active.clone();
             let filter_config_generation = state.filter_config_generation.clone();
             let scanner_thread = state.scanner_thread.clone();
             let game_status = state.game_status.clone();
@@ -950,10 +972,12 @@ fn main() {
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
             let edit_mode_state = EditModeState::new();
+            let reveal_hidden_state = RevealHiddenState::new(reveal_hidden_active.clone());
 
             // Load settings and start hotkey listener
             let app_handle_for_hotkeys = app.handle().clone();
             let app_handle_for_edit_mode = app.handle().clone();
+            let app_handle_for_reveal = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
                 Ok(loaded_settings) => {
                     hotkey_state
@@ -962,6 +986,8 @@ fn main() {
                         app_handle_for_edit_mode,
                         loaded_settings.edit_overlay_hotkey,
                     );
+                    reveal_hidden_state
+                        .start(app_handle_for_reveal, loaded_settings.reveal_hidden_hotkey);
                     verbose_filter_logging
                         .store(loaded_settings.verbose_filter_logging, Ordering::SeqCst);
                     auto_always_show_items
@@ -971,15 +997,16 @@ fn main() {
                     log_error(&format!("Failed to load settings for hotkeys: {}", e));
                     // Start with default hotkeys
                     hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
-                    edit_mode_state.start(
-                        app_handle_for_edit_mode,
-                        settings::AppSettings::default().edit_overlay_hotkey,
-                    );
+                    let defaults = settings::AppSettings::default();
+                    edit_mode_state.start(app_handle_for_edit_mode, defaults.edit_overlay_hotkey);
+                    reveal_hidden_state
+                        .start(app_handle_for_reveal, defaults.reveal_hidden_hotkey);
                 }
             }
 
             app.manage(hotkey_state);
             app.manage(edit_mode_state);
+            app.manage(reveal_hidden_state);
 
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
@@ -990,6 +1017,7 @@ fn main() {
                 filter_enabled.clone(),
                 verbose_filter_logging.clone(),
                 auto_always_show_items.clone(),
+                reveal_hidden_active.clone(),
                 filter_config_generation.clone(),
                 scanner_thread.clone(),
                 game_status.clone(),
@@ -1062,6 +1090,7 @@ fn main() {
             settings::save_window_state,
             hotkeys::update_hotkey,
             hotkeys::update_edit_mode_hotkey,
+            hotkeys::update_reveal_hidden_hotkey,
             profiles::list_profiles,
             profiles::load_profile,
             profiles::save_profile,
