@@ -121,8 +121,6 @@
     const [keyCode] = result;
 
     const modifiers = modifiersFromEvent(e);
-    if (modifiers === 0) return;
-
     commit({ keyCode, modifiers, display: buildDisplayString(modifiers, keyCode) });
   }
 

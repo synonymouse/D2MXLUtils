@@ -6,11 +6,49 @@
 
   // Derived state from settings store
   let soundVolume = $derived(settingsStore.settings.soundVolume);
-  let toggleWindowHotkey = $derived(settingsStore.settings.toggleWindowHotkey);
-  let editOverlayHotkey = $derived(settingsStore.settings.editOverlayHotkey);
-  let revealHiddenHotkey = $derived(settingsStore.settings.revealHiddenHotkey);
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
   let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
+
+  type HotkeyId = 'toggleWindow' | 'editOverlay' | 'revealHidden';
+  interface HotkeyRow {
+    id: HotkeyId;
+    label: string;
+    hint: string;
+    setter: (h: HotkeyConfig) => void;
+  }
+  const HOTKEY_ROWS: readonly HotkeyRow[] = [
+    {
+      id: 'toggleWindow',
+      label: 'Toggle window',
+      hint: 'Show/hide main window over game',
+      setter: (h) => settingsStore.setToggleWindowHotkey(h),
+    },
+    {
+      id: 'editOverlay',
+      label: 'Reposition notifications',
+      hint: 'Hold to drag the drop-notification anchor on the overlay',
+      setter: (h) => settingsStore.setEditOverlayHotkey(h),
+    },
+    {
+      id: 'revealHidden',
+      label: 'Reveal hidden items',
+      hint: 'Hold to show every item on the ground, including those filtered out by `hide` rules',
+      setter: (h) => settingsStore.setRevealHiddenHotkey(h),
+    },
+  ];
+
+  // Map id -> live HotkeyConfig from the store. Values stay reactive because
+  // the getter is invoked inside a $derived.
+  const HOTKEY_GETTERS: Record<HotkeyId, () => HotkeyConfig> = {
+    toggleWindow: () => settingsStore.settings.toggleWindowHotkey,
+    editOverlay:  () => settingsStore.settings.editOverlayHotkey,
+    revealHidden: () => settingsStore.settings.revealHiddenHotkey,
+  };
+  let hotkeyValues = $derived(
+    Object.fromEntries(
+      (Object.keys(HOTKEY_GETTERS) as HotkeyId[]).map((id) => [id, HOTKEY_GETTERS[id]()]),
+    ) as Record<HotkeyId, HotkeyConfig>,
+  );
 
   let updaterState = $derived(updaterStore.state);
   let checkDisabled = $derived(
@@ -43,16 +81,26 @@
     settingsStore.setSoundVolume(parseFloat(target.value));
   }
 
-  function handleHotkeyChange(hotkey: HotkeyConfig) {
-    settingsStore.setToggleWindowHotkey(hotkey);
+  const UNBOUND: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
+
+  function sameChord(a: HotkeyConfig, b: HotkeyConfig): boolean {
+    return a.keyCode === b.keyCode && a.modifiers === b.modifiers;
   }
 
-  function handleEditOverlayHotkeyChange(hotkey: HotkeyConfig) {
-    settingsStore.setEditOverlayHotkey(hotkey);
+  function isBound(h: HotkeyConfig): boolean {
+    return h.keyCode !== 0 || h.modifiers !== 0;
   }
 
-  function handleRevealHiddenHotkeyChange(hotkey: HotkeyConfig) {
-    settingsStore.setRevealHiddenHotkey(hotkey);
+  function handleHotkeyChange(id: HotkeyId, hotkey: HotkeyConfig) {
+    if (isBound(hotkey)) {
+      for (const row of HOTKEY_ROWS) {
+        if (row.id === id) continue;
+        if (sameChord(hotkeyValues[row.id], hotkey)) {
+          row.setter(UNBOUND);
+        }
+      }
+    }
+    HOTKEY_ROWS.find((r) => r.id === id)!.setter(hotkey);
   }
 
   function handleCheckForUpdates() {
@@ -90,29 +138,18 @@
   <div class="settings-section">
     <h2 class="section-title">Hotkeys</h2>
 
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Toggle window</span>
-        <span class="setting-hint">Show/hide main window over game</span>
+    {#each HOTKEY_ROWS as row (row.id)}
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{row.label}</span>
+          <span class="setting-hint">{@html row.hint.replace(/`([^`]+)`/g, '<code>$1</code>')}</span>
+        </div>
+        <HotkeyInput
+          value={hotkeyValues[row.id]}
+          onchange={(h) => handleHotkeyChange(row.id, h)}
+        />
       </div>
-      <HotkeyInput value={toggleWindowHotkey} onchange={handleHotkeyChange} />
-    </div>
-
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Reposition notifications</span>
-        <span class="setting-hint">Hold to drag the drop-notification anchor on the overlay</span>
-      </div>
-      <HotkeyInput value={editOverlayHotkey} onchange={handleEditOverlayHotkeyChange} />
-    </div>
-
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Reveal hidden items</span>
-        <span class="setting-hint">Hold to show every item on the ground, including those filtered out by <code>hide</code> rules</span>
-      </div>
-      <HotkeyInput value={revealHiddenHotkey} onchange={handleRevealHiddenHotkeyChange} />
-    </div>
+    {/each}
   </div>
 
   <div class="settings-section">

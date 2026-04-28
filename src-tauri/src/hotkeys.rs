@@ -286,8 +286,7 @@ fn chord_is_pressed(hk: &HotkeyConfig) -> bool {
     const MOD_SHIFT: u32 = 0x0004;
     const MOD_WIN: u32 = 0x0008;
 
-    // Require at least one modifier so a bare key doesn't constantly trigger.
-    if hk.modifiers == 0 {
+    if hk.key_code == 0 && hk.modifiers == 0 {
         return false;
     }
 
