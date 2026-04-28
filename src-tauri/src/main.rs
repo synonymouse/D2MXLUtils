@@ -54,8 +54,10 @@ use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow, SetWindowLongW,
-    SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SW_HIDE, SW_SHOWNA, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNA, WS_BORDER,
+    WS_CAPTION, WS_DLGFRAME, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
 };
 
 /// Shared state for controlling the scanner
@@ -620,6 +622,31 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
             SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex);
             OVERLAY_LAST_CLICK_THROUGH_APPLIED
                 .store(if desired_ct { 1 } else { 0 }, Ordering::SeqCst);
+
+            // On some systems Tauri's `decorations: false` leaks chrome bits
+            // (Aero Lite, Windhawk/ExplorerPatcher, classic theme), so strip
+            // them by hand and force WS_POPUP.
+            let style = GetWindowLongW(hwnd_overlay, GWL_STYLE);
+            let chrome_mask = (WS_CAPTION.0
+                | WS_BORDER.0
+                | WS_DLGFRAME.0
+                | WS_THICKFRAME.0
+                | WS_SYSMENU.0
+                | WS_MINIMIZEBOX.0
+                | WS_MAXIMIZEBOX.0) as i32;
+            let new_style = (style & !chrome_mask) | WS_POPUP.0 as i32;
+            if new_style != style {
+                SetWindowLongW(hwnd_overlay, GWL_STYLE, new_style);
+                let _ = SetWindowPos(
+                    hwnd_overlay,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                );
+            }
 
             // Suppress the 1px Win11 DWM accent frame; ignored on Win10.
             const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
