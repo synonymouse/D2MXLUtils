@@ -20,20 +20,29 @@ const NEW_PROFILE_TEMPLATE: &str = r#"# ==================== TRASH HIDES =======
 "Gold" hide
 
 # Low-tier base items (pre-sacred)
-1 2 3 4 low normal superior hide
+1 2 3 4 low normal superior rare hide
 magic hide
 
-sacred hide
-
+sacred low normal superior magic hide
 
 # show sacred eth
 sacred superior eth notify
-sacred rare eth notify
+
+# Potions
+".*Healing Potion$" hide
+".*Mana Potion$" hide
 
 # ==================== ANNOUNCEMENTS ====================
 
+# Gems
+"Onyx|Ruby|Topaz|Diamond|Rainbow Stone|Sapphire|Emerald|Amber|Bloodstone|Amethyst|Skull|Turquoise" hide
+"^Perfect" show
+
 # Jewelry
-"Ring$|Amulet$|Jewel|Quiver" rare notify
+"Jewel|Quiver" rare notify
+
+"Amulet$" rare {[3-9] to All Skills} stat notify
+"Ring$" rare {[1-2] to All Skills} stat notify
 
 # Uniques and sets
 unique notify
@@ -56,6 +65,8 @@ master show notify map purple sound1
   "Great Rune"
   "Enchanted Rune"
   "Elemental Rune"
+  "Container" purple
+  "Runestone|Essence$" red
 }
 
 # Consumables
@@ -66,9 +77,6 @@ master show notify map purple sound1
   "Shrine \(10"
   "Vessel"
 }
-
-"Container" purple notify map
-"Runestone|Essence$" red notify map
 
 # Essences, relics, arcane materials, enchant scrolls
 [notify map sound2] {
@@ -114,7 +122,7 @@ master show notify map purple sound1
 [notify map] {
   "Trophy"
   "Occult Effigy"
-  "Emblem"
+  "Emblem of"
 }
 
 # Cycles
@@ -125,8 +133,10 @@ master show notify map purple sound1
   "Golden Cycle" red sound3 map
 }
 
-# Signets (Attributes / Learning / Skill)
-"^Signet of" show notify map orange sound2
+# Signets
+[notify orange map] {
+  "Signet of Learning"
+}
 
 # Charms
 [stat green notify map] {
