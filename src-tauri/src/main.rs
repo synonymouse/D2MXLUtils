@@ -55,7 +55,7 @@ use windows::Win32::UI::Shell::{FOLDERID_LocalAppData, SHGetKnownFolderPath, KF_
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetForegroundWindow, GetWindowLongW, GetWindowRect, MoveWindow, SetWindowLongW,
     SetWindowPos, ShowWindow, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    SWP_SHOWWINDOW, SW_HIDE, SW_SHOWNA, WS_EX_LAYERED, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    SW_HIDE, SW_SHOWNA, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
 };
 
 /// Shared state for controlling the scanner
@@ -507,7 +507,6 @@ fn get_item_filter_action(
 #[tauri::command]
 fn set_overlay_interactive(app: AppHandle, active: bool) -> Result<(), String> {
     OVERLAY_CLICK_THROUGH.store(!active, Ordering::SeqCst);
-    // Re-sync immediately so the style change doesn't wait ~250 ms for the next tick.
     #[cfg(target_os = "windows")]
     {
         let _ = sync_overlay_with_game_impl(&app);
@@ -519,11 +518,6 @@ fn set_overlay_interactive(app: AppHandle, active: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Sync the transparent overlay window with the Diablo II game window.
-///
-/// - Positions and resizes the `overlay` window to match Diablo II bounds
-/// - Shows overlay only when Diablo II is the foreground window
-/// - Applies WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW styles
 #[tauri::command]
 fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -533,21 +527,24 @@ fn sync_overlay_with_game(app: AppHandle) -> Result<(), String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = app; // suppress unused warning
+        let _ = app;
         Err("Overlay sync is only supported on Windows".to_string())
     }
 }
 
-/// Track if overlay was visible in the previous sync call
 static OVERLAY_WAS_VISIBLE: AtomicBool = AtomicBool::new(false);
-
-// Read by sync_overlay_with_game_impl so its 250 ms style re-apply loop
-// honors whatever set_overlay_interactive last set.
 static OVERLAY_CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
+static OVERLAY_STYLES_APPLIED: AtomicBool = AtomicBool::new(false);
+
+// -1 sentinel = never applied; forces first sync to push the style.
+static OVERLAY_LAST_CLICK_THROUGH_APPLIED: std::sync::atomic::AtomicI8 =
+    std::sync::atomic::AtomicI8::new(-1);
+
+#[cfg(target_os = "windows")]
+static OVERLAY_LAST_RECT: Mutex<Option<RECT>> = Mutex::new(None);
 
 #[cfg(target_os = "windows")]
 fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
-    // Find Diablo II top-level window by class name
     let class_wide: Vec<u16> = OsStr::new("Diablo II")
         .encode_wide()
         .chain(Some(0))
@@ -562,12 +559,10 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
         return Err("Diablo II window handle is null".to_string());
     }
 
-    // Ensure Tauri overlay window exists (by label)
     let overlay_window = app
         .get_webview_window("overlay")
         .ok_or("Overlay window with label 'overlay' not found")?;
 
-    // Find overlay OS window by its title
     let title_wide: Vec<u16> = OsStr::new("D2MXLUtils Overlay")
         .encode_wide()
         .chain(Some(0))
@@ -580,18 +575,21 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
         return Err("Overlay HWND is null".to_string());
     }
 
-    // If game is not the foreground window, hide overlay and exit
     unsafe {
         let fg = GetForegroundWindow();
         if fg.0 != hwnd_game.0 {
             let _ = ShowWindow(hwnd_overlay, SW_HIDE);
             let _ = overlay_window.hide();
             OVERLAY_WAS_VISIBLE.store(false, Ordering::SeqCst);
+            OVERLAY_STYLES_APPLIED.store(false, Ordering::SeqCst);
+            OVERLAY_LAST_CLICK_THROUGH_APPLIED.store(-1, Ordering::SeqCst);
+            if let Ok(mut last) = OVERLAY_LAST_RECT.lock() {
+                *last = None;
+            }
             return Ok(());
         }
     }
 
-    // Read game window rect
     let mut rect = RECT::default();
     unsafe {
         GetWindowRect(hwnd_game, &mut rect).map_err(|e| format!("GetWindowRect failed: {}", e))?;
@@ -600,40 +598,43 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
 
-    // Check if overlay was hidden before (transition from hidden -> visible)
     let was_visible = OVERLAY_WAS_VISIBLE.swap(true, Ordering::SeqCst);
 
-    // WS_EX_TRANSPARENT is toggled by OVERLAY_CLICK_THROUGH so the edit-mode
-    // hotkey can make the overlay receive input.
     unsafe {
-        let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
-        let base_style = ex_style | WS_EX_LAYERED.0 as i32 | WS_EX_TOOLWINDOW.0 as i32;
-        let new_ex_style = if OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst) {
-            base_style | WS_EX_TRANSPARENT.0 as i32
-        } else {
-            base_style & !(WS_EX_TRANSPARENT.0 as i32)
-        };
+        // WS_EX_NOACTIVATE prevents the overlay from ever stealing foreground
+        // from the game — without it, alt-tabbing back triggers a focus war
+        // that flickers the screen edges and steals mouse input.
+        let just_applied = !OVERLAY_STYLES_APPLIED.swap(true, Ordering::SeqCst);
+        if just_applied {
+            let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
+            let desired_ct = OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst);
+            let mut new_ex = ex_style
+                | WS_EX_LAYERED.0 as i32
+                | WS_EX_TOOLWINDOW.0 as i32
+                | WS_EX_NOACTIVATE.0 as i32;
+            if desired_ct {
+                new_ex |= WS_EX_TRANSPARENT.0 as i32;
+            } else {
+                new_ex &= !(WS_EX_TRANSPARENT.0 as i32);
+            }
+            SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex);
+            OVERLAY_LAST_CLICK_THROUGH_APPLIED
+                .store(if desired_ct { 1 } else { 0 }, Ordering::SeqCst);
 
-        SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex_style);
+            // Suppress the 1px Win11 DWM accent frame; ignored on Win10.
+            const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
+            let _ = DwmSetWindowAttribute(
+                hwnd_overlay,
+                DWMWA_BORDER_COLOR,
+                &DWMWA_COLOR_NONE as *const u32 as *const _,
+                std::mem::size_of::<u32>() as u32,
+            );
+        }
 
-        // Disable the Windows 11 DWM border. Even borderless/undecorated windows
-        // get a 1px accent frame on Win11, which shows up as a faint rectangle
-        // on top of the game on a transparent layered overlay. Setting the border
-        // color to DWMWA_COLOR_NONE (0xFFFFFFFE) tells DWM to skip that frame.
-        // Silently ignored on Windows 10 (attribute unsupported).
-        const DWMWA_COLOR_NONE: u32 = 0xFFFFFFFE;
-        let _ = DwmSetWindowAttribute(
-            hwnd_overlay,
-            DWMWA_BORDER_COLOR,
-            &DWMWA_COLOR_NONE as *const u32 as *const _,
-            std::mem::size_of::<u32>() as u32,
-        );
-
-        // Workaround for WebView2 transparency bug on Windows:
-        // WebView2 doesn't apply transparency until the window is resized.
-        // When transitioning from hidden to visible, resize by 1 pixel then back.
+        // WebView2 only commits transparency on a resize, so on the first show
+        // we resize by 1px and back. SW_SHOWNA (not Tauri's show(), which uses
+        // SW_SHOW) — SW_SHOW would activate and steal focus from the game.
         if !was_visible {
-            // First resize to different size
             let _ = MoveWindow(
                 hwnd_overlay,
                 rect.left,
@@ -643,17 +644,35 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
                 BOOL(1),
             );
             let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
-            let _ = overlay_window.show();
-            // Then resize to correct size
             let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1));
+            if let Ok(mut last) = OVERLAY_LAST_RECT.lock() {
+                *last = Some(rect);
+            }
         } else {
-            // Normal case: just move/resize to match game window
-            let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1));
-            let _ = ShowWindow(hwnd_overlay, SW_SHOWNA);
-            let _ = overlay_window.show();
+            let needs_move = OVERLAY_LAST_RECT
+                .lock()
+                .ok()
+                .map(|guard| match *guard {
+                    Some(prev) => {
+                        prev.left != rect.left
+                            || prev.top != rect.top
+                            || prev.right != rect.right
+                            || prev.bottom != rect.bottom
+                    }
+                    None => true,
+                })
+                .unwrap_or(true);
+            if needs_move {
+                let _ = MoveWindow(hwnd_overlay, rect.left, rect.top, width, height, BOOL(1));
+                if let Ok(mut last) = OVERLAY_LAST_RECT.lock() {
+                    *last = Some(rect);
+                }
+            }
         }
 
-        // Reassert top-most z-order without stealing focus
+        // No SWP_SHOWWINDOW: that flag forces a frame repaint each tick, which
+        // re-flashed the Win11 DWM border and was a major source of the
+        // edge-flicker.
         let _ = SetWindowPos(
             hwnd_overlay,
             HWND_TOPMOST,
@@ -661,8 +680,23 @@ fn sync_overlay_with_game_impl(app: &AppHandle) -> Result<(), String> {
             0,
             0,
             0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
+    }
+
+    let desired_ct = OVERLAY_CLICK_THROUGH.load(Ordering::SeqCst);
+    let desired_i8: i8 = if desired_ct { 1 } else { 0 };
+    if OVERLAY_LAST_CLICK_THROUGH_APPLIED.load(Ordering::SeqCst) != desired_i8 {
+        unsafe {
+            let ex_style = GetWindowLongW(hwnd_overlay, GWL_EXSTYLE);
+            let new_ex = if desired_ct {
+                ex_style | WS_EX_TRANSPARENT.0 as i32
+            } else {
+                ex_style & !(WS_EX_TRANSPARENT.0 as i32)
+            };
+            SetWindowLongW(hwnd_overlay, GWL_EXSTYLE, new_ex);
+        }
+        OVERLAY_LAST_CLICK_THROUGH_APPLIED.store(desired_i8, Ordering::SeqCst);
     }
 
     Ok(())
