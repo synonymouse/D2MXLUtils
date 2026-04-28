@@ -19,7 +19,11 @@
     indentWithTab,
   } from "@codemirror/commands";
   import { bracketMatching } from "@codemirror/language";
-  import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+  import {
+    acceptCompletion,
+    closeBrackets,
+    closeBracketsKeymap,
+  } from "@codemirror/autocomplete";
   import { lintGutter, setDiagnostics } from "@codemirror/lint";
 
   import { d2rules } from "./d2rules-language";
@@ -102,6 +106,7 @@
       // Keymaps
       keymap.of([
         ...closeBracketsKeymap,
+        { key: "Tab", run: acceptCompletion },
         ...defaultKeymap,
         ...historyKeymap,
         indentWithTab,
