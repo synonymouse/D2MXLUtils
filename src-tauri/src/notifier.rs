@@ -683,7 +683,8 @@ impl DropScanner {
         if let Ok(raw_stats) = self.injector.get_item_stats(&self.ctx.process, p_unit) {
             let cleaned = strip_color_codes(&raw_stats);
             if !cleaned.trim().is_empty() {
-                scanned.stats = Some(cleaned);
+                let reversed: Vec<&str> = cleaned.lines().rev().collect();
+                scanned.stats = Some(reversed.join("\n"));
             }
         }
 
