@@ -11,11 +11,15 @@
  *   available      — newer stable release found; button shows "Обновление vX"
  *   downloading    — backend is streaming the new .exe (bytes counter)
  *   ready          — self_replace succeeded; button shows "Перезапустить"
- *   error          — only surfaced for MANUAL checks; auto checks fail to idle
+ *   error          — phase 'check': manual check failed (network etc.).
+ *                    phase 'install': download/self_replace failed (often Defender);
+ *                    surfaced in the header pill with a manual-download fallback.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+
+const RELEASES_URL = 'https://github.com/synonymouse/D2MXLUtils/releases/latest';
 
 export type UpdaterState =
   | { kind: 'idle' }
@@ -24,7 +28,7 @@ export type UpdaterState =
   | { kind: 'available'; latest: string; current: string; assetUrl: string }
   | { kind: 'downloading'; latest: string; downloaded: number }
   | { kind: 'ready'; latest: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; phase: 'check' | 'install'; message: string; latest?: string; downloadUrl?: string };
 
 interface CheckResult {
   status: 'up_to_date' | 'available';
@@ -70,10 +74,19 @@ class UpdaterStore {
     });
     this._unlisteners.push(unReady);
 
-    const unError = await listen('updater-error', () => {
-      // Silent revert: download/self_replace failed. Button disappears,
-      // user can trigger a fresh check later.
-      this._state = { kind: 'idle' };
+    const unError = await listen<string>('updater-error', (e) => {
+      // Download/self_replace failed — most often Defender. Surface in the
+      // header pill so the user can fall back to a manual download instead
+      // of staring at a dead button.
+      const s = this._state;
+      const latest = s.kind === 'downloading' ? s.latest : undefined;
+      this._state = {
+        kind: 'error',
+        phase: 'install',
+        message: e.payload,
+        latest,
+        downloadUrl: RELEASES_URL,
+      };
     });
     this._unlisteners.push(unError);
   }
@@ -118,7 +131,7 @@ class UpdaterStore {
     } catch (err) {
       const msg = typeof err === 'string' ? err : String(err);
       if (manual && msg !== 'silent') {
-        this._state = { kind: 'error', message: msg };
+        this._state = { kind: 'error', phase: 'check', message: msg };
       } else {
         // Automatic check: stay idle (button stays hidden).
         this._state = { kind: 'idle' };

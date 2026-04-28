@@ -72,7 +72,10 @@
       case 'available':   return `Update v${s.latest} available — click the button in the top right`;
       case 'downloading': return `Downloading ${formatBytes(s.downloaded)}`;
       case 'ready':       return 'Ready to install. Click "Restart" in the top right';
-      case 'error':       return 'Failed to check for updates. Check your connection';
+      case 'error':
+        return s.phase === 'install'
+          ? 'Update failed — likely antivirus blocking. Use the "Download manually" button in the top right.'
+          : 'Failed to check for updates. Check your connection.';
     }
   }
 

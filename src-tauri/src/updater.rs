@@ -89,7 +89,7 @@ pub fn start_update(app: AppHandle, asset_url: String) -> Result<(), String> {
                 }
                 Err(e) => {
                     log_error(&format!("updater: download/replace failed: {}", e));
-                    if let Err(e2) = app.emit("updater-error", ()) {
+                    if let Err(e2) = app.emit("updater-error", &e) {
                         log_error(&format!("updater: emit error failed: {}", e2));
                     }
                 }

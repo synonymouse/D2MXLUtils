@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from '@tauri-apps/api/core';
   import { updaterStore } from '../stores';
 
   let state = $derived(updaterStore.state);
@@ -16,6 +17,15 @@
       updaterStore.restart();
     }
   }
+
+  async function handleManualDownload() {
+    if (state.kind !== 'error' || !state.downloadUrl) return;
+    try {
+      await invoke('open_external_url', { url: state.downloadUrl });
+    } catch (err) {
+      console.error('[Updater] open releases page failed:', err);
+    }
+  }
 </script>
 
 {#if state.kind === 'available'}
@@ -31,6 +41,15 @@
 {:else if state.kind === 'ready'}
   <button class="update-pill ready" onclick={handleClick}>
     Restart
+  </button>
+{:else if state.kind === 'error' && state.phase === 'install'}
+  <button
+    class="update-pill error"
+    onclick={handleManualDownload}
+    title={`Update failed: ${state.message}`}
+  >
+    <span class="warn" aria-hidden="true">!</span>
+    Update failed — Download manually
   </button>
 {/if}
 
@@ -128,5 +147,29 @@
   .update-pill.ready {
     background: var(--accent-primary);
     box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.15);
+  }
+
+  .update-pill.error {
+    background: color-mix(in srgb, var(--status-error-text) 15%, transparent);
+    border-color: var(--status-error-text);
+    color: var(--status-error-text);
+  }
+
+  .update-pill.error:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--status-error-text) 22%, transparent);
+  }
+
+  .update-pill.error .warn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--status-error-text);
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
   }
 </style>
