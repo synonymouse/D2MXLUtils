@@ -167,6 +167,9 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiers: Vec<ItemTier>,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sockets: Vec<u8>,
+
     #[serde(default, skip_serializing_if = "is_false")]
     pub ethereal: bool,
 
@@ -323,6 +326,7 @@ mod tests {
             p_unit_data: 0,
             tier: None,
             unique_kind: None,
+            sockets: 0,
             filter: None,
         }
     }

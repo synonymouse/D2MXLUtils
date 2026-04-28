@@ -220,14 +220,10 @@ impl D2Injector {
         process.write_buffer(self.inject_get_item_stat, &get_stat_code)?;
 
         // GetUnitStat injection
-        // push 0
-        // push [ebx] (stat id)
-        // push [ebx+4] (pUnit)
-        // call D2Common+0x38B70
-        // mov [string_addr], eax
-        // ret
+        // push 0; push [ebx]; push [ebx+4]; call rel32; mov [str], eax; ret
+        // rel32 base is byte after the call's imm32 (offset 0x0C).
         let get_unit_stat_offset = (d2_common + d2common::GET_UNIT_STAT) as i32
-            - (inject_base + d2common::INJECT_GET_UNIT_STAT + 0x0B) as i32;
+            - (inject_base + d2common::INJECT_GET_UNIT_STAT + 0x0C) as i32;
         let mut get_unit_stat_code: Vec<u8> = vec![0x6A, 0x00, 0xFF, 0x33, 0xFF, 0x73, 0x04, 0xE8];
         get_unit_stat_code.extend_from_slice(&(get_unit_stat_offset as u32).to_le_bytes());
         get_unit_stat_code.push(0xA3);

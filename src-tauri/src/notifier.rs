@@ -46,8 +46,14 @@ pub struct ItemDropEvent {
     pub tier: Option<ItemTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique_kind: Option<UniqueKind>,
+    #[serde(default, skip_serializing_if = "is_zero_u8")]
+    pub sockets: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+    *v == 0
 }
 
 /// Drop scanner that iterates through ground items
@@ -667,6 +673,12 @@ impl DropScanner {
         // Create scanned item and try to enrich it using injected game functions.
         let mut scanned = ScannedItem::from_unit(unit, &item_data, p_unit);
 
+        if item_data.is_socketed() {
+            if let Ok(n) = self.injector.get_unit_stat(&self.ctx.process, p_unit, 0xC2) {
+                scanned.sockets = n.min(6) as u8;
+            }
+        }
+
         // Try to resolve item name via injected GetItemName.
         if let Ok(raw_name) = self.injector.get_item_name(&self.ctx.process, p_unit) {
             let cleaned = strip_color_codes(&raw_name);
@@ -710,6 +722,16 @@ impl DropScanner {
             name.push(' ');
             name.push_str(kind.label());
         }
+        let raw_stats = scanned.stats.unwrap_or_default();
+        let stats = if scanned.sockets > 0 {
+            if raw_stats.is_empty() {
+                format!("Socketed ({})", scanned.sockets)
+            } else {
+                format!("Socketed ({})\n{}", scanned.sockets, raw_stats)
+            }
+        } else {
+            raw_stats
+        };
         ItemDropEvent {
             unit_id: scanned.unit_id,
             class,
@@ -717,12 +739,13 @@ impl DropScanner {
             base_name: self.class_base_name(class),
             category: self.class_category(class),
             name,
-            stats: scanned.stats.unwrap_or_default(),
+            stats,
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
             tier: self.class_tier(class),
             unique_kind,
+            sockets: scanned.sockets,
             filter: None,
         }
     }

@@ -35,6 +35,9 @@ impl<'a> MatchContext<'a> {
         if !self.tiers_match(&rule.tiers) {
             return false;
         }
+        if !self.sockets_match(&rule.sockets) {
+            return false;
+        }
         if rule.ethereal && !self.item.is_ethereal {
             return false;
         }
@@ -94,6 +97,13 @@ impl<'a> MatchContext<'a> {
             None => false,
         }
     }
+
+    fn sockets_match(&self, rule_sockets: &[u8]) -> bool {
+        if rule_sockets.is_empty() {
+            return true;
+        }
+        rule_sockets.iter().any(|&n| n == self.item.sockets)
+    }
 }
 
 fn pattern_matches(pattern: &str, haystack_lower: &str) -> bool {
@@ -121,6 +131,7 @@ mod tests {
             p_unit_data: 0,
             tier: None,
             unique_kind: None,
+            sockets: 0,
             filter: None,
         }
     }
@@ -139,6 +150,7 @@ mod tests {
             p_unit_data: 0,
             tier: None,
             unique_kind: None,
+            sockets: 0,
             filter: None,
         }
     }
@@ -277,6 +289,24 @@ mod tests {
         let mut sc = item("X", "Unique", "", false);
         sc.tier = Some(ItemTier::Sacred);
         assert!(!MatchContext::new(&sc).matches(&r));
+    }
+
+    #[test]
+    fn socket_rule_matches_listed_counts_and_rejects_others() {
+        let r = Rule {
+            sockets: vec![0, 4, 6],
+            ..Rule::default()
+        };
+        for n in [0u8, 4, 6] {
+            let mut it = item("X", "Normal", "", false);
+            it.sockets = n;
+            assert!(MatchContext::new(&it).matches(&r), "sockets={} should match", n);
+        }
+        for n in [1u8, 2, 3, 5] {
+            let mut it = item("X", "Normal", "", false);
+            it.sockets = n;
+            assert!(!MatchContext::new(&it).matches(&r), "sockets={} must NOT match", n);
+        }
     }
 
     #[test]

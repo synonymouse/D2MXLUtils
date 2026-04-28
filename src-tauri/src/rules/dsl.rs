@@ -62,6 +62,7 @@ struct Attrs {
     stat_patterns: Option<Vec<String>>,
     qualities: Option<Vec<ItemQuality>>,
     tiers: Option<Vec<ItemTier>>,
+    sockets: Option<Vec<u8>>,
     ethereal: Option<bool>,
     visibility: Option<Visibility>,
     color: Option<NotifyColor>,
@@ -81,6 +82,9 @@ impl Attrs {
         }
         if let Some(ref t) = self.tiers {
             rule.tiers = t.clone();
+        }
+        if let Some(ref s) = self.sockets {
+            rule.sockets = s.clone();
         }
         if let Some(e) = self.ethereal {
             rule.ethereal = e;
@@ -116,6 +120,9 @@ impl Attrs {
         }
         if self.tiers.is_none() {
             self.tiers = group.tiers.clone();
+        }
+        if self.sockets.is_none() {
+            self.sockets = group.sockets.clone();
         }
         if self.ethereal.is_none() {
             self.ethereal = group.ethereal;
@@ -523,6 +530,13 @@ fn parse_attrs_into(
             }
             continue;
         }
+        if let Some(n) = parse_socket_keyword(&lower) {
+            let set = attrs.sockets.get_or_insert_with(Vec::new);
+            if !set.contains(&n) {
+                set.push(n);
+            }
+            continue;
+        }
         match lower.as_str() {
             "eth" => {
                 attrs.ethereal = Some(true);
@@ -575,6 +589,16 @@ fn parse_sound_keyword(lower: &str) -> Option<u8> {
     let suffix = &lower[5..];
     let n: u8 = suffix.parse().ok()?;
     if (1..=7).contains(&n) {
+        Some(n)
+    } else {
+        None
+    }
+}
+
+fn parse_socket_keyword(lower: &str) -> Option<u8> {
+    let rest = lower.strip_prefix("sockets")?;
+    let n: u8 = rest.parse().ok()?;
+    if n <= 6 {
         Some(n)
     } else {
         None
@@ -711,6 +735,11 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
         } else {
             Some(rule.tiers.clone())
         },
+        sockets: if rule.sockets.is_empty() {
+            None
+        } else {
+            Some(rule.sockets.clone())
+        },
         ethereal: if rule.ethereal { Some(true) } else { None },
         visibility: if rule.visibility == Visibility::Default {
             None
@@ -764,6 +793,7 @@ fn is_known_token(lower: &str) -> bool {
     if ItemQuality::from_str(lower).is_some()
         || ItemTier::from_str(lower).is_some()
         || NotifyColor::from_str(lower).is_some()
+        || parse_socket_keyword(lower).is_some()
     {
         return true;
     }
@@ -1254,6 +1284,22 @@ mod tests {
             vec![ItemQuality::Magic, ItemQuality::Rare, ItemQuality::Unique]
         );
         assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn multi_socket_tokens_accumulate_into_set() {
+        let cfg = parse_dsl("sockets0 sockets4 sockets6 notify").unwrap();
+        assert_eq!(cfg.rules[0].sockets, vec![0, 4, 6]);
+        assert!(validate_dsl("sockets0 sockets4 sockets6 notify").is_empty());
+    }
+
+    #[test]
+    fn socket_token_out_of_range_is_unknown() {
+        let cfg = parse_dsl("sockets7 hide").unwrap();
+        assert!(cfg.rules[0].sockets.is_empty());
+        assert!(validate_dsl("sockets7 hide")
+            .iter()
+            .any(|w| w.message.contains("sockets7")));
     }
 
     #[test]

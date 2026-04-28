@@ -146,6 +146,7 @@ pub struct ScannedItem {
     pub file_index: u32,
     /// Ear level (if applicable)
     pub ear_level: u8,
+    pub sockets: u8,
 }
 
 impl ScannedItem {
@@ -163,6 +164,7 @@ impl ScannedItem {
             stats: None,
             file_index: item_data.file_index,
             ear_level: item_data.ear_level,
+            sockets: 0,
         }
     }
 

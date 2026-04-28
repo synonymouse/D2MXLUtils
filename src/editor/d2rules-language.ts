@@ -8,6 +8,7 @@ export const d2rulesTags = {
   tier: Tag.define(),
   quality: Tag.define(),
   ethereal: Tag.define(),
+  socket: Tag.define(),
   action: Tag.define(),
   notification: Tag.define(),
   directive: Tag.define(),
@@ -31,6 +32,16 @@ const QUALITY_KEYWORDS = [
 ];
 
 const TIER_KEYWORDS = ["sacred", "angelic", "master", "0", "1", "2", "3", "4"];
+
+const SOCKET_KEYWORDS = [
+  "sockets0",
+  "sockets1",
+  "sockets2",
+  "sockets3",
+  "sockets4",
+  "sockets5",
+  "sockets6",
+];
 
 const COLOR_KEYWORDS = [
   "white",
@@ -71,6 +82,7 @@ const d2rulesLanguage = StreamLanguage.define({
     tier: d2rulesTags.tier,
     quality: d2rulesTags.quality,
     modifier: d2rulesTags.ethereal,
+    socket: d2rulesTags.socket,
     visibility: d2rulesTags.action,
     notify: d2rulesTags.notification,
     color: d2rulesTags.notification,
@@ -163,6 +175,9 @@ const d2rulesLanguage = StreamLanguage.define({
 
       // Tier keywords
       if (TIER_KEYWORDS.includes(word)) return "keyword tier";
+
+      // Socket-count keywords (sockets0..sockets6)
+      if (SOCKET_KEYWORDS.includes(word)) return "keyword socket";
 
       // Visibility (show / hide) — distinct from color. When the line is the
       // `hide default` / `show default` file-scope directive, emit the

@@ -73,11 +73,12 @@ A rule matches an item when **all** specified criteria are satisfied.
 | Stat | `{regex}...` | every listed regex matches the item stat text (AND), case-insensitive |
 | Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals one of the listed keywords (OR) |
 | Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals one of the listed keywords (OR) |
+| Sockets | `sockets0`–`sockets6` | item socket count equals one of the listed numbers (OR) |
 | Ethereal | `eth` | item is ethereal |
 
-Quality and tier each accept multiple keywords in a single rule; the rule
-matches if the item's value equals any of the listed ones. A rule with no
-quality keyword matches any quality (same for tier).
+Quality, tier, and sockets each accept multiple keywords in a single rule;
+the rule matches if the item's value equals any of the listed ones. A rule
+with no keyword in a category matches any value in that category.
 
 Invalid regex falls back to plain substring matching.
 

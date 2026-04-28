@@ -17,6 +17,7 @@ const darkPalette = {
   tier: "#bd93f9",
   quality: "#888888",
   ethereal: "#56d4b6",
+  socket: "#6aa9ff",
   action: "#e53935",
   notification: "#c4b870",
 };
@@ -32,6 +33,7 @@ const lightPalette = {
   tier: "#7b1fa2",
   quality: "#555555",
   ethereal: "#00838f",
+  socket: "#1565c0",
   action: "#d32f2f",
   notification: "#ad1457",
 };
@@ -184,6 +186,7 @@ function buildHighlighting(p: typeof darkPalette) {
         fontStyle: "italic",
         fontWeight: "600",
       },
+      { tag: d2rulesTags.socket, color: p.socket, fontWeight: "600" },
       { tag: d2rulesTags.action, color: p.action, fontWeight: "600" },
       {
         tag: d2rulesTags.notification,

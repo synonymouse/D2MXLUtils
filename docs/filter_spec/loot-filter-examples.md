@@ -123,6 +123,26 @@ item that is (tier 1 OR 2 OR 3 OR 4) AND unique.
 
 ---
 
+## Scenario 5c — Filter by socket count
+
+```
+# Notify on any 4-, 5-, or 6-socket Crystal Sword
+"Crystal Sword" sockets4 sockets5 sockets6 notify gold
+
+# Force-show every 6-socket item with a red label
+sockets6 show notify red
+
+# Hide superior bases without sockets — they're crafting fodder otherwise.
+sockets0 superior hide
+```
+
+Socket counts OR together just like tiers. `sockets0` means "no sockets";
+combine with quality/tier to narrow further. The notifier prepends a
+`Socketed (N)` line to the item's stats so you can also match against it
+with a `{Socketed \(6\)}` regex if you prefer text-based filtering.
+
+---
+
 ## Scenario 6 — Hide but notify
 
 ```

@@ -13,6 +13,7 @@ group_close   := '}'
 name          := '"' regex '"'
 attr          := quality
                | tier
+               | socket
                | 'eth'
                | stat_pattern
                | color
@@ -21,6 +22,8 @@ attr          := quality
                | 'notify'
                | 'stat'
                | 'map'
+socket        := 'sockets0' | 'sockets1' | 'sockets2' | 'sockets3'
+               | 'sockets4' | 'sockets5' | 'sockets6'
 stat_pattern  := '{' regex '}'
 ```
 
@@ -109,6 +112,24 @@ Multiple tier keywords on one rule **OR together** — the rule matches if the
 item's tier is any of the listed ones. Example: `1 2 3 4 hide` hides
 tier 1–4 items. Combine with a quality to intersect: `1 2 3 4 unique hide`
 hides only tier 1–4 uniques.
+
+---
+
+### Sockets
+
+| Keyword | Sockets |
+|---|---|
+| `sockets0` | item has no sockets |
+| `sockets1`–`sockets6` | exact socket count |
+
+Multiple socket keywords on one rule **OR together** — the rule matches if the
+item's socket count is any of the listed numbers. Example:
+`sockets4 sockets5 sockets6 notify` notifies on any 4-, 5- or 6-socket
+item. The count is read from D2's `NumSockets` stat (`0xC2`); for items
+without the SOCKETED flag set it is treated as `0`.
+
+The notifier also prepends a `Socketed (N)` line to the item's stat blob
+when `N > 0`, so existing stat regexes like `{Socketed \(6\)}` keep working.
 
 ---
 
@@ -294,11 +315,12 @@ hide default      # hide unmatched items
 show default      # show unmatched items (implicit default)
 
 # General rule form
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
+[name-pattern] [quality] [tier] [socket] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
 
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor
 tier       := 0 | 1 | 2 | 3 | 4 | sacred | angelic | master
+socket     := sockets0 | sockets1 | sockets2 | sockets3 | sockets4 | sockets5 | sockets6
 color      := white | red | lime | blue | gold | grey | black
             | pink | orange | yellow | green | purple
 visibility := show | hide
