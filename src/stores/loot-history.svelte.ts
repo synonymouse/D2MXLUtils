@@ -8,6 +8,7 @@ export interface LootHistoryEntry {
   seed: number;
   timestamp_ms: number;
   name: string;
+  quality: string;
   color: string | null;
   pickup: PickupState;
 }

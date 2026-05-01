@@ -573,6 +573,7 @@ impl DropScanner {
                                 unit_id: event.unit_id,
                                 timestamp_ms: crate::loot_history::now_ms(),
                                 name: event.name.clone(),
+                                quality: event.quality.clone(),
                                 color,
                                 pickup: crate::loot_history::PickupState::Pending,
                                 seed: event.seed,

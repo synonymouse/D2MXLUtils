@@ -7,7 +7,8 @@
   let scrollContainer: HTMLDivElement | null = $state(null);
   let stickToBottom = $state(true);
 
-  // Palette mirrors Notification.svelte's notifyColors map.
+  // Palette mirrors Notification.svelte's nameColor cascade exactly:
+  // explicit rule color → quality color → muted fallback.
   const notifyColors: Record<string, string> = {
     white:  'var(--notify-white)',
     red:    'var(--notify-red)',
@@ -21,6 +22,18 @@
     yellow: 'var(--notify-yellow)',
     green:  'var(--notify-green)',
     purple: 'var(--notify-purple)',
+  };
+
+  const qualityColors: Record<string, string> = {
+    'Unique':    'var(--quality-unique)',
+    'Set':       'var(--quality-set)',
+    'Rare':      'var(--quality-rare)',
+    'Magic':     'var(--quality-magic)',
+    'Crafted':   'var(--quality-crafted)',
+    'Honorific': 'var(--quality-crafted)',
+    'Superior':  'var(--quality-superior)',
+    'Inferior':  'var(--quality-normal)',
+    'Normal':    'var(--quality-normal)',
   };
 
   function formatTime(ms: number): string {
@@ -44,7 +57,11 @@
   }
 
   function nameColor(entry: LootHistoryEntry): string {
-    return (entry.color ? notifyColors[entry.color] : undefined) ?? 'var(--text-primary)';
+    // Final fallback is hardcoded — `--text-muted` flips to a dark value
+    // under the light theme and would be invisible on our dark panel.
+    return (entry.color ? notifyColors[entry.color] : undefined)
+      ?? qualityColors[entry.quality]
+      ?? '#bdbdbd';
   }
 
   function onScroll() {
@@ -118,9 +135,9 @@
     display: flex;
     flex-direction: column;
     background: rgba(0, 0, 0, 0.85);
-    border: 1px solid var(--border-color, rgba(255, 255, 255, 0.2));
+    border: 1px solid rgba(255, 255, 255, 0.2);
     border-radius: var(--radius-md, 8px);
-    color: var(--text-primary, #fff);
+    color: #f0f0f0;
     pointer-events: auto;
     font-family: var(--font-mono, monospace);
     font-size: 13px;

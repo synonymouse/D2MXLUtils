@@ -31,6 +31,11 @@ pub struct LootEntry {
     pub timestamp_ms: u64,
     /// Final display name as it appears in the notification.
     pub name: String,
+    /// Item quality string (`"Unique"`, `"Set"`, `"Magic"`, …) — used by
+    /// the frontend as a color fallback when the winning rule didn't set
+    /// an explicit `color` flag, mirroring the in-game notification.
+    #[serde(default)]
+    pub quality: String,
     /// Lowercase color keyword from the winning rule's `color` flag (e.g.
     /// `"lime"`, `"gold"`). `None` = default color (frontend falls back to
     /// quality color or a neutral foreground).
@@ -234,6 +239,7 @@ mod tests {
             unit_id,
             timestamp_ms: 1000 + unit_id as u64,
             name: name.to_string(),
+            quality: String::new(),
             color: None,
             pickup: PickupState::Pending,
             seed: 0,

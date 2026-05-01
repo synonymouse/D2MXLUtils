@@ -348,6 +348,7 @@ fn start_scanner_internal(
                                 seed: u32,
                                 timestamp_ms: u64,
                                 name: &'a str,
+                                quality: &'a str,
                                 color: Option<&'a str>,
                                 pickup: PickupState,
                             }
@@ -366,6 +367,7 @@ fn start_scanner_internal(
                                 seed: item.seed,
                                 timestamp_ms,
                                 name: &item.name,
+                                quality: &item.quality,
                                 color: color_string.as_deref(),
                                 pickup: PickupState::Pending,
                             };
