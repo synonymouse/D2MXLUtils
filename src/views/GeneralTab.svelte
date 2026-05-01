@@ -9,7 +9,7 @@
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
   let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
 
-  type HotkeyId = 'toggleWindow' | 'editOverlay' | 'revealHidden';
+  type HotkeyId = 'toggleWindow' | 'editOverlay' | 'revealHidden' | 'lootHistory';
   interface HotkeyRow {
     id: HotkeyId;
     label: string;
@@ -35,6 +35,12 @@
       hint: 'Hold to show every item on the ground, including those filtered out by `hide` rules',
       setter: (h) => settingsStore.setRevealHiddenHotkey(h),
     },
+    {
+      id: 'lootHistory',
+      label: 'Loot history',
+      hint: 'Toggle the in-game loot log overlay (session drops)',
+      setter: (h) => settingsStore.setLootHistoryHotkey(h),
+    },
   ];
 
   // Map id -> live HotkeyConfig from the store. Values stay reactive because
@@ -43,6 +49,7 @@
     toggleWindow: () => settingsStore.settings.toggleWindowHotkey,
     editOverlay:  () => settingsStore.settings.editOverlayHotkey,
     revealHidden: () => settingsStore.settings.revealHiddenHotkey,
+    lootHistory:  () => settingsStore.settings.lootHistoryHotkey,
   };
   let hotkeyValues = $derived(
     Object.fromEntries(

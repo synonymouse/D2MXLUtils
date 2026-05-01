@@ -2,7 +2,7 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
-  import { AlwaysShowItemsIndicator, NotificationStack, OverlayEditGrid } from '../components';
+  import { AlwaysShowItemsIndicator, LootHistoryPanel, NotificationStack, OverlayEditGrid } from '../components';
   import { settingsStore } from '../stores';
   import { playSound } from '../lib/sound-player';
 
@@ -44,6 +44,7 @@
   let soundVolume = $derived(settingsStore.settings.soundVolume);
 
   let editActive = $state(false);
+  let historyVisible = $state(false);
   let pendingX = $state(0);
   let pendingY = $state(0);
   
@@ -119,11 +120,22 @@
       } else {
         editActive = false;
         try {
-          await invoke('set_overlay_interactive', { active: false });
+          await invoke('set_overlay_interactive', { active: historyVisible });
         } catch (err) {
           console.error('[Overlay] set_overlay_interactive(false) failed:', err);
         }
         settingsStore.setNotificationPosition(pendingX, pendingY);
+      }
+    }).then(u => unlisteners.push(u));
+
+    listen<{ visible?: boolean } | null>('toggle-loot-history', async (event) => {
+      const next = event.payload?.visible ?? !historyVisible;
+      if (next === historyVisible) return;
+      historyVisible = next;
+      try {
+        await invoke('set_overlay_interactive', { active: historyVisible || editActive });
+      } catch (err) {
+        console.error('[Overlay] set_overlay_interactive (history) failed:', err);
       }
     }).then(u => unlisteners.push(u));
 
@@ -163,6 +175,12 @@
       y={pendingY}
       onchange={(nx, ny) => { pendingX = nx; pendingY = ny; }}
     />
+  {/if}
+  {#if historyVisible}
+    <LootHistoryPanel onClose={() => {
+      historyVisible = false;
+      invoke('set_overlay_interactive', { active: editActive }).catch(() => {});
+    }} />
   {/if}
 </main>
 

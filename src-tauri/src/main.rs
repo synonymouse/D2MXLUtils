@@ -6,6 +6,7 @@ mod injection;
 mod items_cache;
 mod logger;
 mod loot_filter_hook;
+mod loot_history;
 mod map_marker;
 mod notifier;
 mod offsets;
@@ -22,8 +23,9 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
-use crate::hotkeys::{EditModeState, HotkeyState, RevealHiddenState};
+use crate::hotkeys::{EditModeState, HotkeyState, LootHistoryHotkeyState, RevealHiddenState};
 use crate::logger::{error as log_error, info as log_info};
+use crate::loot_history::{LootEntry, LootHistory, PickupState};
 
 use notifier::{DropScanner, ItemsDictionary};
 
@@ -78,6 +80,8 @@ struct AppState {
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
+    /// Session loot history shared with scanner thread.
+    loot_history: Arc<RwLock<LootHistory>>,
 }
 
 const GAME_STATUS_UNKNOWN: u8 = 0;
@@ -113,6 +117,7 @@ fn start_scanner_internal(
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
+    loot_history: Arc<RwLock<LootHistory>>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -137,7 +142,7 @@ fn start_scanner_internal(
         .name("drop-scanner".into())
         .spawn(move || {
             // Try to create scanner
-            let mut scanner = match DropScanner::new() {
+            let mut scanner = match DropScanner::new(loot_history.clone()) {
                 Ok(s) => {
                     log_info("Scanner attached to Diablo II");
                     if let Err(e) = app_handle.emit("scanner-status", "running") {
@@ -210,6 +215,12 @@ fn start_scanner_internal(
                 if ingame && !was_ingame {
                     log_info("Entered game");
                     scanner.clear_cache();
+                    if let Ok(mut hist) = loot_history.write() {
+                        hist.clear();
+                    }
+                    if let Err(e) = app_handle.emit("loot-history-cleared", ()) {
+                        log_error(&format!("Failed to emit loot-history-cleared: {}", e));
+                    }
                     pending_set_always_show = true;
                     last_emitted_always_show = None;
                     if let Err(e) = app_handle.emit("game-status", "ingame") {
@@ -218,6 +229,30 @@ fn start_scanner_internal(
                 } else if !ingame && was_ingame {
                     pending_set_always_show = false;
                     last_emitted_always_show = None;
+                    // Exiting to menu: every still-Pending entry is
+                    // effectively lost from this session — broadcast each
+                    // as a `loot-history-update` so the panel ticks them
+                    // over to ⊘. The history is cleared on the next
+                    // menu→ingame transition.
+                    let pending_to_lost = loot_history
+                        .write()
+                        .map(|mut h| h.mark_all_pending_lost())
+                        .unwrap_or_default();
+                    for (unit_id, seed, pickup) in pending_to_lost {
+                        #[derive(serde::Serialize)]
+                        struct LootHistoryUpdatePayload {
+                            unit_id: u32,
+                            seed: u32,
+                            pickup: PickupState,
+                        }
+                        let payload = LootHistoryUpdatePayload { unit_id, seed, pickup };
+                        if let Err(e) = app_handle.emit("loot-history-update", &payload) {
+                            log_error(&format!(
+                                "Failed to emit loot-history-update (menu sweep): {}",
+                                e
+                            ));
+                        }
+                    }
                     if let Err(e) = app_handle.emit("game-status", "menu") {
                         log_error(&format!("Failed to emit event (menu): {}", e));
                     }
@@ -302,10 +337,67 @@ fn start_scanner_internal(
                     // appear with noticeable lag on crowded maps.
                     let items = scanner.tick_items();
                     for item in items {
+                        // Only emit loot-history-entry when the scanner
+                        // actually inserted a new row (false when a
+                        // dedup-merge happened — same physical item seen
+                        // again after area reload).
+                        if item.history_pushed {
+                            #[derive(serde::Serialize, Clone)]
+                            struct LootHistoryEntryPayload<'a> {
+                                unit_id: u32,
+                                seed: u32,
+                                timestamp_ms: u64,
+                                name: &'a str,
+                                color: Option<&'a str>,
+                                pickup: PickupState,
+                            }
+                            // Read history once to get the timestamp+color
+                            // the scanner just stamped the entry with.
+                            let stamped = loot_history.read().ok().and_then(|h| {
+                                h.snapshot()
+                                    .iter()
+                                    .find(|e| e.unit_id == item.unit_id)
+                                    .map(|e| (e.timestamp_ms, e.color.clone()))
+                            });
+                            let (timestamp_ms, color_string) =
+                                stamped.unwrap_or((0, None));
+                            let payload = LootHistoryEntryPayload {
+                                unit_id: item.unit_id,
+                                seed: item.seed,
+                                timestamp_ms,
+                                name: &item.name,
+                                color: color_string.as_deref(),
+                                pickup: PickupState::Pending,
+                            };
+                            if let Err(e) = app_handle.emit("loot-history-entry", &payload) {
+                                log_error(&format!(
+                                    "Failed to emit loot-history-entry: {}",
+                                    e
+                                ));
+                            }
+                        }
                         if let Err(e) = app_handle.emit("item-drop", &item) {
                             log_error(&format!("Failed to emit item-drop event: {}", e));
                         }
                     }
+
+                    // Drain pickup-state transitions and broadcast them.
+                    for (unit_id, seed, pickup) in scanner.drain_pickup_updates() {
+                        #[derive(serde::Serialize)]
+                        struct LootHistoryUpdatePayload {
+                            unit_id: u32,
+                            seed: u32,
+                            pickup: PickupState,
+                        }
+                        let payload = LootHistoryUpdatePayload { unit_id, seed, pickup };
+                        if let Err(e) = app_handle.emit("loot-history-update", &payload) {
+                            log_error(&format!(
+                                "Failed to emit loot-history-update: {}",
+                                e
+                            ));
+                        }
+                    }
+
                     scanner.tick_map_markers();
 
                     if !dict_published {
@@ -374,6 +466,7 @@ fn spawn_auto_scanner(
     scanner_thread: Arc<Mutex<Option<JoinHandle<()>>>>,
     game_status: Arc<AtomicU8>,
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
+    loot_history: Arc<RwLock<LootHistory>>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -391,6 +484,7 @@ fn spawn_auto_scanner(
                     scanner_thread.clone(),
                     game_status.clone(),
                     items_dictionary.clone(),
+                    loot_history.clone(),
                     app_handle.clone(),
                 );
             }
@@ -423,6 +517,28 @@ fn get_items_dictionary(state: tauri::State<AppState>) -> ItemsDictionary {
         .ok()
         .and_then(|guard| guard.clone())
         .unwrap_or_default()
+}
+
+#[tauri::command]
+fn get_loot_history(state: tauri::State<AppState>) -> Vec<LootEntry> {
+    state
+        .loot_history
+        .read()
+        .map(|h| h.snapshot())
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+fn clear_loot_history(
+    state: tauri::State<AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    if let Ok(mut h) = state.loot_history.write() {
+        h.clear();
+    }
+    app_handle
+        .emit("loot-history-cleared", ())
+        .map_err(|e| format!("Failed to emit loot-history-cleared: {}", e))
 }
 
 // ===== Filter Configuration Commands =====
@@ -1024,6 +1140,7 @@ fn main() {
                 scanner_thread: Arc::new(Mutex::new(None)),
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
                 items_dictionary: Arc::new(RwLock::new(cached_items)),
+                loot_history: Arc::new(RwLock::new(LootHistory::new())),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
@@ -1036,17 +1153,20 @@ fn main() {
             let scanner_thread = state.scanner_thread.clone();
             let game_status = state.game_status.clone();
             let items_dictionary = state.items_dictionary.clone();
+            let loot_history = state.loot_history.clone();
             app.manage(state);
 
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
             let edit_mode_state = EditModeState::new();
             let reveal_hidden_state = RevealHiddenState::new(reveal_hidden_active.clone());
+            let loot_history_hotkey_state = LootHistoryHotkeyState::new();
 
             // Load settings and start hotkey listener
             let app_handle_for_hotkeys = app.handle().clone();
             let app_handle_for_edit_mode = app.handle().clone();
             let app_handle_for_reveal = app.handle().clone();
+            let app_handle_for_loot_history = app.handle().clone();
             match settings::load_settings(app.handle().clone()) {
                 Ok(loaded_settings) => {
                     hotkey_state
@@ -1057,6 +1177,10 @@ fn main() {
                     );
                     reveal_hidden_state
                         .start(app_handle_for_reveal, loaded_settings.reveal_hidden_hotkey);
+                    loot_history_hotkey_state.start(
+                        app_handle_for_loot_history,
+                        loaded_settings.loot_history_hotkey,
+                    );
                     verbose_filter_logging
                         .store(loaded_settings.verbose_filter_logging, Ordering::SeqCst);
                     auto_always_show_items
@@ -1070,12 +1194,15 @@ fn main() {
                     edit_mode_state.start(app_handle_for_edit_mode, defaults.edit_overlay_hotkey);
                     reveal_hidden_state
                         .start(app_handle_for_reveal, defaults.reveal_hidden_hotkey);
+                    loot_history_hotkey_state
+                        .start(app_handle_for_loot_history, defaults.loot_history_hotkey);
                 }
             }
 
             app.manage(hotkey_state);
             app.manage(edit_mode_state);
             app.manage(reveal_hidden_state);
+            app.manage(loot_history_hotkey_state);
 
             // Spawn auto-scanner monitor
             let app_handle = app.handle().clone();
@@ -1091,6 +1218,7 @@ fn main() {
                 scanner_thread.clone(),
                 game_status.clone(),
                 items_dictionary.clone(),
+                loot_history.clone(),
                 app_handle,
             );
 
@@ -1144,6 +1272,8 @@ fn main() {
             get_scanner_status,
             get_game_status,
             get_items_dictionary,
+            get_loot_history,
+            clear_loot_history,
             set_filter_config,
             set_filter_enabled,
             set_verbose_filter_logging,
@@ -1161,6 +1291,7 @@ fn main() {
             hotkeys::update_hotkey,
             hotkeys::update_edit_mode_hotkey,
             hotkeys::update_reveal_hidden_hotkey,
+            hotkeys::update_loot_history_hotkey,
             profiles::list_profiles,
             profiles::load_profile,
             profiles::save_profile,

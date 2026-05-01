@@ -180,6 +180,13 @@ pub mod player_path {
 /// ItemData structure offsets (pUnitData for items)
 pub mod item_data {
     pub const QUALITY: usize = 0x00; // dword (item quality enum)
+    /// `dwSeed` — random seed used to generate the item. Effectively a
+    /// stable per-item identifier: persists across area unload/reload
+    /// (and in MP across log-out, since the server keeps it). Used by
+    /// the loot-history layer to deduplicate the same physical item when
+    /// the player leaves an area, returns, and the engine assigns a
+    /// fresh `unit_id`.
+    pub const SEED: usize = 0x14; // dword
     pub const FLAGS: usize = 0x18; // dword (item flags) - offset 0 + 4 + 5*4 = 0x18
     pub const FILE_INDEX: usize = 0x2C; // dword - offset 0x18 + 4 + 3*4 + 4 = 0x2C
     pub const NEXT_ITEM: usize = 0x64; // dword (pointer to next item)

@@ -69,6 +69,10 @@ pub struct AppSettings {
     #[serde(default = "default_reveal_hidden_hotkey")]
     pub reveal_hidden_hotkey: HotkeyConfig,
 
+    /// Hotkey to toggle the in-game loot history overlay panel.
+    #[serde(default = "default_loot_history_hotkey")]
+    pub loot_history_hotkey: HotkeyConfig,
+
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     #[serde(default)]
     pub verbose_filter_logging: bool,
@@ -141,6 +145,14 @@ fn default_reveal_hidden_hotkey() -> HotkeyConfig {
     }
 }
 
+fn default_loot_history_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        key_code: 0x4E, // 'N'
+        modifiers: 0,
+        display: "N".to_string(),
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -157,6 +169,7 @@ impl Default for AppSettings {
             toggle_window_hotkey: HotkeyConfig::default(),
             edit_overlay_hotkey: default_edit_overlay_hotkey(),
             reveal_hidden_hotkey: default_reveal_hidden_hotkey(),
+            loot_history_hotkey: default_loot_history_hotkey(),
             verbose_filter_logging: false,
             auto_always_show_items: default_auto_always_show_items(),
         }

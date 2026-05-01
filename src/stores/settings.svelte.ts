@@ -47,6 +47,8 @@ export interface AppSettings {
   editOverlayHotkey: HotkeyConfig;
   /** Hotkey held to reveal every item on the ground, bypassing `hide` rules */
   revealHiddenHotkey: HotkeyConfig;
+  /** Hotkey to toggle the in-game loot history overlay panel */
+  lootHistoryHotkey: HotkeyConfig;
   /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
   verboseFilterLogging: boolean;
   autoAlwaysShowItems: boolean;
@@ -81,6 +83,12 @@ const DEFAULT_REVEAL_HIDDEN_HOTKEY: HotkeyConfig = {
   display: 'Z',
 };
 
+const DEFAULT_LOOT_HISTORY_HOTKEY: HotkeyConfig = {
+  keyCode: 0x4E, // 'N'
+  modifiers: 0,
+  display: 'N',
+};
+
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -96,6 +104,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   toggleWindowHotkey: DEFAULT_HOTKEY,
   editOverlayHotkey: DEFAULT_EDIT_OVERLAY_HOTKEY,
   revealHiddenHotkey: DEFAULT_REVEAL_HIDDEN_HOTKEY,
+  lootHistoryHotkey: DEFAULT_LOOT_HISTORY_HOTKEY,
   verboseFilterLogging: false,
   autoAlwaysShowItems: true,
 };
@@ -300,6 +309,19 @@ class SettingsStore {
       await invoke('update_reveal_hidden_hotkey', { hotkey });
     } catch (error) {
       console.error('[Settings] Failed to update reveal-hidden hotkey:', error);
+    }
+  }
+
+  get lootHistoryHotkey(): HotkeyConfig {
+    return this._settings.lootHistoryHotkey;
+  }
+
+  async setLootHistoryHotkey(hotkey: HotkeyConfig): Promise<void> {
+    this.set('lootHistoryHotkey', hotkey);
+    try {
+      await invoke('update_loot_history_hotkey', { hotkey });
+    } catch (error) {
+      console.error('[Settings] Failed to update loot-history hotkey:', error);
     }
   }
 

@@ -138,6 +138,26 @@ impl NotifyColor {
             _ => None,
         }
     }
+
+    /// Stable lowercase keyword (matches the Serialize representation).
+    /// Used by loot history to record the rule color without going through
+    /// `serde_json::to_value`.
+    pub fn lowercase_name(&self) -> &'static str {
+        match self {
+            Self::White => "white",
+            Self::Red => "red",
+            Self::Lime => "lime",
+            Self::Blue => "blue",
+            Self::Gold => "gold",
+            Self::Grey => "grey",
+            Self::Black => "black",
+            Self::Pink => "pink",
+            Self::Orange => "orange",
+            Self::Yellow => "yellow",
+            Self::Green => "green",
+            Self::Purple => "purple",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -324,6 +344,8 @@ mod tests {
             is_ethereal: eth,
             is_identified: true,
             p_unit_data: 0,
+            seed: 0,
+            history_pushed: false,
             tier: None,
             unique_kind: None,
             sockets: 0,

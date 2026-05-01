@@ -17,8 +17,8 @@ use crate::loot_filter_hook::LootFilterHook;
 use crate::map_marker::{self, MapMarkerManager, MarkerItem};
 #[cfg(target_os = "windows")]
 use crate::offsets::{
-    d2client, d2common, d2sigma, data_tables, item_quality, items_txt, paths, set_items_txt, unit,
-    unique_items_txt, unit_type,
+    d2client, d2common, d2sigma, data_tables, inventory, item_data, item_quality, items_txt,
+    paths, set_items_txt, unit, unique_items_txt, unit_type,
 };
 #[cfg(target_os = "windows")]
 use crate::process::D2Context;
@@ -42,6 +42,19 @@ pub struct ItemDropEvent {
     pub is_ethereal: bool,
     pub is_identified: bool,
     pub p_unit_data: u32,
+    /// `dwSeed` — random seed identifying this physical item. Stable
+    /// across area unload/reload, so used by loot-history to dedupe
+    /// the same item after a teleport-away/return cycle (the engine
+    /// assigns a fresh `unit_id` but the seed survives).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub seed: u32,
+    /// True iff this scan inserted a *new* row in `LootHistory`
+    /// (vs. merged into an existing entry by `seed`). Drives whether
+    /// the main loop fires `loot-history-entry` to the frontend —
+    /// dedup-merges shouldn't render twice. Skipped from serialization
+    /// (internal flag).
+    #[serde(default, skip)]
+    pub history_pushed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ItemTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,6 +63,10 @@ pub struct ItemDropEvent {
     pub sockets: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
+}
+
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 fn is_zero_u8(v: &u8) -> bool {
@@ -82,6 +99,14 @@ pub struct DropScanner {
     /// pass. The map-marker BFS pass reads this instead of re-calling
     /// `GetItemName` per tick.
     recent_events: HashMap<u32, ItemDropEvent>,
+    /// Session loot history. Shared with main thread so Tauri commands can
+    /// snapshot it. Updated each tick.
+    loot_history: Arc<RwLock<crate::loot_history::LootHistory>>,
+    /// Pickup-state transitions produced by the latest `tick_items` call.
+    /// Drained by main loop into `loot-history-update` events. Each tuple
+    /// is `(unit_id, seed, new_state)`; `seed` is the stable key the
+    /// frontend uses to find the row.
+    last_pickup_updates: Vec<(u32, u32, crate::loot_history::PickupState)>,
 }
 
 #[derive(Debug, Clone)]
@@ -172,7 +197,9 @@ pub struct ItemsDictionary {
 #[cfg(target_os = "windows")]
 impl DropScanner {
     /// Create a new scanner attached to the D2 process
-    pub fn new() -> Result<Self, String> {
+    pub fn new(
+        loot_history: Arc<RwLock<crate::loot_history::LootHistory>>,
+    ) -> Result<Self, String> {
         let ctx = D2Context::new()?;
         let injector = D2Injector::new(&ctx.process, ctx.d2_client, ctx.d2_common, ctx.d2_lang)?;
 
@@ -197,6 +224,8 @@ impl DropScanner {
             set_cache: None,
             map_marker: MapMarkerManager::new(),
             recent_events: HashMap::new(),
+            loot_history,
+            last_pickup_updates: Vec::new(),
         })
     }
 
@@ -532,6 +561,38 @@ impl DropScanner {
                     self.recent_events.insert(event.unit_id, event.clone());
 
                     if should_emit {
+                        // Push to session history (only filter-matched items
+                        // — same gate as overlay notifications).
+                        if event.filter.is_some() {
+                            let color = event
+                                .filter
+                                .as_ref()
+                                .and_then(|n| n.color.as_ref())
+                                .map(|c| c.lowercase_name().to_string());
+                            let entry = crate::loot_history::LootEntry {
+                                unit_id: event.unit_id,
+                                timestamp_ms: crate::loot_history::now_ms(),
+                                name: event.name.clone(),
+                                color,
+                                pickup: crate::loot_history::PickupState::Pending,
+                                seed: event.seed,
+                            };
+                            // Only fresh inserts emit `loot-history-entry`;
+                            // dedup-merges silently update the existing row
+                            // (frontend keys by `seed`, so no notification
+                            // needed when only `unit_id` changes underneath).
+                            let outcome = if let Ok(mut hist) =
+                                self.loot_history.write()
+                            {
+                                hist.push(entry)
+                            } else {
+                                crate::loot_history::PushOutcome::Duplicate
+                            };
+                            event.history_pushed = matches!(
+                                outcome,
+                                crate::loot_history::PushOutcome::Inserted
+                            );
+                        }
                         events.push(event);
                     }
 
@@ -553,6 +614,22 @@ impl DropScanner {
         // inventory, so without pruning a re-dropped item would never notify.
         self.seen_items.retain(|id| current_item_ids.contains(id));
         self.recent_events.retain(|id, _| current_item_ids.contains(id));
+
+        // Pickup resolution: walk the local hero's inventory once and
+        // promote any matching Pending entries to PickedUp. Skip when no
+        // entry is Pending — saves the inventory walk.
+        let has_pending = self
+            .loot_history
+            .read()
+            .map(|h| h.has_pending())
+            .unwrap_or(false);
+        if has_pending {
+            let our_ids = self.read_player_inventory_ids();
+            if let Ok(mut hist) = self.loot_history.write() {
+                let resolved = hist.resolve_pending(&our_ids);
+                self.last_pickup_updates.extend(resolved);
+            }
+        }
 
         events
     }
@@ -732,6 +809,16 @@ impl DropScanner {
         } else {
             raw_stats
         };
+        // Read dwSeed at item_data + 0x14 — stable per-item across area
+        // unload/reload, used by loot-history dedup.
+        let seed = if scanned.p_unit_data != 0 {
+            self.ctx
+                .process
+                .read_memory::<u32>(scanned.p_unit_data as usize + item_data::SEED)
+                .unwrap_or(0)
+        } else {
+            0
+        };
         ItemDropEvent {
             unit_id: scanned.unit_id,
             class,
@@ -743,6 +830,8 @@ impl DropScanner {
             is_ethereal: scanned.is_ethereal,
             is_identified: scanned.is_identified,
             p_unit_data: scanned.p_unit_data,
+            seed,
+            history_pushed: false,
             tier: self.class_tier(class),
             unique_kind,
             sockets: scanned.sockets,
@@ -1065,6 +1154,83 @@ impl DropScanner {
 
         Ok(cache)
     }
+
+    /// Walk the local player's inventory and return every item `unit_id`
+    /// linked off `pFirstItem`. Robust against stale `p_unit_data` caches:
+    /// the walk uses live pointers from the player struct outward.
+    ///
+    /// Chain: `PLAYER_UNIT` → `UnitAny + 0x60 (Inventory*)` →
+    ///        `Inventory + 0x0C (pFirstItem)` → walk via item
+    ///        `pUnitData + 0x64 (NEXT_ITEM)`.
+    ///
+    /// Capped at 256 iterations to defend against pointer cycles.
+    fn read_player_inventory_ids(&self) -> HashSet<u32> {
+        let mut ids = HashSet::new();
+
+        let player_unit_ptr_addr = self.ctx.d2_client + d2client::PLAYER_UNIT;
+        let player_ptr = match self.ctx.process.read_memory::<u32>(player_unit_ptr_addr) {
+            Ok(p) if p != 0 => p as usize,
+            _ => return ids,
+        };
+
+        let inv_ptr = match self
+            .ctx
+            .process
+            .read_memory::<u32>(player_ptr + unit::INVENTORY)
+        {
+            Ok(p) if p != 0 => p as usize,
+            _ => return ids,
+        };
+
+        let mut p_item = match self
+            .ctx
+            .process
+            .read_memory::<u32>(inv_ptr + inventory::FIRST_ITEM)
+        {
+            Ok(p) => p,
+            Err(_) => return ids,
+        };
+
+        for _ in 0..256 {
+            if p_item == 0 {
+                break;
+            }
+            // UnitAny.unit_id at +0x0C
+            if let Ok(uid) = self
+                .ctx
+                .process
+                .read_memory::<u32>(p_item as usize + unit::UNIT_ID)
+            {
+                ids.insert(uid);
+            }
+            // UnitAny.pUnitData at +0x14 → ItemData; ItemData + 0x64 = next.
+            let p_unit_data = match self
+                .ctx
+                .process
+                .read_memory::<u32>(p_item as usize + unit::UNIT_DATA)
+            {
+                Ok(p) if p != 0 => p as usize,
+                _ => break,
+            };
+            p_item = match self
+                .ctx
+                .process
+                .read_memory::<u32>(p_unit_data + item_data::NEXT_ITEM)
+            {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+        }
+
+        ids
+    }
+
+    /// Take the pickup updates produced by the latest `tick_items` call.
+    pub fn drain_pickup_updates(
+        &mut self,
+    ) -> Vec<(u32, u32, crate::loot_history::PickupState)> {
+        std::mem::take(&mut self.last_pickup_updates)
+    }
 }
 
 /// Strip D2 color codes from string (ÿc followed by color char)
@@ -1114,8 +1280,16 @@ pub struct DropScanner;
 
 #[cfg(not(target_os = "windows"))]
 impl DropScanner {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(
+        _loot_history: Arc<RwLock<crate::loot_history::LootHistory>>,
+    ) -> Result<Self, String> {
         Err("Not supported on this OS".to_string())
+    }
+
+    pub fn drain_pickup_updates(
+        &mut self,
+    ) -> Vec<(u32, u32, crate::loot_history::PickupState)> {
+        Vec::new()
     }
 
     pub fn set_filter_config(&mut self, _config: Arc<RwLock<FilterConfig>>) {}
