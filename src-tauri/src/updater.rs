@@ -178,8 +178,7 @@ fn download_and_replace(app: &AppHandle, url: &str) -> Result<(), String> {
     // Remove any stale file from a previous aborted attempt.
     let _ = std::fs::remove_file(&tmp_path);
 
-    let file =
-        std::fs::File::create(&tmp_path).map_err(|e| format!("create temp file: {}", e))?;
+    let file = std::fs::File::create(&tmp_path).map_err(|e| format!("create temp file: {}", e))?;
     let mut writer = ProgressWriter::new(file, app.clone());
 
     Download::from_url(url)

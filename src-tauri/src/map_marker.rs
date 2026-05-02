@@ -5,14 +5,11 @@
 //! (quests, waypoints) stay intact, linked below our tail.
 //!
 //! A per-area `persistent` cache keeps markers sticky when the player walks
-//! past an item and its room unloads. Entries are evicted only when BFS
-//! misses them AND the player is within `PICKUP_THRESHOLD_SUBTILES` —
-//! assumed pickup rather than out-of-range.
-//!
-//! Area change is detected via player-subtile jump: a hop of
-//! `AREA_CHANGE_JUMP_SUBTILES` or more can only come from a waypoint /
-//! portal / Act transition. `AutomapLayer.nLayerNo` flips on every Room2
-//! crossing and is NOT an area id.
+//! past an item and its room unloads. Entries are evicted either when BFS
+//! misses them AND the player is within `PICKUP_THRESHOLD_SUBTILES` (assumed
+//! pickup), or after `MARKER_TTL` without a BFS sighting (walked away and
+//! never came back). Cross-game transitions are handled by the explicit
+//! `clear_markers` signal from `main.rs`.
 //!
 //! Never mutate `pFloors` or `pWalls` — that corrupts revealed terrain.
 //! See `docs/map-marker-reverse-engineering.md` for offset calibration.
@@ -22,9 +19,9 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
 
 use crate::injection::D2Injector;
-use crate::logger::info as log_info;
 use crate::offsets::{
     automap_cell, automap_layer, d2client, item_path, paths, player_path, room1, unit, unit_type,
 };
@@ -44,9 +41,9 @@ pub struct MarkerItem {
 /// One D2 screen ≈ 32 subtiles.
 pub const PICKUP_THRESHOLD_SUBTILES: i32 = 32;
 
-/// Player subtile jump above which we treat the tick as a true area change.
-/// Walking moves 2-3 subtiles; even Teleport caps around 16.
-pub const AREA_CHANGE_JUMP_SUBTILES: i32 = 60;
+/// Drop persistent entries unseen by BFS for this long. Caps the cache
+/// in long sessions; cross-game wipe is handled by `clear_markers`.
+pub const MARKER_TTL: Duration = Duration::from_secs(20 * 60);
 
 pub struct MapMarkerManager {
     last_layer: u32,
@@ -58,7 +55,9 @@ pub struct MapMarkerManager {
     placed: Vec<u32>,
     last_hash: u64,
     persistent: HashMap<u32, MarkerItem>,
-    last_player_sub: Option<(i32, i32)>,
+    /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
+    /// (orphans are GC'd at the end of `reconcile_persistent`).
+    last_seen: HashMap<u32, Instant>,
 }
 
 impl MapMarkerManager {
@@ -69,7 +68,7 @@ impl MapMarkerManager {
             placed: Vec::new(),
             last_hash: 0,
             persistent: HashMap::new(),
-            last_player_sub: None,
+            last_seen: HashMap::new(),
         }
     }
 
@@ -84,8 +83,8 @@ impl MapMarkerManager {
         self.placed.clear();
         self.last_hash = 0;
         self.persistent.clear();
+        self.last_seen.clear();
         self.last_layer = 0;
-        self.last_player_sub = None;
         Ok(())
     }
 
@@ -108,23 +107,6 @@ impl MapMarkerManager {
             return Ok(());
         }
 
-        // Area change: a big player-subtile jump is the only reliable
-        // signal (nLayerNo and layer pointer both flip on Room2 crossings).
-        if let (Some((px, py)), Some((lx, ly))) = (player_sub, self.last_player_sub) {
-            let jump = (px - lx).abs() + (py - ly).abs();
-            if jump >= AREA_CHANGE_JUMP_SUBTILES && !self.persistent.is_empty() {
-                log_info(&format!(
-                    "map_marker: area change (player jumped {} subtiles), wiping {} markers",
-                    jump,
-                    self.persistent.len()
-                ));
-                self.persistent.clear();
-                self.chain_parent_slot = 0;
-                self.placed.clear();
-                self.last_hash = 0;
-            }
-        }
-
         // Layer switch (Room2 crossing or layer reallocation): forget the
         // chain, keep the cache — reconcile will re-splice on the new layer.
         if layer != self.last_layer {
@@ -133,8 +115,6 @@ impl MapMarkerManager {
             self.last_hash = 0;
             self.last_layer = layer;
         }
-
-        self.last_player_sub = player_sub;
 
         // Tamper check: if `pObjects` no longer points at our head, the
         // engine or MXL overwrote us and our chain is orphaned. Force
@@ -155,10 +135,13 @@ impl MapMarkerManager {
 
         let wanted = reconcile_persistent(
             &mut self.persistent,
+            &mut self.last_seen,
             newly_matched,
             bfs_unit_ids,
             player_sub,
             PICKUP_THRESHOLD_SUBTILES,
+            MARKER_TTL,
+            Instant::now(),
         );
 
         let hash = hash_markers(&wanted);
@@ -258,19 +241,22 @@ impl MapMarkerManager {
 /// markers to render (deterministic for stable hashing).
 fn reconcile_persistent(
     persistent: &mut HashMap<u32, MarkerItem>,
+    last_seen: &mut HashMap<u32, Instant>,
     newly_matched: &[MarkerItem],
     bfs_unit_ids: &HashSet<u32>,
     player_sub: Option<(i32, i32)>,
     pickup_threshold: i32,
+    ttl: Duration,
+    now: Instant,
 ) -> Vec<MarkerItem> {
     let matched_ids: HashSet<u32> = newly_matched.iter().map(|m| m.unit_id).collect();
 
-    // BFS sees it, filter no longer matches → drop.
+    // BFS sees it, filter no longer matches → drop now (don't wait for TTL).
     persistent.retain(|uid, _| !bfs_unit_ids.contains(uid) || matched_ids.contains(uid));
 
-    // Upsert current matches.
     for m in newly_matched {
         persistent.insert(m.unit_id, *m);
+        last_seen.insert(m.unit_id, now);
     }
 
     // Close + invisible = picked up.
@@ -284,6 +270,12 @@ fn reconcile_persistent(
         });
     }
 
+    persistent.retain(|uid, _| match last_seen.get(uid) {
+        Some(t) => now.duration_since(*t) < ttl,
+        None => false,
+    });
+    last_seen.retain(|uid, _| persistent.contains_key(uid));
+
     let mut out: Vec<MarkerItem> = persistent.values().copied().collect();
     out.sort_by_key(|m| (m.unit_id, m.cell_x, m.cell_y));
     out
@@ -291,10 +283,7 @@ fn reconcile_persistent(
 
 /// BFS the Room1 graph up to `max_depth` hops collecting every item unit,
 /// returning `(p_unit, sub_x, sub_y)` triples.
-pub fn bfs_item_positions(
-    ctx: &D2Context,
-    max_depth: u32,
-) -> Result<Vec<(u32, i32, i32)>, String> {
+pub fn bfs_item_positions(ctx: &D2Context, max_depth: u32) -> Result<Vec<(u32, i32, i32)>, String> {
     let mut out = Vec::new();
 
     let p_player = ctx
@@ -499,9 +488,19 @@ mod tests {
     #[test]
     fn reconcile_upserts_new_matches() {
         let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
         let matched = [mk(1, 50, 50), mk(2, 60, 60)];
         let bfs: HashSet<u32> = [1u32, 2].iter().copied().collect();
-        let out = reconcile_persistent(&mut persistent, &matched, &bfs, Some((55, 55)), 32);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &matched,
+            &bfs,
+            Some((55, 55)),
+            32,
+            Duration::from_secs(3600),
+            Instant::now(),
+        );
         assert_eq!(out.len(), 2);
         assert_eq!(persistent.len(), 2);
     }
@@ -510,8 +509,20 @@ mod tests {
     fn reconcile_keeps_far_cached_when_bfs_misses() {
         // Player at origin, item far away, BFS doesn't see → walked away.
         let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let now = Instant::now();
         persistent.insert(42u32, mk(42, 200, 200));
-        let out = reconcile_persistent(&mut persistent, &[], &HashSet::new(), Some((0, 0)), 32);
+        last_seen.insert(42u32, now);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &[],
+            &HashSet::new(),
+            Some((0, 0)),
+            32,
+            Duration::from_secs(3600),
+            now,
+        );
         assert_eq!(out.len(), 1);
     }
 
@@ -519,29 +530,70 @@ mod tests {
     fn reconcile_evicts_close_cached_when_bfs_misses() {
         // Player next to item, BFS doesn't see → picked up.
         let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let now = Instant::now();
         persistent.insert(42u32, mk(42, 55, 55));
-        let out = reconcile_persistent(&mut persistent, &[], &HashSet::new(), Some((50, 50)), 32);
+        last_seen.insert(42u32, now);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &[],
+            &HashSet::new(),
+            Some((50, 50)),
+            32,
+            Duration::from_secs(3600),
+            now,
+        );
         assert!(out.is_empty());
     }
 
     #[test]
     fn reconcile_evicts_when_bfs_sees_but_filter_no_longer_matches() {
-        // Rule changed mid-session: item still visible but shouldn't be marked.
         let mut persistent = HashMap::new();
         persistent.insert(42u32, mk(42, 55, 55));
-        let bfs: HashSet<u32> = [42u32].iter().copied().collect();
-        let out = reconcile_persistent(&mut persistent, &[], &bfs, Some((50, 50)), 32);
+        let mut last_seen = HashMap::new();
+        let now = Instant::now();
+        last_seen.insert(42u32, now);
+
+        let mut bfs = HashSet::new();
+        bfs.insert(42u32);
+
+        // BFS sees the item, but newly_matched is empty (filter no longer
+        // matches). Expected: item dropped from persistent immediately.
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &[],
+            &bfs,
+            Some((50, 50)),
+            32,
+            Duration::from_secs(3600),
+            now,
+        );
         assert!(out.is_empty());
+        assert!(persistent.is_empty());
     }
 
     #[test]
     fn reconcile_updates_position_on_reupsert() {
         // unit_id reused for a new drop at a different spot.
         let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let now = Instant::now();
         persistent.insert(42u32, mk(42, 10, 10));
+        last_seen.insert(42u32, now);
         let matched = [mk(42, 200, 200)];
         let bfs: HashSet<u32> = [42u32].iter().copied().collect();
-        let out = reconcile_persistent(&mut persistent, &matched, &bfs, Some((100, 100)), 32);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &matched,
+            &bfs,
+            Some((100, 100)),
+            32,
+            Duration::from_secs(3600),
+            now,
+        );
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].sub_x, out[0].sub_y), (200, 200));
     }
@@ -549,8 +601,42 @@ mod tests {
     #[test]
     fn reconcile_keeps_everything_when_player_pos_unknown() {
         let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let now = Instant::now();
         persistent.insert(42u32, mk(42, 50, 50));
-        let out = reconcile_persistent(&mut persistent, &[], &HashSet::new(), None, 32);
+        last_seen.insert(42u32, now);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &[],
+            &HashSet::new(),
+            None,
+            32,
+            Duration::from_secs(3600),
+            now,
+        );
         assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_evicts_after_ttl() {
+        let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let early = Instant::now();
+        persistent.insert(42u32, mk(42, 200, 200));
+        last_seen.insert(42u32, early);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &[],
+            &HashSet::new(),
+            Some((0, 0)),
+            32,
+            Duration::from_secs(60),
+            early + Duration::from_secs(120),
+        );
+        assert!(out.is_empty());
+        assert!(persistent.is_empty());
+        assert!(last_seen.is_empty());
     }
 }

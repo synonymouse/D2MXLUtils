@@ -267,7 +267,11 @@ mod tests {
         let mut h = LootHistory::new();
         h.push(entry(1, "A"));
         h.push(entry(1, "A again"));
-        assert_eq!(h.len(), 1, "duplicate unit_id should not produce a 2nd entry");
+        assert_eq!(
+            h.len(),
+            1,
+            "duplicate unit_id should not produce a 2nd entry"
+        );
         assert_eq!(h.snapshot()[0].name, "A");
     }
 

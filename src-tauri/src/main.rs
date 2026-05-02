@@ -8,11 +8,13 @@ mod logger;
 mod loot_filter_hook;
 mod loot_history;
 mod map_marker;
+mod marker_scanner;
 mod notifier;
 mod offsets;
 mod process;
 mod profiles;
 mod rules;
+mod scanner_state;
 mod settings;
 mod updater;
 
@@ -105,6 +107,36 @@ fn is_diablo2_running() -> bool {
     false
 }
 
+/// Spawn the marker-scanner thread. Cancellation is checked at the top of
+/// each iteration, so a `stop`-then-join may block until the in-flight BFS
+/// finishes (~700 ms worst case in release).
+#[cfg(target_os = "windows")]
+fn spawn_marker_thread(
+    state: Arc<crate::scanner_state::SharedScannerState>,
+) -> Option<thread::JoinHandle<()>> {
+    thread::Builder::new()
+        .name("marker-scanner".into())
+        .spawn(move || {
+            let mut marker_scanner = crate::marker_scanner::MarkerScanner::new(state.clone());
+            loop {
+                if state.stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                if state.clear_markers.swap(false, Ordering::Relaxed) {
+                    marker_scanner.clear();
+                }
+                marker_scanner.tick();
+                thread::sleep(Duration::from_millis(30));
+            }
+            marker_scanner.shutdown();
+        })
+        .map_err(|e| {
+            log_error(&format!("Failed to spawn marker-scanner thread: {}", e));
+            e
+        })
+        .ok()
+}
+
 /// Start the scanner (internal function used by auto-start and manual start)
 fn start_scanner_internal(
     is_scanning: Arc<AtomicBool>,
@@ -141,7 +173,85 @@ fn start_scanner_internal(
     let handle = thread::Builder::new()
         .name("drop-scanner".into())
         .spawn(move || {
-            // Try to create scanner
+            #[cfg(target_os = "windows")]
+            let (shared_state, mut scanner) = {
+                let ctx = match crate::process::D2Context::new() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log_error(&format!("Failed to attach to Diablo II: {}", e));
+                        if let Err(e) = app_handle.emit("scanner-status", "error") {
+                            log_error(&format!("Failed to emit event (error): {}", e));
+                        }
+                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                            if let Err(e) = overlay.hide() {
+                                log_error(&format!(
+                                    "Failed to hide overlay window after scanner attach error: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        is_scanning.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+                let injector = match crate::injection::D2Injector::new(
+                    &ctx.process,
+                    ctx.d2_client,
+                    ctx.d2_common,
+                    ctx.d2_lang,
+                ) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        log_error(&format!("Failed to create D2Injector: {}", e));
+                        if let Err(e) = app_handle.emit("scanner-status", "error") {
+                            log_error(&format!("Failed to emit event (error): {}", e));
+                        }
+                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                            if let Err(e) = overlay.hide() {
+                                log_error(&format!(
+                                    "Failed to hide overlay window after scanner attach error: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        is_scanning.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+                let shared_state =
+                    Arc::new(crate::scanner_state::SharedScannerState::new(ctx, injector));
+                let scanner = match DropScanner::new(shared_state.clone(), loot_history.clone()) {
+                    Ok(s) => {
+                        log_info("Scanner attached to Diablo II");
+                        if let Err(e) = app_handle.emit("scanner-status", "running") {
+                            log_error(&format!("Failed to emit event (running): {}", e));
+                        }
+                        s
+                    }
+                    Err(e) => {
+                        log_error(&format!("Failed to attach to Diablo II: {}", e));
+                        if let Err(e) = app_handle.emit("scanner-status", "error") {
+                            log_error(&format!("Failed to emit event (error): {}", e));
+                        }
+                        if let Some(overlay) = app_handle.get_webview_window("overlay") {
+                            if let Err(e) = overlay.hide() {
+                                log_error(&format!(
+                                    "Failed to hide overlay window after scanner attach error: {}",
+                                    e
+                                ));
+                            }
+                        }
+                        is_scanning.store(false, Ordering::SeqCst);
+                        return;
+                    }
+                };
+                (shared_state, scanner)
+            };
+
+            #[cfg(target_os = "windows")]
+            let marker_handle = spawn_marker_thread(shared_state.clone());
+
+            #[cfg(not(target_os = "windows"))]
             let mut scanner = match DropScanner::new(loot_history.clone()) {
                 Ok(s) => {
                     log_info("Scanner attached to Diablo II");
@@ -215,6 +325,10 @@ fn start_scanner_internal(
                 if ingame && !was_ingame {
                     log_info("Entered game");
                     scanner.clear_cache();
+                    #[cfg(target_os = "windows")]
+                    shared_state
+                        .clear_markers
+                        .store(true, Ordering::Relaxed);
                     if let Ok(mut hist) = loot_history.write() {
                         hist.clear();
                     }
@@ -400,8 +514,6 @@ fn start_scanner_internal(
                         }
                     }
 
-                    scanner.tick_map_markers();
-
                     if !dict_published {
                         if let Some(dict) = scanner.items_dictionary_snapshot() {
                             if let Ok(mut guard) = items_dictionary.write() {
@@ -433,6 +545,11 @@ fn start_scanner_internal(
                 thread::sleep(Duration::from_millis(30));
             }
 
+            // Signal the marker thread, then emit user-visible status before
+            // joining — the join can block for one BFS tick.
+            #[cfg(target_os = "windows")]
+            shared_state.stop.store(true, Ordering::Relaxed);
+
             is_scanning.store(false, Ordering::SeqCst);
             game_status.store(GAME_STATUS_UNKNOWN, Ordering::SeqCst);
             if let Err(e) = app_handle.emit("scanner-status", "stopped") {
@@ -441,13 +558,19 @@ fn start_scanner_internal(
             if let Err(e) = app_handle.emit("game-status", "unknown") {
                 log_error(&format!("Failed to emit event (unknown): {}", e));
             }
-            // Ensure overlay is hidden when scanner stops
             if let Some(overlay) = app_handle.get_webview_window("overlay") {
                 if let Err(e) = overlay.hide() {
                     log_error(&format!(
                         "Failed to hide overlay window when scanner stopped: {}",
                         e
                     ));
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            if let Some(h) = marker_handle {
+                if h.join().is_err() {
+                    log_error("marker-scanner thread panicked");
                 }
             }
         })
@@ -531,10 +654,7 @@ fn get_loot_history(state: tauri::State<AppState>) -> Vec<LootEntry> {
 }
 
 #[tauri::command]
-fn clear_loot_history(
-    state: tauri::State<AppState>,
-    app_handle: AppHandle,
-) -> Result<(), String> {
+fn clear_loot_history(state: tauri::State<AppState>, app_handle: AppHandle) -> Result<(), String> {
     if let Ok(mut h) = state.loot_history.write() {
         h.clear();
     }
@@ -1064,8 +1184,7 @@ fn open_app_folder(app: AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create app data dir: {}", e))?;
     std::process::Command::new("explorer")
         .arg(&dir)
         .spawn()
@@ -1109,8 +1228,8 @@ fn main() {
                 if !settings_path.exists() {
                     match profiles::seed_default_profile(app.handle()) {
                         Ok(name) => {
-                            let mut s = settings::load_settings(app.handle().clone())
-                                .unwrap_or_default();
+                            let mut s =
+                                settings::load_settings(app.handle().clone()).unwrap_or_default();
                             s.active_profile = Some(name);
                             if let Err(e) = settings::save_settings(app.handle().clone(), s) {
                                 log_error(&format!(
@@ -1194,8 +1313,7 @@ fn main() {
                     hotkey_state.start(app_handle_for_hotkeys, hotkeys::HotkeyConfig::default());
                     let defaults = settings::AppSettings::default();
                     edit_mode_state.start(app_handle_for_edit_mode, defaults.edit_overlay_hotkey);
-                    reveal_hidden_state
-                        .start(app_handle_for_reveal, defaults.reveal_hidden_hotkey);
+                    reveal_hidden_state.start(app_handle_for_reveal, defaults.reveal_hidden_hotkey);
                     loot_history_hotkey_state
                         .start(app_handle_for_loot_history, defaults.loot_history_hotkey);
                 }
@@ -1252,9 +1370,9 @@ fn main() {
                             let wf_w = watchdog_fired.clone();
                             let ah_w = ah.clone();
                             thread::spawn(move || {
-                                thread::sleep(Duration::from_millis(1000));
+                                thread::sleep(Duration::from_millis(2500));
                                 wf_w.store(true, Ordering::SeqCst);
-                                log_error("scanner join watchdog fired after 1s; exiting");
+                                log_error("scanner join watchdog fired after 2.5s; exiting");
                                 ah_w.exit(0);
                             });
                             if let Some(h) = handle_opt {

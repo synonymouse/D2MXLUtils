@@ -103,15 +103,54 @@ Notifications no longer wait on the marker pass. Measured impact:
 This is a strict improvement — no change to marker behavior, just a
 reordering that lets events leave the scanner thread earlier.
 
+## Phase 2 — marker pass moved to its own thread
+
+The split in §B above kept `tick_items` and `tick_map_markers` in the
+same thread, so the *next* `tick_items` still waited on the previous
+`tick_map_markers`. On a crowded map this capped tick-cadence at the
+BFS duration (~700 ms release).
+
+The marker pass now runs in a dedicated OS thread. `tick_items` runs at
+its natural cadence (~30 ms idle, dominated by `pPaths` walk under
+load). `MapMarkerManager` is single-owner inside `MarkerScanner` — no
+shared state. Cross-thread coordination is limited to:
+
+- `D2Context` — read-only after construction, shared via `Arc`.
+- `D2Injector` — `Arc<Mutex<>>`. Both threads call `CreateRemoteThread`
+  through the same scratch arena; the mutex is held only for the
+  duration of one call sequence. Items-side lock acquisition happens
+  on every new item (`GetItemName` + `GetItemStats`); marker-side
+  acquisition happens once per BFS for `MapMarkerManager::tick`.
+  Contention is negligible at observed call rates.
+- `recent_events` — `RwLock<HashMap<u32, ItemDropEvent>>` inside
+  `Arc<SharedScannerState>`. Items thread is the sole writer. Marker
+  thread snapshots via `clone()` at the start of each BFS pass,
+  releases the read lock, then iterates on the local snapshot. This
+  avoids holding the lock across `decide()` calls, which would
+  re-introduce items-side blocking.
+- `clear_markers` — `AtomicBool`. Items thread sets it on game-entry
+  transitions (`ingame && !was_ingame`); marker thread reads-and-resets
+  it at the top of each tick and calls `MarkerScanner::clear` if set.
+  Covers the rare same-area respawn case where
+  `MapMarkerManager`'s subtile-jump area-change heuristic would not
+  fire.
+- `stop` — `AtomicBool`. Items thread sets it after its loop exits;
+  marker thread checks at each iteration boundary. Cancellation is
+  epoch-grained (mid-BFS exits wait for current pass to finish, up to
+  ~700 ms in release on crowded maps).
+
+`SharedScannerState` (in `src-tauri/src/scanner_state.rs`) bundles the
+above into one `Arc`-shared struct; both `DropScanner` (items thread)
+and `MarkerScanner` (marker thread) hold their own `Arc<>` clone.
+
 ## Known remaining cost
 
-`tick_map_markers` is still ~260 ms per tick in dev / ~700 ms in
-release in a crowded area, and runs every tick. This does not affect
-notification latency after the split, but it does affect overall tick
-cadence, which caps how quickly a brand-new drop can be picked up by
-`tick_items` on the next iteration.
+After Phase 2, BFS no longer affects notification latency. It remains
+~260 ms / ~700 ms per pass (dev / release) on crowded maps, but runs
+on its own thread so this only affects automap marker freshness, not
+notification cadence.
 
-### Candidate next steps (not in this change)
+### Candidate next steps (still unimplemented)
 
 Listed roughly in ascending order of risk/effort. Stop when the
 remaining cost stops mattering.
@@ -140,6 +179,10 @@ remaining cost stops mattering.
    sub-ranges into a local buffer in one syscall, then parse in Rust.
    Biggest win for BFS and `pPaths` walks. Highest implementation
    cost.
+
+These are now CPU-bandwidth optimizations, not latency fixes. They
+matter only for users on weak hardware where the marker thread eating
+~10% of one core is felt elsewhere.
 
 ## Open questions (for later investigation)
 

@@ -300,8 +300,7 @@ impl FilterConfig {
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound.filter(|&s| s != 0),
-                        display_stats: rule.display_stats
-                            || !rule.stat_patterns.is_empty(),
+                        display_stats: rule.display_stats || !rule.stat_patterns.is_empty(),
                         matched_stat_lines,
                     })
                 } else {
@@ -605,8 +604,7 @@ mod tests {
             ..FilterConfig::default()
         };
         let mut ring = item("Ring", ItemQuality::Unique, false);
-        ring.stats =
-            "+3 to All Skills\n+15% Faster Cast Rate\n+30 to Strength".to_string();
+        ring.stats = "+3 to All Skills\n+15% Faster Cast Rate\n+30 to Strength".to_string();
         let ctx = MatchContext::new(&ring);
         let n = config.decide(&ctx).notification.expect("should notify");
         assert!(n.display_stats, "multi-stat implies display_stats");

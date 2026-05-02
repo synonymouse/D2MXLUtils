@@ -47,8 +47,8 @@ impl<'a> MatchContext<'a> {
             let name_hit = pattern_matches(pattern, &self.name_lower);
             let base_hit =
                 !self.base_name_lower.is_empty() && pattern_matches(pattern, &self.base_name_lower);
-            let category_hit = !self.category_lower.is_empty()
-                && pattern_matches(pattern, &self.category_lower);
+            let category_hit =
+                !self.category_lower.is_empty() && pattern_matches(pattern, &self.category_lower);
             if !(name_hit || base_hit || category_hit) {
                 return false;
             }
@@ -304,12 +304,20 @@ mod tests {
         for n in [0u8, 4, 6] {
             let mut it = item("X", "Normal", "", false);
             it.sockets = n;
-            assert!(MatchContext::new(&it).matches(&r), "sockets={} should match", n);
+            assert!(
+                MatchContext::new(&it).matches(&r),
+                "sockets={} should match",
+                n
+            );
         }
         for n in [1u8, 2, 3, 5] {
             let mut it = item("X", "Normal", "", false);
             it.sockets = n;
-            assert!(!MatchContext::new(&it).matches(&r), "sockets={} must NOT match", n);
+            assert!(
+                !MatchContext::new(&it).matches(&r),
+                "sockets={} must NOT match",
+                n
+            );
         }
     }
 
@@ -391,7 +399,7 @@ mod tests {
         assert!(!MatchContext::new(&plain).matches(&r));
     }
 
-#[test]
+    #[test]
     fn name_pattern_fails_when_neither_name_nor_base_match() {
         let it = item_with_base("Rune Turn", "Ring", "Rare", "");
         let ctx = MatchContext::new(&it);
@@ -483,9 +491,7 @@ mod tests {
             ctx.matching_stat_lines(&["Strength".into(), "Skills".into()]),
             vec![0, 1, 2]
         );
-        assert!(ctx
-            .matching_stat_lines(&["nothing".into()])
-            .is_empty());
+        assert!(ctx.matching_stat_lines(&["nothing".into()]).is_empty());
         assert!(ctx.matching_stat_lines(&[]).is_empty());
     }
 

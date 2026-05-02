@@ -39,6 +39,13 @@ impl Drop for RemoteAlloc {
     }
 }
 
+// SAFETY: holds a Win32 HANDLE and a usize remote-process address; both
+// are immutable after construction and Win32 ops on them are thread-safe.
+#[cfg(target_os = "windows")]
+unsafe impl Send for RemoteAlloc {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for RemoteAlloc {}
+
 #[cfg(target_os = "windows")]
 impl RemoteAlloc {
     /// Allocate memory in the remote process
@@ -347,6 +354,15 @@ impl D2Injector {
         process.read_memory::<u32>(self.string_buffer.address)
     }
 }
+
+// SAFETY: Send is sound because all state lives in remote process memory;
+// Sync is sound only because callers wrap in `Arc<Mutex<D2Injector>>` —
+// `string_buffer`/`params_buffer` are a shared scratch arena and concurrent
+// `&D2Injector` calls would corrupt each other. See `scanner_state.rs`.
+#[cfg(target_os = "windows")]
+unsafe impl Send for D2Injector {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for D2Injector {}
 
 // --- Stub for Non-Windows ---
 

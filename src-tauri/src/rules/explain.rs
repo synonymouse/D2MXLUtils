@@ -20,7 +20,8 @@ fn format_directive(hide: bool) -> String {
     if hide {
         "File directive: hide every item that no rule matches. Rules with 'show' override this for individual items.".to_string()
     } else {
-        "File directive: defer to the game's built-in filter for items that no rule matches.".to_string()
+        "File directive: defer to the game's built-in filter for items that no rule matches."
+            .to_string()
     }
 }
 
@@ -155,10 +156,7 @@ fn unrestricted_categories(rule: &Rule) -> Option<String> {
             missing.last().unwrap()
         ),
     };
-    Some(format!(
-        "(Other categories — {} — are unrestricted.)",
-        list
-    ))
+    Some(format!("(Other categories — {} — are unrestricted.)", list))
 }
 
 // =====================================================================

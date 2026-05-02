@@ -39,6 +39,13 @@ impl Drop for ProcessHandle {
     }
 }
 
+// SAFETY: HANDLE is a kernel-object reference; the Win32 calls we make on
+// it are thread-safe. CloseHandle runs once via Drop on the last Arc.
+#[cfg(target_os = "windows")]
+unsafe impl Send for ProcessHandle {}
+#[cfg(target_os = "windows")]
+unsafe impl Sync for ProcessHandle {}
+
 #[cfg(target_os = "windows")]
 impl ProcessHandle {
     pub fn read_memory<T: Copy>(&self, address: usize) -> Result<T, String> {

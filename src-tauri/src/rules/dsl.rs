@@ -991,7 +991,11 @@ fn rule_subsumes(later: &Rule, earlier: &Rule) -> bool {
         if earlier.qualities.is_empty() {
             return false;
         }
-        if !earlier.qualities.iter().all(|q| later.qualities.contains(q)) {
+        if !earlier
+            .qualities
+            .iter()
+            .all(|q| later.qualities.contains(q))
+        {
             return false;
         }
     }
@@ -1183,8 +1187,7 @@ mod tests {
         let errors = validate_dsl(src);
         assert!(errors
             .iter()
-            .all(|e| !(e.severity == ValidationSeverity::Info
-                && e.message.contains("notify"))));
+            .all(|e| !(e.severity == ValidationSeverity::Info && e.message.contains("notify"))));
     }
 
     #[test]
@@ -1330,7 +1333,10 @@ mod tests {
         let errs = parse_dsl(src).unwrap_err();
         let name_errs: Vec<_> = errs
             .iter()
-            .filter(|e| e.message.contains("Group headers cannot contain a name pattern"))
+            .filter(|e| {
+                e.message
+                    .contains("Group headers cannot contain a name pattern")
+            })
             .collect();
         assert_eq!(name_errs.len(), 1);
     }
@@ -1379,14 +1385,22 @@ mod tests {
             ..Rule::default()
         };
         let json = serde_json::to_string(&r).unwrap();
-        assert!(!json.contains("\"map\""), "map=false must not serialize: {}", json);
+        assert!(
+            !json.contains("\"map\""),
+            "map=false must not serialize: {}",
+            json
+        );
 
         let r = Rule {
             map: true,
             ..Rule::default()
         };
         let json = serde_json::to_string(&r).unwrap();
-        assert!(json.contains("\"map\":true"), "map=true must serialize: {}", json);
+        assert!(
+            json.contains("\"map\":true"),
+            "map=true must serialize: {}",
+            json
+        );
     }
 
     #[test]

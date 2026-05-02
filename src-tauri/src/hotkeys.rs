@@ -455,8 +455,10 @@ fn reveal_hidden_thread_windows(
         if hk.key_code != last_key_code || hk.modifiers != last_modifiers {
             if last_active {
                 active.store(false, Ordering::SeqCst);
-                let _ = app_handle
-                    .emit("reveal-hidden-state", serde_json::json!({ "active": false }));
+                let _ = app_handle.emit(
+                    "reveal-hidden-state",
+                    serde_json::json!({ "active": false }),
+                );
             }
             last_active = false;
             last_key_code = hk.key_code;
@@ -467,9 +469,10 @@ fn reveal_hidden_thread_windows(
 
         if pressed != last_active {
             active.store(pressed, Ordering::SeqCst);
-            if let Err(e) = app_handle
-                .emit("reveal-hidden-state", serde_json::json!({ "active": pressed }))
-            {
+            if let Err(e) = app_handle.emit(
+                "reveal-hidden-state",
+                serde_json::json!({ "active": pressed }),
+            ) {
                 log_error(&format!("Failed to emit reveal-hidden-state event: {}", e));
             }
             last_active = pressed;
@@ -480,7 +483,10 @@ fn reveal_hidden_thread_windows(
 
     if last_active {
         active.store(false, Ordering::SeqCst);
-        let _ = app_handle.emit("reveal-hidden-state", serde_json::json!({ "active": false }));
+        let _ = app_handle.emit(
+            "reveal-hidden-state",
+            serde_json::json!({ "active": false }),
+        );
     }
     log_info("Reveal-hidden watcher thread stopped");
 }
