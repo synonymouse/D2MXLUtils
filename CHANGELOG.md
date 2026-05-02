@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.20.0 — 2026-05-02
+
+### Bug Fixes
+
+- Fix(hotkeys): suppress polling hotkeys when game is not foreground (6346dd6)
+- Fix(scanner): stat fallback for data-table-only items (Cycles) (1f26e8a)
+
+### Features
+
+- Feat(ui): show changelog in-app instead of opening GitHub (82a4282)
+- Feat(changelog): auto-generate CHANGELOG.md on release (6ffa849)
+
+### Other
+
+- 1.20.0 (5716b67)
+
+### Performance
+
+- Perf(scanner): map-marker pass on dedicated thread + TTL eviction (ed07bb1)
+
 ## v1.19.1 — 2026-05-01
 
 ### Bug Fixes
