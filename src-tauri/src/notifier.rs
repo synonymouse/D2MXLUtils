@@ -685,6 +685,18 @@ impl DropScanner {
                     scanned.stats = Some(reversed.join("\n"));
                 }
             }
+
+            // Fallback: for items whose stats come from data tables rather
+            // than the unit's stat list (e.g. Cycles), read the bonus
+            // description from the items.txt string-table ID at +0xB6.
+            if scanned.stats.is_none() {
+                if let Some(text) = self.read_item_desc_from_txt(
+                    &injector,
+                    scanned.class,
+                ) {
+                    scanned.stats = Some(text);
+                }
+            }
         }
 
         // Mark as seen
@@ -1157,6 +1169,64 @@ impl DropScanner {
         }
 
         ids
+    }
+
+    /// Read item bonus description from the items.txt string table.
+    ///
+    /// Items like Median XL Cycles store their property description as a
+    /// string-table ID in items.txt at record offset +0xB6 (u16).  The
+    /// string contains the full tooltip in bottom-to-top line order.
+    fn read_item_desc_from_txt(
+        &self,
+        injector: &crate::injection::D2Injector,
+        class: u32,
+    ) -> Option<String> {
+        let count: u32 = self
+            .state
+            .ctx
+            .process
+            .read_memory(self.state.ctx.d2_common + d2common::ITEMS_TXT_COUNT)
+            .ok()?;
+        let base_ptr: u32 = self
+            .state
+            .ctx
+            .process
+            .read_memory(self.state.ctx.d2_common + d2common::ITEMS_TXT)
+            .ok()?;
+        if class >= count || base_ptr == 0 {
+            return None;
+        }
+        let record = base_ptr as usize + class as usize * items_txt::RECORD_SIZE;
+        let sid: u16 = self
+            .state
+            .ctx
+            .process
+            .read_memory(record + items_txt::DESC_STR_ID)
+            .ok()?;
+        if sid == 0 || sid == 0xFFFF {
+            return None;
+        }
+        let raw = injector
+            .get_string(&self.state.ctx.process, sid, 500)
+            .ok()?;
+        let clean = strip_color_codes(&raw);
+        if clean.trim().is_empty() {
+            return None;
+        }
+
+        let stat_section = clean.splitn(2, "\n\n").next().unwrap_or(&clean);
+        let lines: Vec<&str> = stat_section
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with("Cube ")
+            })
+            .rev()
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        Some(lines.join("\n"))
     }
 
     /// Take the pickup updates produced by the latest `tick_items` call.

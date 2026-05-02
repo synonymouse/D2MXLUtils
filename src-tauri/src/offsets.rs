@@ -209,6 +209,10 @@ pub mod items_txt {
     pub const IS_2H: usize = 0x11C; // byte
     pub const WEAPON_TYPE: usize = 0x11E; // word
     pub const IS_1H: usize = 0x13D; // byte
+    /// String-table ID for the item's bonus description (u16).
+    /// Used by Median XL Cycles and similar data-table-only items
+    /// whose stats aren't stored on the unit's stat list.
+    pub const DESC_STR_ID: usize = 0xB6; // word
 }
 
 /// ItemTypes.txt record offsets (record size = 0xE4)
