@@ -101,6 +101,41 @@ impl HotkeyState {
 }
 
 #[cfg(target_os = "windows")]
+fn is_d2_or_app_foreground() -> bool {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Threading::GetCurrentProcessId;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowW, GetForegroundWindow, GetWindowThreadProcessId,
+    };
+
+    unsafe {
+        let fg = GetForegroundWindow();
+        if fg.0.is_null() {
+            return false;
+        }
+
+        let our_pid = GetCurrentProcessId();
+        let mut fg_pid: u32 = 0;
+        GetWindowThreadProcessId(fg, Some(&mut fg_pid as *mut u32));
+        if fg_pid == our_pid {
+            return true;
+        }
+
+        let class: Vec<u16> = OsStr::new("Diablo II")
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        if let Ok(d2) = FindWindowW(PCWSTR(class.as_ptr()), PCWSTR::null()) {
+            return !d2.0.is_null() && fg.0 == d2.0;
+        }
+
+        false
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn hotkey_thread_windows(is_running: Arc<AtomicBool>, app_handle: AppHandle, hotkey: HotkeyConfig) {
     log_info(&format!(
         "Hotkey thread starting with: {} (key={:#x}, mods={:#x})",
@@ -286,6 +321,10 @@ fn chord_is_pressed(hk: &HotkeyConfig) -> bool {
     const MOD_SHIFT: u32 = 0x0004;
     const MOD_WIN: u32 = 0x0008;
 
+    if !is_d2_or_app_foreground() {
+        return false;
+    }
+
     if hk.key_code == 0 && hk.modifiers == 0 {
         return false;
     }
@@ -465,7 +504,7 @@ fn reveal_hidden_thread_windows(
             last_modifiers = hk.modifiers;
         }
 
-        let pressed = reveal_chord_is_pressed(&hk);
+        let pressed = chord_is_pressed(&hk);
 
         if pressed != last_active {
             active.store(pressed, Ordering::SeqCst);
@@ -489,38 +528,6 @@ fn reveal_hidden_thread_windows(
         );
     }
     log_info("Reveal-hidden watcher thread stopped");
-}
-
-// Like chord_is_pressed but allows a bare key with no modifier (e.g. 'Z').
-#[cfg(target_os = "windows")]
-fn reveal_chord_is_pressed(hk: &HotkeyConfig) -> bool {
-    const MOD_ALT: u32 = 0x0001;
-    const MOD_CONTROL: u32 = 0x0002;
-    const MOD_SHIFT: u32 = 0x0004;
-    const MOD_WIN: u32 = 0x0008;
-
-    if hk.key_code == 0 && hk.modifiers == 0 {
-        return false;
-    }
-
-    if hk.modifiers & MOD_CONTROL != 0 && !is_key_down(VK_CONTROL.0) {
-        return false;
-    }
-    if hk.modifiers & MOD_SHIFT != 0 && !is_key_down(VK_SHIFT.0) {
-        return false;
-    }
-    if hk.modifiers & MOD_ALT != 0 && !is_key_down(VK_MENU.0) {
-        return false;
-    }
-    if hk.modifiers & MOD_WIN != 0 && !(is_key_down(VK_LWIN.0) || is_key_down(VK_RWIN.0)) {
-        return false;
-    }
-
-    if hk.key_code != 0 && !is_key_down(hk.key_code as u16) {
-        return false;
-    }
-
-    true
 }
 
 #[tauri::command]
@@ -625,7 +632,7 @@ fn loot_history_hotkey_thread_windows(
             last_modifiers = hk.modifiers;
         }
 
-        let active = reveal_chord_is_pressed(&hk);
+        let active = chord_is_pressed(&hk);
 
         if active && !prev_down {
             if let Err(e) = app_handle.emit("toggle-loot-history", ()) {
