@@ -1196,6 +1196,11 @@ fn open_app_folder(app: AppHandle) -> Result<(), String> {
 /// Scheme validation prevents `start` from being coaxed into launching a
 /// local file or custom handler via attacker-controlled URLs.
 #[tauri::command]
+fn get_changelog() -> &'static str {
+    include_str!("../../CHANGELOG.md")
+}
+
+#[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("Only http(s) URLs are allowed".into());
@@ -1423,7 +1428,8 @@ fn main() {
             updater::start_update,
             updater::restart_app,
             open_app_folder,
-            open_external_url
+            open_external_url,
+            get_changelog
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

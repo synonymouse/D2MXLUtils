@@ -133,14 +133,61 @@
     settingsStore.setAutoAlwaysShowItems(enabled);
   }
 
+  let showChangelog = $state(false);
+  let changelogHtml = $state('');
+
   async function handleOpenChangelog() {
     try {
-      await invoke('open_external_url', {
-        url: `https://github.com/synonymouse/D2MXLUtils/releases/tag/v${__APP_VERSION__}`,
-      });
+      const md: string = await invoke('get_changelog');
+      changelogHtml = renderChangelog(md);
+      showChangelog = true;
     } catch (err) {
-      console.error('Failed to open changelog:', err);
+      console.error('Failed to load changelog:', err);
     }
+  }
+
+  function renderChangelog(md: string): string {
+    const lines = md.split('\n');
+    const out: string[] = [];
+    let skipSection = false;
+    let inVersion = false;
+
+    for (const line of lines) {
+      if (line.startsWith('# ') && !line.startsWith('## ')) continue;
+
+      if (line.startsWith('## ')) {
+        if (inVersion) out.push('</section>');
+        inVersion = true;
+        skipSection = false;
+        out.push(`<section class="cl-version">`);
+        out.push(`<h2>${line.slice(3)}</h2>`);
+        continue;
+      }
+
+      if (line.startsWith('### ')) {
+        const heading = line.slice(4);
+        skipSection = heading === 'Other';
+        if (!skipSection) out.push(`<h3>${heading}</h3>`);
+        continue;
+      }
+
+      if (skipSection) continue;
+
+      if (line.startsWith('- ')) {
+        out.push(`<div class="cl-entry">${formatEntry(line.slice(2))}</div>`);
+        continue;
+      }
+    }
+    if (inVersion) out.push('</section>');
+    return out.join('\n');
+  }
+
+  function formatEntry(text: string): string {
+    text = text.replace(/^(?:Feat|Fix|Refactor|Perf|Chore|Docs|Style|Build|Ci|Test)(\([^)]+\)):\s*/i, (_, scope) => {
+      return `<span class="cl-scope">${scope.slice(1, -1)}</span>`;
+    });
+    text = text.replace(/\(([0-9a-f]{7})\)$/, '<a class="cl-hash" href="https://github.com/synonymouse/D2MXLUtils/commit/$1" target="_blank">$1</a>');
+    return text;
   }
 </script>
 
@@ -255,6 +302,24 @@
   </div>
 </section>
 
+{#if showChangelog}
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="changelog-backdrop" role="dialog" aria-modal="true" onkeydown={(e) => e.key === 'Escape' && (showChangelog = false)} onclick={() => (showChangelog = false)}>
+    <div class="changelog-modal" onclick={(e) => e.stopPropagation()}>
+      <div class="changelog-header">
+        <h2 class="changelog-title">Changelog</h2>
+        <button type="button" class="changelog-close" onclick={() => (showChangelog = false)}>&times;</button>
+      </div>
+      <div class="changelog-body" onclick={(e) => {
+        const a = (e.target as HTMLElement).closest('a.cl-hash');
+        if (a) { e.preventDefault(); invoke('open_external_url', { url: (a as HTMLAnchorElement).href }); }
+      }}>
+        {@html changelogHtml}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .setting-control {
     display: flex;
@@ -346,5 +411,121 @@
 
   .link-button:hover {
     opacity: 0.85;
+  }
+
+  .changelog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+  }
+
+  .changelog-modal {
+    display: flex;
+    flex-direction: column;
+    width: 92%;
+    max-width: 640px;
+    max-height: 85vh;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+  }
+
+  .changelog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--space-3) var(--space-4);
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  .changelog-title {
+    margin: 0;
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .changelog-close {
+    padding: 0;
+    background: none;
+    border: none;
+    font-size: var(--text-2xl);
+    line-height: 1;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+
+  .changelog-close:hover {
+    color: var(--text-primary);
+  }
+
+  .changelog-body {
+    padding: var(--space-3) var(--space-4);
+    overflow-y: auto;
+    font-size: var(--text-sm);
+    color: var(--text-secondary);
+    line-height: 1.6;
+  }
+
+  .changelog-body :global(.cl-version) {
+    padding-bottom: var(--space-3);
+    margin-bottom: var(--space-3);
+    border-bottom: 1px solid var(--border-primary);
+  }
+
+  .changelog-body :global(.cl-version:last-child) {
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+
+  .changelog-body :global(h2) {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-lg);
+    font-weight: 600;
+    color: var(--accent-primary);
+  }
+
+  .changelog-body :global(h3) {
+    margin: var(--space-2) 0 var(--space-1);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--text-primary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+
+  .changelog-body :global(.cl-entry) {
+    padding: 1px 0 1px var(--space-3);
+    color: var(--text-primary);
+  }
+
+  .changelog-body :global(.cl-scope) {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    color: var(--text-secondary);
+    opacity: 0.85;
+  }
+
+  .changelog-body :global(.cl-scope::after) {
+    content: ':  ';
+  }
+
+  .changelog-body :global(.cl-hash) {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--text-muted);
+    text-decoration: underline;
+    opacity: 0.5;
+    margin-left: var(--space-1);
+    cursor: pointer;
+  }
+
+  .changelog-body :global(.cl-hash:hover) {
+    opacity: 1;
   }
 </style>
