@@ -39,7 +39,7 @@ jobs:
       - name: Build Tauri app (32-bit)
         run: pnpm tauri build --target i686-pc-windows-msvc
 
-      - name: Generate changelog
+      - name: Generate release notes
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
@@ -56,3 +56,26 @@ jobs:
           files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
           draft: false
           prerelease: false
+
+      - name: Checkout master for changelog update
+        run: git checkout master
+
+      - name: Generate full changelog
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --output CHANGELOG.md
+        env:
+          GITHUB_REPO: ${{ github.repository }}
+
+      - name: Fix changelog spacing
+        shell: bash
+        run: awk '/^## /{if(seen)print"";seen=1}{print}' CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
+
+      - name: Commit and push changelog
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md
+          git diff --staged --quiet || { git commit -m "docs: update CHANGELOG.md" && git push origin master; }

@@ -4,8 +4,9 @@
 # back to keyword matching for unprefixed messages.
 
 [changelog]
-header = ""
+header = "# Changelog\n\n"
 body = """
+## {{ version | default(value="Unreleased") }}{% if timestamp %} — {{ timestamp | date(format="%Y-%m-%d") }}{% endif %}
 {% for group, commits in commits | group_by(attribute="group") %}
 ### {{ group | upper_first }}
 {% for commit in commits %}
@@ -38,6 +39,7 @@ commit_parsers = [
   { message = "^chore", group = "Miscellaneous" },
 
   # Noise — skip
+  { message = "^docs: update CHANGELOG", skip = true },
   { message = "^[Mm]erge ", skip = true },
   { message = "^[Aa]pply cargo fmt", skip = true },
   { message = "^[Ss]top tracking", skip = true },
