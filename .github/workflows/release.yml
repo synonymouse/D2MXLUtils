@@ -36,9 +36,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Tauri app (32-bit)
-        run: pnpm tauri build --target i686-pc-windows-msvc
-
       - name: Generate release notes
         uses: orhun/git-cliff-action@v4
         with:
@@ -47,18 +44,6 @@ jobs:
         env:
           OUTPUT: CHANGES.md
           GITHUB_REPO: ${{ github.repository }}
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: D2MXLUtils ${{ github.ref_name }}
-          body_path: CHANGES.md
-          files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
-          draft: false
-          prerelease: false
-
-      - name: Checkout master for changelog update
-        run: git checkout master
 
       - name: Generate full changelog
         uses: orhun/git-cliff-action@v4
@@ -71,6 +56,18 @@ jobs:
       - name: Fix changelog spacing
         shell: bash
         run: awk '/^## /{if(seen)print"";seen=1}{print}' CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
+
+      - name: Build Tauri app (32-bit)
+        run: pnpm tauri build --target i686-pc-windows-msvc
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: D2MXLUtils ${{ github.ref_name }}
+          body_path: CHANGES.md
+          files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
+          draft: false
+          prerelease: false
 
       - name: Commit and push changelog
         shell: bash
