@@ -74,5 +74,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout master
+          cp CHANGELOG.md CHANGELOG.md.new
+          git checkout -- CHANGELOG.md
+          mv CHANGELOG.md.new CHANGELOG.md
           git add CHANGELOG.md
           git diff --staged --quiet || { git commit -m "docs: update CHANGELOG.md" && git push origin master; }
