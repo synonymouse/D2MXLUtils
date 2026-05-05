@@ -295,8 +295,8 @@ impl FilterConfig {
                     } else {
                         ctx.matching_stat_lines(&rule.stat_patterns)
                     };
-                    // Collapse the `sound_none` silence marker so consumers
-                    // only see 1..=7.
+                    // Drop the silence marker (`sound_none` → 0) so consumers
+                    // only see real slot indices (>= 1).
                     Some(Notification {
                         color: rule.color,
                         sound: rule.sound.filter(|&s| s != 0),

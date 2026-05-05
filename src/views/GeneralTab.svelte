@@ -2,10 +2,8 @@
   import { invoke } from '@tauri-apps/api/core';
   import { Button, HotkeyInput, Toggle } from '../components';
   import { settingsStore, updaterStore, type HotkeyConfig } from '../stores';
-  import { playSound } from '../lib/sound-player';
 
   // Derived state from settings store
-  let soundVolume = $derived(settingsStore.settings.soundVolume);
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
   let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
 
@@ -84,11 +82,6 @@
           ? 'Update failed — likely antivirus blocking. Use the "Download manually" button in the top right.'
           : 'Failed to check for updates. Check your connection.';
     }
-  }
-
-  function handleVolumeInput(e: Event) {
-    const target = e.currentTarget as HTMLInputElement;
-    settingsStore.setSoundVolume(parseFloat(target.value));
   }
 
   const UNBOUND: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
@@ -210,47 +203,6 @@
   </div>
 
   <div class="settings-section">
-    <h2 class="section-title">Sound</h2>
-
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Volume</span>
-        <span class="setting-hint">Master volume for drop notification sounds. Set to 0 to silence.</span>
-      </div>
-      <div class="setting-control">
-        <input
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value={soundVolume}
-          oninput={handleVolumeInput}
-          class="slider"
-          aria-label="Sound volume"
-        />
-        <span class="setting-value">{Math.round(soundVolume * 100)}%</span>
-      </div>
-    </div>
-
-    <div class="setting-row">
-      <div class="setting-info">
-        <span class="setting-label">Test sounds</span>
-        <span class="setting-hint">
-          Preview each filter sound at the current volume. Filter rules reference them as
-          <code>sound1</code>..<code>sound7</code>.
-        </span>
-      </div>
-      <div class="test-buttons">
-        {#each [1, 2, 3, 4, 5, 6, 7] as n (n)}
-          <Button variant="secondary" size="sm" onclick={() => playSound(n, soundVolume)}>
-            {n}
-          </Button>
-        {/each}
-      </div>
-    </div>
-  </div>
-
-  <div class="settings-section">
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-label">Auto-toggle item highlight (alt) on new game</span>
@@ -321,65 +273,6 @@
 {/if}
 
 <style>
-  .setting-control {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .slider {
-    width: 160px;
-    height: 6px;
-    appearance: none;
-    background: var(--bg-tertiary);
-    border-radius: var(--radius-full);
-    cursor: pointer;
-  }
-
-  .slider::-webkit-slider-thumb {
-    appearance: none;
-    width: 16px;
-    height: 16px;
-    background: var(--accent-primary);
-    border-radius: var(--radius-full);
-    cursor: pointer;
-    transition: transform 0.1s ease;
-  }
-
-  .slider::-webkit-slider-thumb:hover {
-    transform: scale(1.1);
-  }
-
-  .slider::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    background: var(--accent-primary);
-    border: none;
-    border-radius: var(--radius-full);
-    cursor: pointer;
-  }
-
-  .setting-value {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text-primary);
-    min-width: 50px;
-    text-align: right;
-  }
-
-  .test-buttons {
-    display: flex;
-    gap: var(--space-2);
-  }
-
-  code {
-    font-family: var(--font-mono);
-    font-size: 0.95em;
-    padding: 0 2px;
-    background: var(--bg-tertiary);
-    border-radius: var(--radius-sm);
-  }
-
   .update-control {
     display: flex;
     align-items: center;

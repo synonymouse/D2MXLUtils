@@ -17,6 +17,7 @@ mod profiles;
 mod rules;
 mod scanner_state;
 mod settings;
+mod sounds;
 mod speedcalc_data;
 mod updater;
 mod weapon_families;
@@ -1558,6 +1559,8 @@ fn main() {
             settings::save_settings,
             settings::get_window_state,
             settings::save_window_state,
+            sounds::import_sound_file,
+            sounds::delete_sound_file,
             hotkeys::update_hotkey,
             hotkeys::update_edit_mode_hotkey,
             hotkeys::update_reveal_hidden_hotkey,

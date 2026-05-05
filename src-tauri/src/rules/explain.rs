@@ -201,8 +201,8 @@ fn notification_bullet(rule: &Rule) -> String {
     }
     match rule.sound {
         Some(0) => parts.push("silent".to_string()),
-        Some(n) if (1..=7).contains(&n) => parts.push(format!("sound {}", n)),
-        _ => {}
+        Some(n) => parts.push(format!("sound {}", n)),
+        None => {}
     }
     if rule.display_stats || !rule.stat_patterns.is_empty() {
         parts.push("includes item stats".to_string());
@@ -392,8 +392,29 @@ mod tests {
         assert!(explain_line("unique notify sound_none")
             .unwrap()
             .contains("silent"));
+        assert!(explain_line("unique notify sound1")
+            .unwrap()
+            .contains("sound 1"));
         assert!(explain_line("unique notify sound3")
             .unwrap()
             .contains("sound 3"));
+        assert!(explain_line("unique notify sound7")
+            .unwrap()
+            .contains("sound 7"));
+    }
+
+    #[test]
+    fn sound_modes_above_seven_rendered() {
+        // After widening parse_sound_keyword to accept 1..=255, the explain
+        // output must surface those numbers too — not silently drop them.
+        assert!(explain_line("unique notify sound8")
+            .unwrap()
+            .contains("sound 8"));
+        assert!(explain_line("unique notify sound99")
+            .unwrap()
+            .contains("sound 99"));
+        assert!(explain_line("unique notify sound255")
+            .unwrap()
+            .contains("sound 255"));
     }
 }

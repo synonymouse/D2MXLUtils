@@ -583,16 +583,8 @@ fn parse_attrs_into(
 }
 
 fn parse_sound_keyword(lower: &str) -> Option<u8> {
-    if !lower.starts_with("sound") {
-        return None;
-    }
-    let suffix = &lower[5..];
-    let n: u8 = suffix.parse().ok()?;
-    if (1..=7).contains(&n) {
-        Some(n)
-    } else {
-        None
-    }
+    let suffix = lower.strip_prefix("sound")?;
+    suffix.parse::<u8>().ok().filter(|&n| n >= 1)
 }
 
 fn parse_socket_keyword(lower: &str) -> Option<u8> {
@@ -1595,5 +1587,25 @@ mod tests {
         let shadows = shadow_warnings(&errors);
         assert_eq!(shadows.len(), 1, "got: {:?}", errors);
         assert_eq!(shadows[0].line, 1);
+    }
+
+    #[test]
+    fn parse_sound_accepts_above_seven() {
+        let cfg = parse_dsl("\"X\" notify sound8").unwrap();
+        assert_eq!(cfg.rules[0].sound, Some(8));
+        let cfg = parse_dsl("\"X\" notify sound99").unwrap();
+        assert_eq!(cfg.rules[0].sound, Some(99));
+        let cfg = parse_dsl("\"X\" notify sound255").unwrap();
+        assert_eq!(cfg.rules[0].sound, Some(255));
+    }
+
+    #[test]
+    fn parse_sound_rejects_zero_and_overflow() {
+        // sound0 is not a valid keyword.
+        let cfg = parse_dsl("\"X\" notify sound0").unwrap();
+        assert_eq!(cfg.rules[0].sound, None);
+        // 256 overflows u8 → unknown token, not parsed as a sound.
+        let cfg = parse_dsl("\"X\" notify sound256").unwrap();
+        assert_eq!(cfg.rules[0].sound, None);
     }
 }

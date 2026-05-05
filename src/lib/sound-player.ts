@@ -1,36 +1,76 @@
 /**
  * Drop-notification sound player.
  *
- * The loot filter DSL lets rules specify `sound1`..`sound7` (see
- * `docs/filter_spec/loot-filter-dsl.md`). This module resolves those indices
- * to the bundled MP3s under `/sounds/` and plays them at the given volume.
+ * Resolves slot indices (1-based) to either the bundled MP3s under
+ * `/sounds/N.mp3` (for `Default` sources) or a custom file in
+ * `app_data_dir/sounds/` (for `Custom` sources). `Empty` slots and
+ * out-of-range indices are silent no-ops.
  *
- * Overlapping plays are supported via `cloneNode` so a new drop never cuts off
- * a previous one.
+ * Final played gain is `master * slot.volume`. Overlapping plays use
+ * `cloneNode` so a new drop never cuts off a previous one.
  */
 
-const TOTAL_SOUNDS = 7;
+import { convertFileSrc } from '@tauri-apps/api/core';
+import { appDataDir } from '@tauri-apps/api/path';
+import { settingsStore, type SoundSlot } from '../stores/settings.svelte';
 
-let cache: HTMLAudioElement[] | null = null;
+let appDataDirPath: string | null = null;
+let appDataDirPromise: Promise<string> | null = null;
 
-function ensureCache(): HTMLAudioElement[] {
-  if (cache) return cache;
-  cache = Array.from({ length: TOTAL_SOUNDS }, (_, i) => {
-    const audio = new Audio(`/sounds/${i + 1}.mp3`);
-    audio.preload = 'auto';
-    return audio;
-  });
-  return cache;
+// Cache one Audio per (slot index, resolved URL). Invalidated when the
+// resolved URL for an index changes (e.g. slot replaced or reset).
+interface CacheEntry {
+  url: string;
+  audio: HTMLAudioElement;
+}
+const cache: Map<number, CacheEntry> = new Map();
+
+function getAppDataDir(): Promise<string> {
+  if (appDataDirPath !== null) return Promise.resolve(appDataDirPath);
+  if (!appDataDirPromise) {
+    appDataDirPromise = appDataDir().then((p) => {
+      appDataDirPath = p.replace(/[\\/]+$/, '');
+      return appDataDirPath;
+    });
+  }
+  return appDataDirPromise;
 }
 
-export function playSound(index: number, volume: number): void {
-  if (!Number.isInteger(index) || index < 1 || index > TOTAL_SOUNDS) return;
-  if (!(volume > 0)) return;
+function urlForSlot(slot: SoundSlot, index1: number, dir: string): string | null {
+  switch (slot.source.kind) {
+    case 'default': return `/sounds/${index1}.mp3`;
+    case 'custom':  return convertFileSrc(`${dir}/sounds/${slot.source.fileName}`);
+    case 'empty':   return null;
+  }
+}
 
-  const source = ensureCache()[index - 1];
-  const node = source.cloneNode(true) as HTMLAudioElement;
-  node.volume = Math.max(0, Math.min(1, volume));
-  void node.play().catch(() => {
-    // Autoplay / decode errors are non-fatal - a missed blip is fine.
+/**
+ * Play the audio for the given 1-based slot index at `master * slot.volume`.
+ * Empty slots, missing slots, or zero gain are silent no-ops.
+ */
+export async function playSound(index1: number, masterVolume: number): Promise<void> {
+  if (!Number.isInteger(index1) || index1 < 1) return;
+  const slots = settingsStore.settings.sounds;
+  const slot = slots[index1 - 1];
+  if (!slot || slot.source.kind === 'empty') return;
+
+  const gain = Math.max(0, Math.min(1, masterVolume * slot.volume));
+  if (gain <= 0) return;
+
+  const dir = await getAppDataDir();
+  const url = urlForSlot(slot, index1, dir);
+  if (!url) return;
+
+  let entry = cache.get(index1);
+  if (!entry || entry.url !== url) {
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    entry = { url, audio };
+    cache.set(index1, entry);
+  }
+  const node = entry.audio.cloneNode(true) as HTMLAudioElement;
+  node.volume = gain;
+  void node.play().catch((err) => {
+    console.warn(`[sound-player] playback failed for slot ${index1}:`, err);
   });
 }

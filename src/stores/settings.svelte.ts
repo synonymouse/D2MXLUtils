@@ -18,11 +18,24 @@ export interface HotkeyConfig {
   display: string;
 }
 
+/** Source of audio for a sound slot. */
+export type SoundSource =
+  | { kind: 'default' }
+  | { kind: 'custom'; fileName: string }
+  | { kind: 'empty' };
+
+/** One configurable drop-sound slot. Slot index = position in `sounds` + 1. */
+export interface SoundSlot {
+  label: string;
+  volume: number;
+  source: SoundSource;
+}
+
 /** Application settings interface */
 export interface AppSettings {
   /** UI theme: "dark" or "light" */
   theme: string;
-  /** Master volume for drop notification sounds (0.0 - 1.0, 0 = silent) */
+  /** Master multiplier for drop notification sounds (0.0 - 1.0). Final played gain = `soundVolume * slot.volume`. */
   soundVolume: number;
   /** Active loot filter profile name */
   activeProfile: string | null;
@@ -52,6 +65,9 @@ export interface AppSettings {
   /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
   verboseFilterLogging: boolean;
   autoAlwaysShowItems: boolean;
+  /** Per-slot drop sounds. Slot index = position + 1.
+   *  Played gain = `soundVolume * slot.volume`. */
+  sounds: SoundSlot[];
 }
 
 /** Window state interface */
@@ -89,6 +105,14 @@ const DEFAULT_LOOT_HISTORY_HOTKEY: HotkeyConfig = {
   display: 'N',
 };
 
+function defaultSounds(): SoundSlot[] {
+  return Array.from({ length: 7 }, (_, i) => ({
+    label: `Sound ${i + 1}`,
+    volume: 0.8,
+    source: { kind: 'default' as const },
+  }));
+}
+
 /** Default settings */
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
@@ -107,6 +131,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   lootHistoryHotkey: DEFAULT_LOOT_HISTORY_HOTKEY,
   verboseFilterLogging: false,
   autoAlwaysShowItems: true,
+  sounds: defaultSounds(),
 };
 
 /** Settings store singleton */
@@ -266,6 +291,34 @@ class SettingsStore {
   setSoundVolume(volume: number): void {
     const clamped = Math.max(0, Math.min(1, volume));
     this.set('soundVolume', clamped);
+  }
+
+  /** Replace the entire sounds array. */
+  setSounds(sounds: SoundSlot[]): void {
+    this.set('sounds', sounds);
+  }
+
+  /** Update a single slot by 1-based index. No-op for out-of-range indices. */
+  updateSoundSlot(index1: number, patch: Partial<SoundSlot>): void {
+    const idx = index1 - 1;
+    const current = this._settings.sounds;
+    if (idx < 0 || idx >= current.length) return;
+    const next = current.slice();
+    next[idx] = { ...next[idx], ...patch };
+    this.setSounds(next);
+  }
+
+  /** Append a new empty slot. Returns the new 1-based slot index. */
+  appendSoundSlot(): number {
+    const next = this._settings.sounds.slice();
+    const newSlotIndex = next.length + 1;
+    next.push({
+      label: `Sound ${newSlotIndex}`,
+      volume: 0.8,
+      source: { kind: 'empty' },
+    });
+    this.setSounds(next);
+    return newSlotIndex;
   }
 
   /** Get toggle window hotkey */

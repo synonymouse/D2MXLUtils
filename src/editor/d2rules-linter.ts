@@ -7,6 +7,7 @@
  */
 import { linter, type Diagnostic } from "@codemirror/lint";
 import { invoke } from "@tauri-apps/api/core";
+import { settingsStore } from '../stores';
 
 /**
  * Validation error from Tauri backend
@@ -24,6 +25,39 @@ export interface ValidationError {
 export interface ValidationResult {
   errors: ValidationError[];
   ruleCount: number;
+}
+
+const SOUND_REF_RE = /\bsound(\d+)\b/gi;
+
+/**
+ * Scan the document for `soundN` references that point to slots which
+ * are out of range or in the `Empty` state. Emits info-severity
+ * diagnostics — the rule itself still parses; the warning just nudges
+ * the user that the referenced slot will play silence.
+ */
+function scanSoundSlotRefs(doc: import('@codemirror/state').Text): Diagnostic[] {
+  const out: Diagnostic[] = [];
+  const slots = settingsStore.settings.sounds;
+  for (let lineNum = 1; lineNum <= doc.lines; lineNum++) {
+    const line = doc.line(lineNum);
+    const text = line.text;
+    SOUND_REF_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = SOUND_REF_RE.exec(text)) !== null) {
+      const n = Number.parseInt(m[1], 10);
+      if (!Number.isFinite(n) || n < 1 || n > 255) continue;
+      const slot = slots[n - 1];
+      if (slot && slot.source.kind !== 'empty') continue;
+      out.push({
+        from: line.from + m.index,
+        to: line.from + m.index + m[0].length,
+        severity: 'info',
+        message: `sound${n} is not configured on the Sounds tab.`,
+        source: 'd2rules',
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -72,7 +106,7 @@ export function d2rulesLinter(
         onResult?.({ errors, ruleCount });
 
         // Convert backend errors to CodeMirror diagnostics
-        return errors.map((err): Diagnostic => {
+        const backendDiagnostics = errors.map((err): Diagnostic => {
           // Clamp line number to valid range
           const lineNum = Math.max(1, Math.min(err.line, doc.lines));
           const line = doc.line(lineNum);
@@ -85,6 +119,7 @@ export function d2rulesLinter(
             source: "d2rules",
           };
         });
+        return [...backendDiagnostics, ...scanSoundSlotRefs(doc)];
       } catch (e) {
         // Log error but don't crash the editor
         console.error("[d2rules-linter] Validation error:", e);

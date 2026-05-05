@@ -61,16 +61,11 @@ const COLOR_KEYWORDS = [
 
 const VISIBILITY_KEYWORDS = ["show", "hide"];
 const NOTIFY_KEYWORDS = ["notify"];
-const SOUND_KEYWORDS = [
-  "sound_none",
-  "sound1",
-  "sound2",
-  "sound3",
-  "sound4",
-  "sound5",
-  "sound6",
-  "sound7",
-];
+const SOUND_KEYWORD_REGEX = /^sound(_none|\d+)$/;
+
+function isSoundKeyword(word: string): boolean {
+  return SOUND_KEYWORD_REGEX.test(word);
+}
 const DISPLAY_KEYWORDS = ["stat"];
 const MODIFIER_KEYWORDS = ["eth"];
 const MAP_KEYWORDS = ["map"];
@@ -198,7 +193,7 @@ const d2rulesLanguage = StreamLanguage.define({
       if (COLOR_KEYWORDS.includes(word)) return "keyword color";
 
       // Sound keywords
-      if (SOUND_KEYWORDS.includes(word)) return "keyword sound";
+      if (isSoundKeyword(word)) return "keyword sound";
 
       // Display keywords
       if (DISPLAY_KEYWORDS.includes(word)) return "keyword display";

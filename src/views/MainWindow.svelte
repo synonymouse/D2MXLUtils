@@ -6,7 +6,7 @@
     import { onMount } from "svelte";
     import { Tabs, ThemeToggle, UpdateButton } from "../components";
     import { windowState, itemsDictionaryStore, updaterStore, type WindowState } from "../stores";
-    import { GeneralTab, LootFilterTab, NotificationsTab, BreakpointsTab } from "./index";
+    import { GeneralTab, LootFilterTab, NotificationsTab, BreakpointsTab, SoundsTab } from "./index";
 
     // Scanner and game status from backend
     let scannerStatus = $state<
@@ -21,6 +21,7 @@
         { id: "general", label: "General" },
         { id: "lootfilter", label: "Loot Filter" },
         { id: "notifications", label: "Notifications" },
+        { id: "sounds", label: "Sounds" },
         { id: "breakpoints", label: "Breakpoints" },
     ];
 
@@ -200,6 +201,8 @@
                     <LootFilterTab />
                 {:else if tab === "notifications"}
                     <NotificationsTab />
+                {:else if tab === "sounds"}
+                    <SoundsTab />
                 {:else if tab === "breakpoints"}
                     <BreakpointsTab />
                 {/if}
