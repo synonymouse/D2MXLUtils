@@ -1,5 +1,41 @@
 # Changelog
 
+## v1.21.0 — 2026-05-05
+
+### Bug Fixes
+
+- Fix(scanner): disable auto always-show-items after MXL patch broke offset (bc3f8df)
+- Fix(loot-filter): widen hook masks to 16 bits and clear bits on item disappear (c9dc531)
+- Fix(ci): checkout master branch before pushing changelog (303b637)
+
+### Documentation
+
+- Docs(breakpoints): add design spec and implementation plan (0c4e282)
+
+### Features
+
+- Feat(sounds): add dedicated Sounds tab with per-slot volume and custom files (99df603)
+- Feat(breakpoints): add Breakpoints tab with live attack/cast/recovery FPA (3d0cba7)
+
+### Other
+
+- 1.21.0 (8930736)
+- Gitignore (3aaac86)
+
+## v1.20.1 — 2026-05-02
+
+### Bug Fixes
+
+- Fix(ci): generate changelog before build so binary embeds current version (8f8ea3a)
+
+### Documentation
+
+- Docs: update CHANGELOG.md (2c0fe6f)
+
+### Other
+
+- 1.20.1 (9937f78)
+
 ## v1.20.0 — 2026-05-02
 
 ### Bug Fixes
