@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 #[cfg(target_os = "windows")]
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(target_os = "windows")]
 use crate::d2types::{ItemData, ScannedItem, UnitAny};
@@ -106,6 +106,12 @@ pub struct DropScanner {
     /// `MISSED_TICKS_BEFORE_BIT_CLEAR`. The grace period absorbs transient
     /// `read_memory` failures so we don't re-trigger the `bff0c0d` flicker.
     missed_ticks: HashMap<u32, u8>,
+    /// Set on the first failure of the always-show-items pointer chain.
+    /// The hardcoded `D2Sigma + ALWAYS_SHOW_ITEMS_PTR` offset goes stale
+    /// after some MXL patches; once we detect that, suppress further reads
+    /// and writes for the rest of the session to avoid logging the same
+    /// ReadProcessMemory error every tick.
+    always_show_items_unavailable: AtomicBool,
 }
 
 #[cfg(target_os = "windows")]
@@ -224,6 +230,7 @@ impl DropScanner {
             loot_history,
             last_pickup_updates: Vec::new(),
             missed_ticks: HashMap::new(),
+            always_show_items_unavailable: AtomicBool::new(false),
         })
     }
 
@@ -282,38 +289,68 @@ impl DropScanner {
         }
     }
 
-    fn always_show_items_addr(&self) -> Result<Option<usize>, String> {
+    fn always_show_items_addr(&self) -> Option<usize> {
         if self.state.ctx.d2_sigma == 0 {
-            return Ok(None);
+            return None;
+        }
+        if self.always_show_items_unavailable.load(Ordering::Relaxed) {
+            return None;
         }
         let base = self.state.ctx.d2_sigma + d2sigma::ALWAYS_SHOW_ITEMS_PTR;
-        let struct_ptr = self.state.ctx.process.read_memory::<u32>(base)?;
-        if struct_ptr == 0 {
-            return Ok(None);
+        match self.state.ctx.process.read_memory::<u32>(base) {
+            Ok(0) => None,
+            Ok(struct_ptr) => Some(struct_ptr as usize + d2sigma::ALWAYS_SHOW_ITEMS_FLAG),
+            Err(e) => {
+                self.disable_always_show_items(&e);
+                None
+            }
         }
-        Ok(Some(struct_ptr as usize + d2sigma::ALWAYS_SHOW_ITEMS_FLAG))
     }
 
-    /// Ok(false) = base ptr NULL (caller should retry next tick).
+    fn disable_always_show_items(&self, error: &str) {
+        if !self
+            .always_show_items_unavailable
+            .swap(true, Ordering::Relaxed)
+        {
+            log_error(&format!(
+                "always-show-items: pointer chain failed ({}); disabling for this session — \
+                 D2Sigma offset is likely outdated after a game patch",
+                error
+            ));
+        }
+    }
+
+    /// Ok(false) = pointer not ready or feature unavailable; caller may retry
+    /// next tick (a no-op once the feature has been disabled for the session).
     pub fn set_always_show_items(&self, on: bool) -> Result<bool, String> {
-        let Some(addr) = self.always_show_items_addr()? else {
+        let Some(addr) = self.always_show_items_addr() else {
             return Ok(false);
         };
         let value: u32 = if on { 1 } else { 0 };
-        self.state
+        if let Err(e) = self
+            .state
             .ctx
             .process
-            .write_buffer(addr, &value.to_le_bytes())?;
+            .write_buffer(addr, &value.to_le_bytes())
+        {
+            self.disable_always_show_items(&e);
+            return Ok(false);
+        }
         Ok(true)
     }
 
-    /// Ok(None) = struct not allocated yet.
+    /// Ok(None) = struct not allocated yet, or feature disabled for the session.
     pub fn read_always_show_items(&self) -> Result<Option<bool>, String> {
-        let Some(addr) = self.always_show_items_addr()? else {
+        let Some(addr) = self.always_show_items_addr() else {
             return Ok(None);
         };
-        let value = self.state.ctx.process.read_memory::<u32>(addr)?;
-        Ok(Some(value != 0))
+        match self.state.ctx.process.read_memory::<u32>(addr) {
+            Ok(value) => Ok(Some(value != 0)),
+            Err(e) => {
+                self.disable_always_show_items(&e);
+                Ok(None)
+            }
+        }
     }
 
     pub fn clear_cache(&mut self) {
