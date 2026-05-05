@@ -1236,7 +1236,7 @@ impl DropScanner {
 }
 
 /// Strip D2 color codes from string (ÿc followed by color char)
-fn strip_color_codes(s: &str) -> String {
+pub(crate) fn strip_color_codes(s: &str) -> String {
     let mut result = String::new();
     let mut chars = s.chars().peekable();
 

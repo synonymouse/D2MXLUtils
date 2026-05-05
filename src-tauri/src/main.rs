@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod breakpoints;
 mod d2types;
 mod hotkeys;
 mod injection;
@@ -16,7 +17,9 @@ mod profiles;
 mod rules;
 mod scanner_state;
 mod settings;
+mod speedcalc_data;
 mod updater;
+mod weapon_families;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -84,6 +87,9 @@ struct AppState {
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     /// Session loot history shared with scanner thread.
     loot_history: Arc<RwLock<LootHistory>>,
+    breakpoints_polling: Arc<AtomicBool>,
+    speedcalc_table: Arc<RwLock<Option<speedcalc_data::SpeedcalcTable>>>,
+    weapon_base_catalog: Arc<RwLock<Option<weapon_families::WeaponBaseCatalog>>>,
 }
 
 const GAME_STATUS_UNKNOWN: u8 = 0;
@@ -150,6 +156,8 @@ fn start_scanner_internal(
     game_status: Arc<AtomicU8>,
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     loot_history: Arc<RwLock<LootHistory>>,
+    breakpoints_polling: Arc<AtomicBool>,
+    weapon_base_catalog: Arc<RwLock<Option<weapon_families::WeaponBaseCatalog>>>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -299,6 +307,7 @@ fn start_scanner_internal(
 
             let mut was_ingame = false;
             let mut dict_published = false;
+            let mut weapon_bases_published = false;
             let mut pending_set_always_show = false;
             let mut last_emitted_always_show: Option<bool> = None;
 
@@ -540,6 +549,76 @@ fn start_scanner_internal(
                             dict_published = true;
                         }
                     }
+
+                    // Built once per attach; needs the injector for name
+                    // lookups via D2Lang.GetStringById.
+                    #[cfg(target_os = "windows")]
+                    if !weapon_bases_published {
+                        let injector = shared_state.injector.lock().unwrap();
+                        match weapon_families::build_catalog(&shared_state.ctx, &injector) {
+                            Ok(catalog) => {
+                                drop(injector);
+                                if let Err(e) =
+                                    weapon_families::save_to_cache(&app_handle, &catalog)
+                                {
+                                    log_error(&format!(
+                                        "Failed to save weapon-bases cache: {}",
+                                        e
+                                    ));
+                                }
+                                if let Err(e) =
+                                    app_handle.emit("weapon-base-catalog-updated", &catalog)
+                                {
+                                    log_error(&format!(
+                                        "Failed to emit weapon-base-catalog-updated: {}",
+                                        e
+                                    ));
+                                }
+                                if let Ok(mut guard) = weapon_base_catalog.write() {
+                                    *guard = Some(catalog);
+                                }
+                                weapon_bases_published = true;
+                            }
+                            Err(e) => {
+                                drop(injector);
+                                log_error(&format!(
+                                    "Failed to build weapon-base catalog: {}",
+                                    e
+                                ));
+                                // Stop retrying every tick — try again on next attach.
+                                weapon_bases_published = true;
+                            }
+                        }
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    if breakpoints_polling.load(Ordering::Relaxed) {
+                        let injector = shared_state.injector.lock().unwrap();
+                        let player_data = breakpoints::read_unit_breakpoint_data(
+                            &shared_state.ctx,
+                            &injector,
+                            offsets::d2client::PLAYER_UNIT,
+                        );
+                        let merc_data = breakpoints::read_unit_breakpoint_data(
+                            &shared_state.ctx,
+                            &injector,
+                            offsets::d2client::MERCENARY_UNIT,
+                        );
+                        drop(injector);
+
+                        #[derive(serde::Serialize)]
+                        struct BreakpointsPayload {
+                            player: Option<breakpoints::BreakpointData>,
+                            merc: Option<breakpoints::BreakpointData>,
+                        }
+                        let payload = BreakpointsPayload {
+                            player: player_data,
+                            merc: merc_data,
+                        };
+                        if let Err(e) = app_handle.emit("breakpoints-update", &payload) {
+                            log_error(&format!("Failed to emit breakpoints-update: {}", e));
+                        }
+                    }
                 }
 
                 thread::sleep(Duration::from_millis(30));
@@ -592,6 +671,8 @@ fn spawn_auto_scanner(
     game_status: Arc<AtomicU8>,
     items_dictionary: Arc<RwLock<Option<ItemsDictionary>>>,
     loot_history: Arc<RwLock<LootHistory>>,
+    breakpoints_polling: Arc<AtomicBool>,
+    weapon_base_catalog: Arc<RwLock<Option<weapon_families::WeaponBaseCatalog>>>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -610,6 +691,8 @@ fn spawn_auto_scanner(
                     game_status.clone(),
                     items_dictionary.clone(),
                     loot_history.clone(),
+                    breakpoints_polling.clone(),
+                    weapon_base_catalog.clone(),
                     app_handle.clone(),
                 );
             }
@@ -706,6 +789,47 @@ fn set_auto_always_show_items(enabled: bool, state: tauri::State<AppState>) {
     state
         .auto_always_show_items
         .store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn set_breakpoints_polling(enabled: bool, state: tauri::State<AppState>) {
+    state.breakpoints_polling.store(enabled, Ordering::SeqCst);
+}
+
+#[tauri::command]
+fn get_speedcalc_data(state: tauri::State<AppState>) -> Option<speedcalc_data::SpeedcalcTable> {
+    state
+        .speedcalc_table
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+#[tauri::command]
+fn refresh_speedcalc_data(
+    state: tauri::State<AppState>,
+    app_handle: AppHandle,
+) -> Result<(), String> {
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    let table = speedcalc_data::fetch_and_cache(&app_data_dir)?;
+    if let Ok(mut guard) = state.speedcalc_table.write() {
+        *guard = Some(table);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn get_weapon_base_catalog(
+    state: tauri::State<AppState>,
+) -> Option<weapon_families::WeaponBaseCatalog> {
+    state
+        .weapon_base_catalog
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
 }
 
 // ===== DSL Parser Commands =====
@@ -1225,6 +1349,7 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .setup(|app| {
             let cached_items = items_cache::load_items_cache(app.handle());
+            let cached_weapon_bases = weapon_families::load_from_cache(app.handle());
 
             // First-run: if the settings file has never been written, drop a
             // ready-to-use Default profile and mark it active
@@ -1267,6 +1392,9 @@ fn main() {
                 game_status: Arc::new(AtomicU8::new(GAME_STATUS_UNKNOWN)),
                 items_dictionary: Arc::new(RwLock::new(cached_items)),
                 loot_history: Arc::new(RwLock::new(LootHistory::new())),
+                breakpoints_polling: Arc::new(AtomicBool::new(false)),
+                speedcalc_table: Arc::new(RwLock::new(None)),
+                weapon_base_catalog: Arc::new(RwLock::new(cached_weapon_bases)),
             };
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
@@ -1280,7 +1408,18 @@ fn main() {
             let game_status = state.game_status.clone();
             let items_dictionary = state.items_dictionary.clone();
             let loot_history = state.loot_history.clone();
+            let breakpoints_polling = state.breakpoints_polling.clone();
+            let speedcalc_table_for_cache = state.speedcalc_table.clone();
+            let weapon_base_catalog = state.weapon_base_catalog.clone();
             app.manage(state);
+
+            if let Some(dir) = app.handle().path().app_data_dir().ok() {
+                if let Some(table) = speedcalc_data::load_from_cache(&dir) {
+                    if let Ok(mut guard) = speedcalc_table_for_cache.write() {
+                        *guard = Some(table);
+                    }
+                }
+            }
 
             // Initialize hotkey state
             let hotkey_state = HotkeyState::new();
@@ -1344,6 +1483,8 @@ fn main() {
                 game_status.clone(),
                 items_dictionary.clone(),
                 loot_history.clone(),
+                breakpoints_polling.clone(),
+                weapon_base_catalog.clone(),
                 app_handle,
             );
 
@@ -1403,6 +1544,10 @@ fn main() {
             set_filter_enabled,
             set_verbose_filter_logging,
             set_auto_always_show_items,
+            set_breakpoints_polling,
+            get_speedcalc_data,
+            refresh_speedcalc_data,
+            get_weapon_base_catalog,
             sync_overlay_with_game,
             set_overlay_interactive,
             parse_filter_dsl,

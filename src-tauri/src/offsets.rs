@@ -72,6 +72,10 @@ pub mod d2common {
 /// set-items count=330 with localized names resolving correctly via
 /// `wTblIndex` / `wStringId`. See `docs/item-tables-memory.md`.
 pub mod data_tables {
+    /// `D2ItemTypesTxt* pItemTypesTxt` — ItemTypes.txt records (D2MOO field
+    /// at this offset; verified live against MXL with count=346).
+    pub const ITEM_TYPES_TXT_PTR: usize = 0xBF8;
+    pub const ITEM_TYPES_TXT_COUNT: usize = 0xBFC;
     pub const SETS_TXT_PTR: usize = 0xC0C;
     pub const SETS_TXT_COUNT: usize = 0xC10;
     pub const SET_ITEMS_TXT_PTR: usize = 0xC18;
@@ -192,10 +196,40 @@ pub mod item_data {
     pub const NEXT_ITEM: usize = 0x64; // dword (pointer to next item)
 }
 
-/// Inventory structure offsets
+/// `D2InventoryStrc` field offsets. Layout from D2MOO
+/// (`ThePhrozenKeep/D2MOO/source/D2Common/include/D2Inventory.h`); struct
+/// size is `0x40`. Verified live against MXL via
+/// `docs/ce-scripts/verify-equipped-weapon.lua`.
 pub mod inventory {
-    pub const FIRST_ITEM: usize = 0x0C; // dword
-    pub const WEAPON_ID: usize = 0x1C; // dword
+    pub const FIRST_ITEM: usize = 0x0C; // D2UnitStrc* pFirstItem
+    pub const GRIDS: usize = 0x14; // D2InventoryGridStrc* pGrids
+}
+
+/// `D2InventoryGridStrc` field offsets (sizeof = 0x10). The BodyLoc grid
+/// is `pInventory->pGrids[INVGRID_BODYLOC=0]`; its `ppItems` is a
+/// `D2UnitStrc**` of length 13 indexed by `body_loc::*`.
+pub mod inventory_grid {
+    pub const PP_ITEMS: usize = 0x0C; // D2UnitStrc** ppItems
+    pub const SIZE: usize = 0x10;
+}
+
+/// `D2C_PlayerBodyLocs` enum values from D2MOO. The engine moves the
+/// active weapon into `RARM` on weapon switch (W key), so reading
+/// `ppItems[RARM]` always returns the currently active right-hand item.
+pub mod body_loc {
+    pub const NONE: usize = 0;
+    pub const HEAD: usize = 1;
+    pub const NECK: usize = 2;
+    pub const TORSO: usize = 3;
+    pub const RARM: usize = 4;
+    pub const LARM: usize = 5;
+    pub const RRIN: usize = 6;
+    pub const LRIN: usize = 7;
+    pub const BELT: usize = 8;
+    pub const FEET: usize = 9;
+    pub const GLOVES: usize = 10;
+    pub const SWRARM: usize = 11;
+    pub const SWLARM: usize = 12;
 }
 
 /// Items.txt record offsets (record size = 0x1A8)
@@ -203,23 +237,33 @@ pub mod items_txt {
     pub const RECORD_SIZE: usize = 0x1A8;
 
     pub const MISC: usize = 0x84; // dword
+    pub const DESC_STR_ID: usize = 0xB6; // word
+    pub const WCLASS: usize = 0xC0; // u32 (4-char weapon class code: "1hs", "bow", "stf", etc.)
+    pub const WCLASS_2H: usize = 0xC4; // u32 (two-hand weapon class override)
+    pub const SPEED: usize = 0xD8; // i32 (weapon speed modifier / WSM)
     pub const NAME_ID: usize = 0xF4; // word
     pub const STR_BONUS: usize = 0x106; // word
     pub const DEX_BONUS: usize = 0x108; // word
     pub const IS_2H: usize = 0x11C; // byte
-    pub const WEAPON_TYPE: usize = 0x11E; // word
+    /// `wType[0]` — primary ItemTypes.txt index. Use this to resolve the
+    /// item's family (`szCode`) — it differentiates families that share
+    /// the same `wclass` (e.g. `swor` vs `axe` vs `mace` are all `1HS`).
+    pub const TYPE_0: usize = 0x11E; // word
+    /// `wType[1]` — secondary ItemTypes.txt index (often a tier/quality
+    /// classifier, e.g. `tier`).
+    pub const TYPE_1: usize = 0x120; // word
     pub const IS_1H: usize = 0x13D; // byte
-    /// String-table ID for the item's bonus description (u16).
-    /// Used by Median XL Cycles and similar data-table-only items
-    /// whose stats aren't stored on the unit's stat list.
-    pub const DESC_STR_ID: usize = 0xB6; // word
 }
 
-/// ItemTypes.txt record offsets (record size = 0xE4)
+/// `D2ItemTypesTxt` record offsets (record size = 0xE4). Layout from D2MOO
+/// `D2Common/include/DataTbls/ItemsTbls.h`.
 pub mod item_types_txt {
     pub const RECORD_SIZE: usize = 0xE4;
-    pub const EQUIV1: usize = 0x04; // word
-    pub const EQUIV2: usize = 0x06; // word
+    /// `szCode[4]` — 4-char family code (e.g. `"swor"`, `"axe "`, `"knif"`).
+    /// May be zero- or space-padded; trim trailing whitespace before use.
+    pub const CODE: usize = 0x00;
+    pub const EQUIV1: usize = 0x04; // i16
+    pub const EQUIV2: usize = 0x06; // i16
 }
 
 /// UniqueItems.txt record offsets (record size = 0x14C).
