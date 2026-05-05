@@ -38,7 +38,7 @@ const D2SIGMA_SCAN_SIZE: usize = 0x200000;
 //   g_show_all_loot, g_last_unit_id, g_show_mask, g_hide_mask,
 //   g_inspected_mask, g_force_show_all  (10 × u32 LE)
 const MAGIC: u32 = 0xD2FE11E7;
-const METADATA_VERSION: u32 = 3;
+const METADATA_VERSION: u32 = 4;
 const METADATA_OFFSET: usize = 216;
 const METADATA_SIZE: usize = 40;
 // Trampoline offset of the replayed original 9 bytes; verified by debug_assert
@@ -46,6 +46,9 @@ const METADATA_SIZE: usize = 40;
 const DO_ORIGINAL_OFFSET: usize = 77;
 // Trampoline starts with `inc dword [counter]` = `FF 05 ...`.
 const TRAMPOLINE_FIRST_BYTE: u8 = 0xFF;
+
+pub(crate) const MASK_BYTES: usize = 8192;
+const MASK_INDEX_BITS: u32 = 0xFFFF;
 
 /// Loot filter hook manager
 #[cfg(target_os = "windows")]
@@ -62,9 +65,9 @@ pub struct LootFilterHook {
     g_call_counter: usize,
     /// Address of last checked unit_id for debugging
     g_last_unit_id: usize,
-    /// Address of hide mask (256 bytes = 2048 bits for unit_id tracking)
+    /// Address of hide mask (indexed by unit_id & MASK_INDEX_BITS)
     g_hide_mask: usize,
-    /// Address of show mask (256 bytes = 2048 bits, force-show overrides game filter)
+    /// Address of show mask (force-show overrides game filter)
     g_show_mask: usize,
     /// Unit_ids without a bit here are hidden by the trampoline until the
     /// Rust scanner analyzes them — prevents label flicker on fresh drops.
@@ -146,9 +149,9 @@ impl LootFilterHook {
         self.g_call_counter = self.alloc_remote(&ctx.process, 4)?;
         self.g_last_unit_id = self.alloc_remote(&ctx.process, 4)?;
 
-        self.g_hide_mask = self.alloc_remote(&ctx.process, 256)?;
-        self.g_show_mask = self.alloc_remote(&ctx.process, 256)?;
-        self.g_inspected_mask = self.alloc_remote(&ctx.process, 256)?;
+        self.g_hide_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+        self.g_show_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+        self.g_inspected_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
 
         log_info(&format!(
             "LootFilterHook: hook@D2Sigma+{:X}=0x{:08X} trampoline=0x{:08X} hide_mask=0x{:08X} show_mask=0x{:08X} inspected_mask=0x{:08X}",
@@ -164,7 +167,7 @@ impl LootFilterHook {
         ctx.process
             .write_buffer(self.g_last_unit_id, &[0u8, 0u8, 0u8, 0u8])?;
 
-        let zeros = vec![0u8; 256];
+        let zeros = vec![0u8; MASK_BYTES];
         ctx.process.write_buffer(self.g_hide_mask, &zeros)?;
         ctx.process.write_buffer(self.g_show_mask, &zeros)?;
         ctx.process.write_buffer(self.g_inspected_mask, &zeros)?;
@@ -418,7 +421,7 @@ impl LootFilterHook {
 
     /// Add a unit_id to the hide mask (item will be hidden)
     pub fn add_hidden_unit_id(&self, ctx: &D2Context, unit_id: u32) -> Result<(), String> {
-        let bit_index = (unit_id & 0x7FF) as usize;
+        let bit_index = (unit_id & MASK_INDEX_BITS) as usize;
         let byte_index = bit_index >> 3;
         let bit_offset = bit_index & 7;
 
@@ -430,14 +433,14 @@ impl LootFilterHook {
 
     /// Clear the entire hide mask (show all items)
     pub fn clear_hidden_items(&self, ctx: &D2Context) -> Result<(), String> {
-        let zeros = vec![0u8; 256];
+        let zeros = vec![0u8; MASK_BYTES];
         ctx.process.write_buffer(self.g_hide_mask, &zeros)
     }
 
     /// Add a unit_id to the show mask so the trampoline force-shows it
     /// (returns AL=1 regardless of game's built-in filter decision).
     pub fn add_shown_unit_id(&self, ctx: &D2Context, unit_id: u32) -> Result<(), String> {
-        let bit = (unit_id & 0x7FF) as usize;
+        let bit = (unit_id & MASK_INDEX_BITS) as usize;
         let byte_index = bit / 8;
         let bit_offset = bit % 8;
 
@@ -449,14 +452,14 @@ impl LootFilterHook {
 
     /// Clear the entire show mask (stop force-showing any items)
     pub fn clear_shown_items(&self, ctx: &D2Context) -> Result<(), String> {
-        let zeros = vec![0u8; 256];
+        let zeros = vec![0u8; MASK_BYTES];
         ctx.process.write_buffer(self.g_show_mask, &zeros)
     }
 
     /// Until this bit is set, the trampoline hides the unit — prevents label
     /// flicker on fresh drops before the scanner evaluates filter rules.
     pub fn add_inspected_unit_id(&self, ctx: &D2Context, unit_id: u32) -> Result<(), String> {
-        let bit = (unit_id & 0x7FF) as usize;
+        let bit = (unit_id & MASK_INDEX_BITS) as usize;
         let byte_index = bit >> 3;
         let bit_offset = bit & 7;
 
@@ -467,8 +470,39 @@ impl LootFilterHook {
     }
 
     pub fn clear_inspected_mask(&self, ctx: &D2Context) -> Result<(), String> {
-        let zeros = vec![0u8; 256];
+        let zeros = vec![0u8; MASK_BYTES];
         ctx.process.write_buffer(self.g_inspected_mask, &zeros)
+    }
+
+    /// Batch-clear show/hide/inspected bits for unit_ids that left the
+    /// ground. One read+write per mask instead of per-id round-trips.
+    pub fn clear_unit_id_bits(
+        &self,
+        ctx: &D2Context,
+        unit_ids: &[u32],
+    ) -> Result<(), String> {
+        if unit_ids.is_empty() {
+            return Ok(());
+        }
+        for mask_addr in [self.g_show_mask, self.g_hide_mask, self.g_inspected_mask] {
+            let mut buf = vec![0u8; MASK_BYTES];
+            ctx.process.read_buffer_into(mask_addr, &mut buf)?;
+            let mut dirty = false;
+            for &uid in unit_ids {
+                let bit = (uid & MASK_INDEX_BITS) as usize;
+                let byte = bit >> 3;
+                let off = bit & 7;
+                let mask = 1u8 << off;
+                if buf[byte] & mask != 0 {
+                    buf[byte] &= !mask;
+                    dirty = true;
+                }
+            }
+            if dirty {
+                ctx.process.write_buffer(mask_addr, &buf)?;
+            }
+        }
+        Ok(())
     }
 
     /// Allocate memory in remote process
@@ -574,13 +608,11 @@ impl LootFilterHook {
         code.push(0xA3);
         code.extend_from_slice(&addr_unit_id.to_le_bytes());
 
-        // and eax, 0x7FF                        ; 25 FF 07 00 00
+        // and eax, MASK_INDEX_BITS              ; 25 <imm32>
         code.push(0x25);
-        code.extend_from_slice(&0x7FFu32.to_le_bytes());
+        code.extend_from_slice(&MASK_INDEX_BITS.to_le_bytes());
 
         // bt dword ptr [g_show_mask], eax       ; 0F A3 05 <addr>
-        // Tests bit EAX (0..2047) in the 256-byte array at g_show_mask.
-        // Sets CF=1 if bit is set (force-show overrides game filter).
         code.push(0x0F);
         code.push(0xA3);
         code.push(0x05);
@@ -592,8 +624,6 @@ impl LootFilterHook {
         code.push(0x00);
 
         // bt dword ptr [g_hide_mask], eax       ; 0F A3 05 <addr>
-        // Tests bit EAX (0..2047) in the 256-byte array at g_hide_mask.
-        // Sets CF=1 if bit is set.
         code.push(0x0F);
         code.push(0xA3);
         code.push(0x05);

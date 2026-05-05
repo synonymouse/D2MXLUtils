@@ -101,7 +101,15 @@ pub struct DropScanner {
     /// is `(unit_id, seed, new_state)`; `seed` is the stable key the
     /// frontend uses to find the row.
     last_pickup_updates: Vec<(u32, u32, crate::loot_history::PickupState)>,
+    /// Consecutive ticks each tracked unit_id was missing from the scan.
+    /// Hook-mask bits cleared once the count hits
+    /// `MISSED_TICKS_BEFORE_BIT_CLEAR`. The grace period absorbs transient
+    /// `read_memory` failures so we don't re-trigger the `bff0c0d` flicker.
+    missed_ticks: HashMap<u32, u8>,
 }
+
+#[cfg(target_os = "windows")]
+const MISSED_TICKS_BEFORE_BIT_CLEAR: u8 = 2;
 
 #[derive(Debug, Clone)]
 struct ClassInfo {
@@ -215,6 +223,7 @@ impl DropScanner {
             set_cache: None,
             loot_history,
             last_pickup_updates: Vec::new(),
+            missed_ticks: HashMap::new(),
         })
     }
 
@@ -309,6 +318,7 @@ impl DropScanner {
 
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
+        self.missed_ticks.clear();
         self.state.recent_events.write().unwrap().clear();
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.clear_hidden_items(&self.state.ctx) {
@@ -603,6 +613,38 @@ impl DropScanner {
 
         // dwUnitId stays stable when an item moves between ground and
         // inventory, so without pruning a re-dropped item would never notify.
+        // Age missing-tick counters before the retain — items absent for
+        // `MISSED_TICKS_BEFORE_BIT_CLEAR` consecutive ticks have their
+        // hook-mask bits batch-cleared so old decisions don't outlive the
+        // physical item and alias new drops via `unit_id & MASK_INDEX_BITS`.
+        let mut to_clear: Vec<u32> = Vec::new();
+        for &id in self.seen_items.iter() {
+            if current_item_ids.contains(&id) {
+                self.missed_ticks.remove(&id);
+            } else {
+                let count = self.missed_ticks.entry(id).or_insert(0);
+                *count = count.saturating_add(1);
+                if *count >= MISSED_TICKS_BEFORE_BIT_CLEAR {
+                    to_clear.push(id);
+                }
+            }
+        }
+        for id in &to_clear {
+            self.missed_ticks.remove(id);
+        }
+        if !to_clear.is_empty() && self.loot_hook.is_injected() {
+            if let Err(e) = self
+                .loot_hook
+                .clear_unit_id_bits(&self.state.ctx, &to_clear)
+            {
+                log_error(&format!(
+                    "Failed to clear hook bits for {} departed items: {}",
+                    to_clear.len(),
+                    e
+                ));
+            }
+        }
+
         self.seen_items.retain(|id| current_item_ids.contains(id));
         self.state
             .recent_events
