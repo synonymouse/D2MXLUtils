@@ -28,9 +28,6 @@ const PATCH_SIZE: usize = 9;
 /// 57          push edi
 const FUNCTION_SIGNATURE: [u8; 9] = [0x83, 0xEC, 0x08, 0x53, 0x55, 0x8B, 0xD9, 0x56, 0x57];
 
-/// Approximate size of D2Sigma.dll to scan (2MB should be enough)
-const D2SIGMA_SCAN_SIZE: usize = 0x200000;
-
 // Reattach metadata — written into our 256-byte trampoline buffer on fresh
 // inject, parsed by try_reattach on next launch if the JMP patch survived
 // a dirty shutdown. Layout at trampoline+METADATA_OFFSET:
@@ -123,7 +120,7 @@ impl LootFilterHook {
 
         if let Some(addr) =
             ctx.process
-                .scan_pattern(ctx.d2_sigma, D2SIGMA_SCAN_SIZE, &FUNCTION_SIGNATURE)
+                .scan_pattern(ctx.d2_sigma, ctx.d2_sigma_size, &FUNCTION_SIGNATURE)
         {
             log_info(&format!(
                 "LootFilterHook: primary signature match at 0x{:08X} (fresh inject)",
@@ -233,12 +230,12 @@ impl LootFilterHook {
         ];
 
         let mut cursor = ctx.d2_sigma;
-        let end = ctx.d2_sigma.saturating_add(D2SIGMA_SCAN_SIZE);
+        let end = ctx.d2_sigma.saturating_add(ctx.d2_sigma_size);
 
         while cursor < end {
             let hit = match ctx.process.scan_pattern_wildcard(
                 ctx.d2_sigma,
-                D2SIGMA_SCAN_SIZE,
+                ctx.d2_sigma_size,
                 &pattern,
                 cursor,
             ) {

@@ -394,6 +394,9 @@ pub struct D2Context {
     pub d2_win: usize,
     pub d2_lang: usize,
     pub d2_sigma: usize,
+    /// `SizeOfImage` of `D2Sigma.dll`, or 0 if not loaded. Use as the upper
+    /// bound for AOB scans over the module.
+    pub d2_sigma_size: usize,
     /// `None` if the AOB signature didn't resolve — feature unavailable.
     pub always_show_items_ptr_rva: Option<usize>,
 }
@@ -433,6 +436,7 @@ impl D2Context {
             d2_win,
             d2_lang,
             d2_sigma,
+            d2_sigma_size,
             always_show_items_ptr_rva,
         })
     }
