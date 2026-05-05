@@ -1,5 +1,25 @@
 # Changelog
 
+## v1.22.0 — 2026-05-05
+
+### Bug Fixes
+
+- Fix(loot-filter): scan full D2Sigma.dll instead of hardcoded 2MB (79bbe1f)
+- Fix(scanner): AOB-resolve always-show-items struct after MXL patch (f9f5721)
+
+### Documentation
+
+- Docs: update CHANGELOG.md (43ada94)
+
+### Features
+
+- Feat(logger): throttle errors per call site and rotate log file (c69d8c9)
+
+### Other
+
+- 1.22.0 (357ecda)
+- Revert "fix(scanner): disable auto always-show-items after MXL patch broke offset" (ac3fc4c)
+
 ## v1.21.0 — 2026-05-05
 
 ### Bug Fixes
