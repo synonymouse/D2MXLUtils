@@ -37,3 +37,6 @@ dist-ssr
 *.local.json
 .vscode
 .claude
+
+# Local planning/spec docs
+docs/superpowers/
