@@ -86,9 +86,9 @@ pub mod data_tables {
 
 /// D2Sigma.dll offsets (Median XL specific)
 pub mod d2sigma {
-    /// Dereference once → struct holding the toggle. NULL when not in game.
-    pub const ALWAYS_SHOW_ITEMS_PTR: usize = 0x692D8C;
-    /// 0 = off, non-zero = on.
+    /// Bool offset inside the always-show-items host struct. The struct
+    /// pointer itself drifts between MXL patches and is resolved at runtime
+    /// by `process::resolve_always_show_items_ptr_rva`.
     pub const ALWAYS_SHOW_ITEMS_FLAG: usize = 0x24;
 }
 

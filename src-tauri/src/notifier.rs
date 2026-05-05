@@ -286,7 +286,10 @@ impl DropScanner {
         if self.state.ctx.d2_sigma == 0 {
             return Ok(None);
         }
-        let base = self.state.ctx.d2_sigma + d2sigma::ALWAYS_SHOW_ITEMS_PTR;
+        let Some(rva) = self.state.ctx.always_show_items_ptr_rva else {
+            return Ok(None);
+        };
+        let base = self.state.ctx.d2_sigma + rva;
         let struct_ptr = self.state.ctx.process.read_memory::<u32>(base)?;
         if struct_ptr == 0 {
             return Ok(None);

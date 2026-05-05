@@ -432,26 +432,31 @@ fn start_scanner_internal(
                         }
                     }
 
-                    match scanner.read_always_show_items() {
-                        Ok(Some(state)) => {
-                            if last_emitted_always_show != Some(state) {
-                                if let Err(e) = app_handle
-                                    .emit("always-show-items-state", state)
-                                {
-                                    log_error(&format!(
-                                        "Failed to emit always-show-items-state: {}",
-                                        e
-                                    ));
-                                }
-                                last_emitted_always_show = Some(state);
-                            }
-                        }
-                        Ok(None) => {}
+                    // `Ok(None)` = struct not lazy-allocated yet by MXL,
+                    // semantically equivalent to flag=false (items hidden).
+                    // Surface as `false` so the indicator appears.
+                    let observed = match scanner.read_always_show_items() {
+                        Ok(Some(state)) => Some(state),
+                        Ok(None) => Some(false),
                         Err(e) => {
                             log_error(&format!(
                                 "read_always_show_items failed: {}",
                                 e
                             ));
+                            None
+                        }
+                    };
+                    if let Some(state) = observed {
+                        if last_emitted_always_show != Some(state) {
+                            if let Err(e) =
+                                app_handle.emit("always-show-items-state", state)
+                            {
+                                log_error(&format!(
+                                    "Failed to emit always-show-items-state: {}",
+                                    e
+                                ));
+                            }
+                            last_emitted_always_show = Some(state);
                         }
                     }
 
