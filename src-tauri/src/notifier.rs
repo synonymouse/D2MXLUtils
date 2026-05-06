@@ -29,6 +29,20 @@ use crate::rules::{ItemTier, Notification};
 #[cfg(target_os = "windows")]
 use crate::scanner_state::SharedScannerState;
 
+/// MonStats.txt class IDs that count as "goblins" for the alert sound.
+/// Ported verbatim from `D2Stats.au3:$g_goblinIds`.
+#[cfg(target_os = "windows")]
+const GOBLIN_CLASS_IDS: &[u32] = &[
+    2774, 2775, 2776, 2779, 2780, 2781, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793,
+    2794, 2795, 2799, 2802, 2803, 2805,
+];
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GoblinDetectedEvent {
+    pub unit_id: u32,
+    pub class: u32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ItemDropEvent {
     pub unit_id: u32,
@@ -106,6 +120,14 @@ pub struct DropScanner {
     /// `MISSED_TICKS_BEFORE_BIT_CLEAR`. The grace period absorbs transient
     /// `read_memory` failures so we don't re-trigger the `bff0c0d` flicker.
     missed_ticks: HashMap<u32, u8>,
+    /// Monster `unit_id`s already announced via `goblin-detected`. Not
+    /// pruned by current-scan presence — same `unit_id` only fires once
+    /// per scanner lifetime. Cleared by `clear_cache()` (filter swap /
+    /// game-entry transitions).
+    seen_goblins: HashSet<u32>,
+    /// Goblins detected in the latest `tick_items` pass; drained by main
+    /// loop into `goblin-detected` events. Same pattern as `last_pickup_updates`.
+    last_goblin_events: Vec<GoblinDetectedEvent>,
 }
 
 #[cfg(target_os = "windows")]
@@ -224,6 +246,8 @@ impl DropScanner {
             loot_history,
             last_pickup_updates: Vec::new(),
             missed_ticks: HashMap::new(),
+            seen_goblins: HashSet::new(),
+            last_goblin_events: Vec::new(),
         })
     }
 
@@ -322,6 +346,7 @@ impl DropScanner {
     pub fn clear_cache(&mut self) {
         self.seen_items.clear();
         self.missed_ticks.clear();
+        self.seen_goblins.clear();
         self.state.recent_events.write().unwrap().clear();
         if self.loot_hook.is_injected() {
             if let Err(e) = self.loot_hook.clear_hidden_items(&self.state.ctx) {
@@ -470,6 +495,14 @@ impl DropScanner {
 
                 if unit.unit_type == unit_type::ITEM {
                     current_item_ids.insert(unit.unit_id);
+                } else if unit.unit_type == unit_type::MONSTER
+                    && GOBLIN_CLASS_IDS.contains(&unit.class)
+                    && self.seen_goblins.insert(unit.unit_id)
+                {
+                    self.last_goblin_events.push(GoblinDetectedEvent {
+                        unit_id: unit.unit_id,
+                        class: unit.class,
+                    });
                 }
 
                 if let Some(scanned) = self.scan_unit(p_unit, &unit) {
@@ -1278,6 +1311,11 @@ impl DropScanner {
     pub fn drain_pickup_updates(&mut self) -> Vec<(u32, u32, crate::loot_history::PickupState)> {
         std::mem::take(&mut self.last_pickup_updates)
     }
+
+    /// Take the goblin-detection events produced by the latest `tick_items` call.
+    pub fn drain_goblin_events(&mut self) -> Vec<GoblinDetectedEvent> {
+        std::mem::take(&mut self.last_goblin_events)
+    }
 }
 
 /// Strip D2 color codes from string (ÿc followed by color char)
@@ -1329,6 +1367,10 @@ impl DropScanner {
     }
 
     pub fn drain_pickup_updates(&mut self) -> Vec<(u32, u32, crate::loot_history::PickupState)> {
+        Vec::new()
+    }
+
+    pub fn drain_goblin_events(&mut self) -> Vec<GoblinDetectedEvent> {
         Vec::new()
     }
 

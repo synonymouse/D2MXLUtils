@@ -529,6 +529,12 @@ fn start_scanner_internal(
                         }
                     }
 
+                    for ev in scanner.drain_goblin_events() {
+                        if let Err(e) = app_handle.emit("goblin-detected", &ev) {
+                            log_error(&format!("Failed to emit goblin-detected: {}", e));
+                        }
+                    }
+
                     if !dict_published {
                         if let Some(dict) = scanner.items_dictionary_snapshot() {
                             if let Ok(mut guard) = items_dictionary.write() {

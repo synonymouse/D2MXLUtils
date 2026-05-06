@@ -68,6 +68,8 @@ export interface AppSettings {
   /** Per-slot drop sounds. Slot index = position + 1.
    *  Played gain = `soundVolume * slot.volume`. */
   sounds: SoundSlot[];
+  /** 1-based slot index played when a goblin appears nearby. */
+  goblinAlertSlot: number | null;
 }
 
 /** Window state interface */
@@ -132,6 +134,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   verboseFilterLogging: false,
   autoAlwaysShowItems: true,
   sounds: defaultSounds(),
+  goblinAlertSlot: null,
 };
 
 /** Settings store singleton */

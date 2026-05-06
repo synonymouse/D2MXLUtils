@@ -106,6 +106,11 @@
       if (s != null) playSound(s, soundVolume);
     }).then(u => unlisteners.push(u));
 
+    listen<{ unit_id: number; class: number }>('goblin-detected', () => {
+      const slot = settingsStore.settings.goblinAlertSlot;
+      if (slot != null) playSound(slot, soundVolume);
+    }).then(u => unlisteners.push(u));
+
     listen<{ active: boolean }>('overlay-edit-mode', async (event) => {
       const active = event.payload.active;
       if (active) {

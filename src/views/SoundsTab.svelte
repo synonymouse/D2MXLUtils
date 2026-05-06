@@ -9,6 +9,15 @@
 
   let masterVolume = $derived(settingsStore.settings.soundVolume);
   let slots = $derived(settingsStore.settings.sounds);
+  let goblinAlertSlot = $derived(settingsStore.settings.goblinAlertSlot);
+
+  // Non-empty slots, exposed to the goblin-alert dropdown. Slot index is
+  // 1-based and matches the position in `slots`.
+  let alertChoices = $derived(
+    slots
+      .map((slot, i) => ({ index: i + 1, slot }))
+      .filter(({ slot }) => slot.source.kind !== 'empty')
+  );
 
   // Inline error message per slot (1-based index → message). Cleared on
   // any successful import or on next attempt.
@@ -27,6 +36,12 @@
   function handleMasterVolumeInput(e: Event) {
     const target = e.currentTarget as HTMLInputElement;
     settingsStore.setSoundVolume(parseFloat(target.value));
+  }
+
+  function handleGoblinAlertChange(e: Event) {
+    const target = e.currentTarget as HTMLSelectElement;
+    const next = target.value === '' ? null : parseInt(target.value, 10);
+    settingsStore.set('goblinAlertSlot', next);
   }
 
   function handleSlotVolumeInput(slot: number, e: Event) {
@@ -116,10 +131,9 @@
 
 <section class="tab-content">
   <div class="settings-section">
-    <h2 class="section-title">Master volume</h2>
     <div class="setting-row">
       <div class="setting-info">
-        <span class="setting-label">Master multiplier</span>
+        <span class="setting-label">Master volume</span>
         <span class="setting-hint">
           Multiplied with each slot's per-sound volume. Set to 0 to silence everything.
         </span>
@@ -136,6 +150,28 @@
           aria-label="Master sound volume"
         />
         <span class="setting-value">{Math.round(masterVolume * 100)}%</span>
+      </div>
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Goblin alert</span>
+        <span class="setting-hint">
+          Plays the selected sound when a goblin appears nearby. Pick "None" to disable.
+        </span>
+      </div>
+      <div class="setting-control">
+        <select
+          class="goblin-select"
+          value={goblinAlertSlot ?? ''}
+          onchange={handleGoblinAlertChange}
+          aria-label="Goblin alert sound"
+        >
+          <option value="">None</option>
+          {#each alertChoices as { index, slot } (index)}
+            <option value={index}>{slot.label || `Sound ${index}`}</option>
+          {/each}
+        </select>
       </div>
     </div>
   </div>
@@ -263,6 +299,16 @@
     color: var(--text-primary);
     min-width: 50px;
     text-align: right;
+  }
+
+  .goblin-select {
+    padding: var(--space-1) var(--space-2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    min-width: 180px;
   }
 
   .slot-row {

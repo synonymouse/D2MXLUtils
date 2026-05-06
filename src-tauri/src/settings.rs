@@ -116,6 +116,11 @@ pub struct AppSettings {
     /// Final played gain = `sound_volume * slot.volume`.
     #[serde(default = "default_sounds")]
     pub sounds: Vec<SoundSlot>,
+
+    /// 1-based sound-slot index played when a goblin appears in the
+    /// scanner's view. `None` disables the feature.
+    #[serde(default)]
+    pub goblin_alert_slot: Option<u32>,
 }
 
 /// Window state for persistence
@@ -210,6 +215,7 @@ impl Default for AppSettings {
             verbose_filter_logging: false,
             auto_always_show_items: default_auto_always_show_items(),
             sounds: default_sounds(),
+            goblin_alert_slot: None,
         }
     }
 }
