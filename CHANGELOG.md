@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.23.0 — 2026-05-06
+
+### Bug Fixes
+
+- Fix(loot-filter): skip runtime-name match for rare items (34c2ae3)
+
+### Documentation
+
+- Docs: update CHANGELOG.md (9350442)
+
+### Features
+
+- Feat(sounds): add goblin alert with selectable sound (a231acf)
+
+### Other
+
+- 1.23.0 (e839707)
+
 ## v1.22.0 — 2026-05-05
 
 ### Bug Fixes
