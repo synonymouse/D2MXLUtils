@@ -43,8 +43,10 @@ impl<'a> MatchContext<'a> {
         }
         if let Some(ref pattern) = rule.name_pattern {
             // OR across runtime name, items.txt base type, and category prefix
-            // (e.g. "Great Rune" for Rhal Rune).
-            let name_hit = pattern_matches(pattern, &self.name_lower);
+            // (e.g. "Great Rune" for Rhal Rune). Rare runtime names are random
+            // affix combos, so they're skipped to avoid false positives.
+            let is_rare = self.item.quality.eq_ignore_ascii_case("Rare");
+            let name_hit = !is_rare && pattern_matches(pattern, &self.name_lower);
             let base_hit =
                 !self.base_name_lower.is_empty() && pattern_matches(pattern, &self.base_name_lower);
             let category_hit =
@@ -405,6 +407,17 @@ mod tests {
         let ctx = MatchContext::new(&it);
         let r = Rule {
             name_pattern: Some("Amulet".into()),
+            ..Rule::default()
+        };
+        assert!(!ctx.matches(&r));
+    }
+
+    #[test]
+    fn name_pattern_does_not_match_runtime_name_for_rare() {
+        let it = item_with_base("Rune Turn", "Ring", "Rare", "");
+        let ctx = MatchContext::new(&it);
+        let r = Rule {
+            name_pattern: Some("Rune Turn".into()),
             ..Rule::default()
         };
         assert!(!ctx.matches(&r));
