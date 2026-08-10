@@ -6,7 +6,14 @@
   import { onMount } from 'svelte';
   import { Tabs, ThemeToggle, UpdateButton } from '../components';
   import { windowState, itemsDictionaryStore, updaterStore, type WindowState } from '../stores';
-  import { GeneralTab, LootFilterTab, NotificationsTab, BreakpointsTab, SoundsTab } from './index';
+  import {
+    GeneralTab,
+    LootFilterTab,
+    NotificationsTab,
+    BreakpointsTab,
+    StatsTab,
+    SoundsTab,
+  } from './index';
 
   // Scanner and game status from backend
   let scannerStatus = $state<'stopped' | 'starting' | 'running' | 'stopping' | 'error'>('stopped');
@@ -21,6 +28,7 @@
     { id: 'notifications', label: 'Notifications' },
     { id: 'sounds', label: 'Sounds' },
     { id: 'breakpoints', label: 'Breakpoints' },
+    { id: 'stats', label: 'Stats' },
   ];
 
   function getStatusColor(status: string): string {
@@ -200,6 +208,8 @@
           <SoundsTab />
         {:else if tab === 'breakpoints'}
           <BreakpointsTab />
+        {:else if tab === 'stats'}
+          <StatsTab />
         {/if}
       {/snippet}
     </Tabs>

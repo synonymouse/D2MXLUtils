@@ -119,7 +119,7 @@ fn read_stat(ctx: &D2Context, injector: &D2Injector, p_unit: u32, stat_id: u32) 
 /// The engine physically moves the active weapon into BODYLOC_RARM on weapon
 /// switch, so we never need to read BODYLOC_SWRARM. Returns `(wclass, wsm,
 /// family_codes, file_index)` or empty/zero values when nothing is equipped.
-fn read_equipped_weapon(ctx: &D2Context, p_unit: u32) -> (String, i32, Vec<String>, u32) {
+pub(crate) fn read_equipped_weapon(ctx: &D2Context, p_unit: u32) -> (String, i32, Vec<String>, u32) {
     let empty = (String::new(), 0, Vec::new(), 0u32);
 
     let p_inventory = match ctx
