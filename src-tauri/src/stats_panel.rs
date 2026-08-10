@@ -56,8 +56,6 @@ const STAT_IDS: &[u32] = &[
     // conversion %, e.g. elemental bows/claws). Verified against Median
     // XL's own data files (MedianXLOfflineTools), not vanilla D2.
     484,
-    // Spell Focus cap formula input (278 * str + effective-SF * energy)
-    278,
 ];
 
 /// Base-attribute stat ids read from the unit's own (unmerged, no-item)
@@ -69,9 +67,18 @@ const STAT_IDS: &[u32] = &[
 /// here; see the frontend's `lifeManaBreakdown` for why).
 const BASE_STAT_IDS: &[u32] = &[0, 2, 3, 1];
 
-/// Derived stat id (not a real `ItemStatCost.txt` row) for the Spell Focus
-/// cap percentage, mirroring `D2Stats.au3:655-656`.
+/// Derived stat id (not a real `ItemStatCost.txt` row) holding effective
+/// Spell Focus (flat SF boosted by the item/rune % bonus) — *not yet*
+/// divided by 10. The frontend computes `min(effectiveSF / 10, 100)` with
+/// one decimal place, per https://docs.median-xl.com/doc/concepts/spellfocus
+/// ("for every 10 Spell Focus, +1% spell damage, capped at 100%"). Kept as
+/// the raw integer here so the frontend doesn't lose the fractional %
+/// (e.g. 105 SF is a real 10.5%, not 10%).
 const STAT_SF_CAP: u32 = 904;
+/// Derived stat id for the separate Energy-derived spell-damage bonus %
+/// (`130*(energy+20)/500 + energy`), the other half of the docs' combined
+/// formula: `130*(energy+20)/500 + energy + min(spell_focus/10, 100)`.
+const STAT_SF_ENERGY_BONUS: u32 = 907;
 /// Derived stat ids for the experience-to-next-level breakdown: cumulative
 /// exp required to reach the character's current level, and to reach the
 /// next level (or `-1` when the level is beyond the known table).
@@ -114,19 +121,22 @@ pub fn read_unit_character_stats(
         stats.insert(id, scale_life_mana(id, raw));
     }
 
-    let str_full = *stats.get(&0).unwrap_or(&0) as f64;
     let energy_full = *stats.get(&1).unwrap_or(&0) as f64;
-    let factor_278 = *stats.get(&278).unwrap_or(&0) as f64;
     let flat_sf = *stats.get(&485).unwrap_or(&0) as f64;
     let pct_sf = *stats.get(&488).unwrap_or(&0) as f64;
     // Effective SF = flat Spell Focus boosted by the item/rune % bonus,
-    // same multiplicative convention as the attribute %-bonus stats.
-    let effective_sf = (flat_sf * (1.0 + pct_sf / 100.0)).floor();
-    // Not clamped to 100 here — the frontend shows the true (possibly >100%,
-    // i.e. overcapped/wasted) value and clamps only for display.
-    let sf_cap =
-        ((factor_278 * str_full + effective_sf * energy_full) / 3_000_000.0 * 100.0).floor() as i32;
-    stats.insert(STAT_SF_CAP, sf_cap);
+    // same multiplicative convention as the attribute %-bonus stats (not
+    // independently confirmed by the docs formula below, but consistent
+    // with how every other flat/% stat pair in the game stacks).
+    let effective_sf = (flat_sf * (1.0 + pct_sf / 100.0)).floor() as i32;
+    // Current formula (docs.median-xl.com/doc/concepts/spellfocus): total
+    // spell-damage bonus = 130*(energy+20)/500 + energy + min(SF/10, 100).
+    // SF is *not* weighted by Strength/Energy — that was an older, since-
+    // reworked mechanic. `effective_sf` is stored un-divided (see
+    // `STAT_SF_CAP` doc) so the frontend can show the fractional %.
+    stats.insert(STAT_SF_CAP, effective_sf);
+    let energy_bonus = (130.0 * (energy_full + 20.0) / 500.0 + energy_full).floor() as i32;
+    stats.insert(STAT_SF_ENERGY_BONUS, energy_bonus);
 
     let level = *stats.get(&12).unwrap_or(&0) as u32;
     let exp_start = exp_for_level(level).unwrap_or(0);

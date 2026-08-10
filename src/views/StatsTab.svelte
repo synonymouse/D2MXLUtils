@@ -124,9 +124,14 @@
   }
 
   function spellFocusCapLabel(u: UnitStats): string {
-    const raw = num(u.stats, 904);
+    // stats[904] is effective Spell Focus, not yet divided by 10 — done
+    // here (not in Rust) to keep the fractional percent (105 SF = 10.5%).
+    const effectiveSf = num(u.stats, 904);
+    const raw = effectiveSf / 10;
     const capped = Math.min(raw, 100);
-    return raw > 100 ? `${capped}% (overcap, raw ${raw}%)` : `${capped}%`;
+    return raw > 100
+      ? `${capped.toFixed(1)}% (overcap, raw ${raw.toFixed(1)}%)`
+      : `${capped.toFixed(1)}%`;
   }
 
   function resistLabel(u: UnitStats, currentId: number, maxBonusId: number | null): string {
@@ -346,9 +351,15 @@
           { label: 'Spell Focus (flat)', render: tpl('{485}') },
           { label: 'Spell Focus (%)', render: tpl('+{488}%'), tooltip: 'Bonus % from items/runes, boosts flat Spell Focus multiplicatively' },
           {
-            label: 'Spell Focus Cap',
+            label: 'Spell Damage (from SF)',
             render: spellFocusCapLabel,
-            tooltip: "100% (reached around 1000 effective Spell Focus) means you don't benefit from more — anything past that is wasted",
+            tooltip:
+              'min(Spell Focus / 10, 100)% — 1000 Spell Focus reaches the 100% cap; anything past that is wasted',
+          },
+          {
+            label: 'Spell Damage (from Energy)',
+            render: tpl('+{907}%'),
+            tooltip: '130*(Energy+20)/500 + Energy — scales with Energy, no cap',
           },
         ],
       },
