@@ -43,12 +43,15 @@
 
   // Life-per-Vitality / Mana-per-Energy growth factors, indexed by class id
   // (0=Amazon..6=Assassin, matches `CLASSES` in breakpoint-constants.ts).
-  // Sourced from Median XL's CharStats.txt via the community
-  // MedianXLOfflineTools data files — these differ from vanilla D2's
-  // per-class values, so don't fall back to vanilla numbers here.
-  // Re-verify against a current game patch if the "from Vit/Ene" figures
-  // look off.
-  const LIFE_PER_VIT = [2, 2, 1, 3, 3, 2, 2];
+  // These differ from vanilla D2's per-class values, so don't fall back to
+  // vanilla numbers here. Both arrays confirmed against the official Median
+  // XL class docs (docs.median-xl.com/doc/class/<class>).
+  //
+  // Known limitation: wielding Azurewrath multiplies Life-per-Vitality by
+  // 0.9 — not modeled here (would need to detect the specific equipped
+  // unique), so the "from Vitality" estimate reads ~11% high while it's
+  // equipped. Mentally scale the figure by 0.9 in that case.
+  const LIFE_PER_VIT = [2.25, 2.25, 1.5, 2.75, 2.75, 2.25, 2.25];
   const MANA_PER_ENE = [2.25, 2.5, 3, 1.5, 1.5, 3, 2.25];
 
   // Elemental resist cap is 75% by default, extendable via `+max resist`
@@ -223,7 +226,7 @@
             label: 'Life',
             render: (u) => lifeManaBreakdown(u, 7, 76, 3, LIFE_PER_VIT[u.class] ?? 2),
             tooltip:
-              'Total is read directly from the game. The %Life bonus applies to your whole life pool, including the Vitality-derived part. The "from Vitality" figure is an estimate (current total Vitality × class factor) — not a precise engine breakdown.',
+              'Total is read directly from the game. The %Life bonus applies to your whole life pool, including the Vitality-derived part. The "from Vitality" figure is an estimate (current total Vitality × class factor) — not a precise engine breakdown. Wielding Azurewrath multiplies Life-per-Vitality by 0.9, which this estimate does not account for (reads ~11% high while equipped).',
           },
           {
             label: 'Mana',
