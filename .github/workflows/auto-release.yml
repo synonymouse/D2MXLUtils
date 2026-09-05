@@ -1,0 +1,106 @@
+name: Auto-release on merge to master
+
+# Cuts a release automatically every time a PR merges into master — bumps
+# the version, commits, and pushes the tag, then explicitly dispatches
+# release.yml (with `ref` set to that tag) to do the actual build.
+#
+# Confirmed live: pushing the tag alone does NOT work. GitHub deliberately
+# does not fire other workflows' `push` triggers from a push made with the
+# default GITHUB_TOKEN (anti-recursion guard) — the tag lands on the repo
+# fine, but release.yml's `push: tags:` trigger never sees it. Explicitly
+# dispatching via `gh workflow run` sidesteps that: workflow_dispatch is a
+# direct API call, not a push event, so the same-token restriction doesn't
+# apply, and passing `--ref <tag>` makes `github.ref`/`ref_name` resolve to
+# the real tag inside that run (not the branch release.yml would otherwise
+# assume for a workflow_dispatch trigger).
+#
+# Triggered on `pull_request: closed` rather than `push` to master
+# specifically so this workflow's own push (a direct commit to master, not
+# a PR) can never re-trigger itself — no loop guard needed there.
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - master
+
+permissions:
+  contents: write
+  # Required to call `gh workflow run` (the workflow-dispatch REST
+  # endpoint needs actions:write, not contents:write).
+  actions: write
+
+jobs:
+  auto-release:
+    # Only real merges (a closed-without-merging PR fires this event too),
+    # and never for a PR labeled to skip an automatic release (e.g.
+    # doc-only changes, or batching several PRs before cutting one).
+    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'release:skip')
+    runs-on: ubuntu-latest
+    env:
+      HUSKY: 0
+
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # release:major / release:minor labels on the merged PR pick the
+      # bump; unlabeled PRs default to patch (pnpm release's own default).
+      - name: Determine bump type from PR labels
+        id: bump
+        run: |
+          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}" == "true" ]]; then
+            echo "type=major" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}" == "true" ]]; then
+            echo "type=minor" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump version and tag
+        id: version
+        run: |
+          pnpm release ${{ steps.bump.outputs.type }}
+          echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Push the tag explicitly by name rather than `--follow-tags` — a
+      # bulk multi-tag push (e.g. a fresh clone missing older historical
+      # tags) has been observed to not reliably fire the tag-push trigger
+      # on this repo; pushing exactly one new tag does. (Moot for the
+      # trigger itself now — see the next step — but still the right way
+      # to push a single specific tag regardless.)
+      - name: Push version bump and tag
+        run: |
+          git push origin master
+          git push origin ${{ steps.version.outputs.tag }}
+
+      # See the top-of-file note: the push above cannot fire release.yml's
+      # own trigger (default-GITHUB_TOKEN pushes don't cascade to other
+      # workflows), so kick off the actual build explicitly instead.
+      - name: Trigger release build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run release.yml \
+            --repo ${{ github.repository }} \
+            --ref ${{ steps.version.outputs.tag }} \
+            -f target=both

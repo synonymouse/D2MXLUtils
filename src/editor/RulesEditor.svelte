@@ -14,11 +14,22 @@
     highlightSpecialChars,
   } from '@codemirror/view';
   import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
-  import { bracketMatching } from '@codemirror/language';
+  import {
+    bracketMatching,
+    codeFolding,
+    foldable,
+    foldedRanges,
+    foldEffect,
+    unfoldEffect,
+    foldGutter,
+    foldKeymap,
+  } from '@codemirror/language';
   import { acceptCompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
   import { lintGutter, setDiagnostics } from '@codemirror/lint';
 
   import { d2rules } from './d2rules-language';
+  import { d2rulesFolding } from './d2rules-folding';
+  import { matchHighlightField, setFlashLinesEffect } from './d2rules-match-highlight';
   import { getDarkThemeExtensions, getLightThemeExtensions } from './d2rules-theme';
   import { d2rulesLinter, type ValidationResult } from './d2rules-linter';
   import { d2rulesAutocomplete } from './d2rules-autocomplete';
@@ -46,6 +57,13 @@
     onsave?: (value: string) => void;
     /** Called after validation completes with results */
     onvalidate?: (result: ValidationResult) => void;
+    /** Group-rule line numbers to fold once real content loads (the caller
+     *  typically mounts with `value` still empty and fills it in moments
+     *  later via an async profile load). */
+    initialFoldedLines?: number[];
+    /** Called whenever the folded set changes, so the caller can persist it
+     *  (e.g. per profile, across tab switches and app restarts). */
+    onFoldsChange?: (lines: number[]) => void;
   }
 
   let {
@@ -55,15 +73,29 @@
     onchange,
     onsave,
     onvalidate,
+    initialFoldedLines,
+    onFoldsChange,
   }: Props = $props();
 
   let container: HTMLDivElement;
   let view: EditorView | null = null;
   const themeCompartment = new Compartment();
   let themeObserver: MutationObserver | null = null;
+  let flashClearTimer: ReturnType<typeof setTimeout> | null = null;
 
   // Track if we're updating from external value change
   let isExternalUpdate = false;
+  // Suppress onFoldsChange while we're the ones applying initialFoldedLines,
+  // so restoring folds doesn't immediately report the same state back.
+  let isRestoringFolds = false;
+
+  function currentFoldedLines(state: EditorState): number[] {
+    const lines: number[] = [];
+    foldedRanges(state).between(0, state.doc.length, (from) => {
+      lines.push(state.doc.lineAt(from).number);
+    });
+    return lines;
+  }
 
   /**
    * Build editor extensions
@@ -91,12 +123,21 @@
       bracketMatching(),
       closeBrackets(),
 
+      // Collapse group rule bodies (`[...] { ... }`) to a single line
+      codeFolding(),
+      foldGutter(),
+      d2rulesFolding,
+
+      // "Show matches" live highlight (see flashLines() below)
+      matchHighlightField,
+
       // Keymaps
       keymap.of([
         ...closeBracketsKeymap,
         { key: 'Tab', run: acceptCompletion },
         ...defaultKeymap,
         ...historyKeymap,
+        ...foldKeymap,
         indentWithTab,
       ]),
 
@@ -122,6 +163,15 @@
           // Clear diagnostics immediately when user starts typing
           // They will reappear after the debounced linter runs
           update.view.dispatch(setDiagnostics(update.state, []));
+        }
+
+        if (
+          !isRestoringFolds &&
+          update.transactions.some((tr) =>
+            tr.effects.some((e) => e.is(foldEffect) || e.is(unfoldEffect)),
+          )
+        ) {
+          onFoldsChange?.(currentFoldedLines(update.state));
         }
       }),
     ];
@@ -150,6 +200,32 @@
     return extensions;
   }
 
+  // Callers (LootFilterTab) mount this with `value` still empty and fill it
+  // in moments later via an async profile load, which lands as an external
+  // value-sync transaction below. Applying initialFoldedLines only at mount
+  // would fold an empty document and then have that full-document
+  // replacement wipe the result. `foldsRestored` lets both call sites
+  // attempt the restore and it takes effect whichever one first sees real
+  // content.
+  let foldsRestored = false;
+
+  function restoreFolds() {
+    if (!view || foldsRestored || !initialFoldedLines?.length) return;
+    const effects = [];
+    for (const lineNo of initialFoldedLines) {
+      if (lineNo < 1 || lineNo > view.state.doc.lines) continue;
+      const line = view.state.doc.line(lineNo);
+      const range = foldable(view.state, line.from, line.to);
+      if (range) effects.push(foldEffect.of(range));
+    }
+    if (effects.length) {
+      isRestoringFolds = true;
+      view.dispatch({ effects });
+      isRestoringFolds = false;
+      foldsRestored = true;
+    }
+  }
+
   onMount(() => {
     view = new EditorView({
       state: EditorState.create({
@@ -170,11 +246,14 @@
       attributes: true,
       attributeFilter: ['data-theme'],
     });
+
+    restoreFolds();
   });
 
   onDestroy(() => {
     themeObserver?.disconnect();
     themeObserver = null;
+    if (flashClearTimer) clearTimeout(flashClearTimer);
     view?.destroy();
     view = null;
   });
@@ -191,6 +270,7 @@
         },
       });
       isExternalUpdate = false;
+      restoreFolds();
     }
   });
 
@@ -199,6 +279,21 @@
    */
   export function focus() {
     view?.focus();
+  }
+
+  /**
+   * Briefly highlight the given 1-based source lines ("show matches" mode).
+   * Replaces any lines still flashing from a previous call and clears after
+   * `holdMs` of inactivity.
+   */
+  export function flashLines(lines: number[], holdMs = 900) {
+    if (!view) return;
+    view.dispatch({ effects: setFlashLinesEffect.of(lines) });
+    if (flashClearTimer) clearTimeout(flashClearTimer);
+    flashClearTimer = setTimeout(() => {
+      flashClearTimer = null;
+      view?.dispatch({ effects: setFlashLinesEffect.of([]) });
+    }, holdMs);
   }
 
   /**
@@ -214,6 +309,7 @@
 <style>
   .rules-editor {
     height: 100%;
+    max-height: 100%;
     overflow: hidden;
     border-radius: var(--radius-md, 8px);
     border: 1px solid var(--border-primary, #2a2a35);
@@ -222,10 +318,12 @@
 
   .rules-editor :global(.cm-editor) {
     height: 100%;
+    max-height: 100%;
   }
 
   .rules-editor :global(.cm-scroller) {
     overflow: auto;
+    max-height: 100%;
     font-family: var(--font-mono, 'Fira Code', 'Consolas', monospace);
   }
 
@@ -270,6 +368,13 @@
 
   .rules-editor :global(.cm-diagnostic-info) {
     border-left: 3px solid var(--quality-magic, #6969ff);
+  }
+
+  /* "Show matches" live highlight — the rule line that just decided a
+     drop's outcome. */
+  .rules-editor :global(.cm-rule-flash) {
+    background: color-mix(in srgb, var(--accent-primary, #c7b377) 28%, transparent);
+    border-left: 3px solid var(--accent-primary, #c7b377);
   }
 
   .rules-editor :global(.cm-tooltip-hover-explain) {

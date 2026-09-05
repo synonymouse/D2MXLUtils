@@ -63,13 +63,14 @@ impl UnitAny {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ItemData {
-    pub quality: u32,    // 0x00: Item quality (magic, rare, unique, etc.)
-    pub _pad1: [u32; 5], // 0x04-0x14 padding
-    pub flags: u32,      // 0x18: Item flags (identified, ethereal, etc.)
-    pub _pad2: [u32; 3], // 0x1C-0x24 padding
-    pub file_index: u32, // 0x28: Index into UniqueItems.txt/SetItems.txt
-    pub _pad3: [u32; 7], // 0x2C-0x44 padding
-    pub ear_level: u8,   // 0x48: For ears - level of killed player
+    pub quality: u32,     // 0x00: Item quality (magic, rare, unique, etc.)
+    pub _pad1: [u32; 5],  // 0x04-0x14 padding
+    pub flags: u32,       // 0x18: Item flags (identified, ethereal, etc.)
+    pub _pad2: [u32; 3],  // 0x1C-0x24 padding
+    pub file_index: u32,  // 0x28: Index into UniqueItems.txt/SetItems.txt
+    pub item_level: u32,  // 0x2C: dwItemLevel
+    pub _pad3b: [u32; 6], // 0x30-0x44 padding
+    pub ear_level: u8,    // 0x48: For ears - level of killed player
 }
 
 impl ItemData {
@@ -144,6 +145,8 @@ pub struct ScannedItem {
     pub stats: Option<String>,
     /// File index from ItemData
     pub file_index: u32,
+    /// Item level (`dwItemLevel`)
+    pub item_level: u32,
     /// Ear level (if applicable)
     pub ear_level: u8,
     pub sockets: u8,
@@ -163,6 +166,7 @@ impl ScannedItem {
             name: None,
             stats: None,
             file_index: item_data.file_index,
+            item_level: item_data.item_level,
             ear_level: item_data.ear_level,
             sockets: 0,
         }

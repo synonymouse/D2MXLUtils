@@ -1,6 +1,6 @@
 [package]
 name = "d2mxlutils"
-version = "1.26.0"
+version = "1.26.24"
 description = "D2MXLUtils Drop Notifier backend"
 authors = ["D2MXLUtils"]
 edition = "2021"
@@ -12,7 +12,7 @@ tauri-build = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "devtools"] }
 tauri-plugin-store = "2"
 chrono = { version = "0.4", features = ["clock", "std"] }
 self_update = "0.44"
@@ -20,6 +20,8 @@ self_update = "0.44"
 http = "1"
 semver = "1"
 ureq = "3"
+
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -40,4 +42,16 @@ windows = { version = "0.58", features = [
     # trampoline writes into ring slots so deltas line up with snapshot times)
     "Win32_System_SystemInformation"
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "shape", "xtest"] }
+raw-window-handle = "0.6"
+nix = { version = "0.29", features = ["ptrace", "process", "signal", "uio"] }
+libc = "0.2"
+# Native drop-notification sound playback: WebKitGTK's own GStreamer-backed
+# <audio> element fails to play any format at all in some environments
+# (observed: MEDIA_ERR_SRC_NOT_SUPPORTED for both MP3 and WAV despite a
+# working system GStreamer install) — rodio talks to ALSA/PulseAudio/
+# PipeWire directly via cpal, sidestepping WebKit's media stack entirely.
+rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3", "symphonia-wav"] }
 

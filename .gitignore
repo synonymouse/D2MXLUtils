@@ -38,3 +38,7 @@ dist-ssr
 .vscode
 .claude
 .worktrees/
+
+# scripts/publish-unique-stats-db.mjs's local output before it gets
+# uploaded as a release asset — not meant to be committed.
+/unique-stats-db.json

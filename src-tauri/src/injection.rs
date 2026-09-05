@@ -4,7 +4,7 @@
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
     VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
@@ -95,11 +95,39 @@ pub fn remote_thread(
         WaitForSingleObject(thread, INFINITE);
 
         let mut exit_code: u32 = 0;
-        GetExitCodeThread(thread, &mut exit_code)
-            .map_err(|e| format!("GetExitCodeThread failed: {}", e))?;
+        let result = GetExitCodeThread(thread, &mut exit_code)
+            .map_err(|e| format!("GetExitCodeThread failed: {}", e));
 
+        // CreateRemoteThread's handle was otherwise never closed — this
+        // function runs on every injected remote-function call (item
+        // name/stat lookups, automap cell creation, ...), called
+        // repeatedly during normal play, so each call leaked one kernel
+        // thread handle. Over a long session with hundreds/thousands of
+        // item drops that's a large, steadily growing handle count —
+        // exactly the shape of a Windows-specific "gets slower over
+        // hours" bug. Close unconditionally, after reading the exit code
+        // but regardless of whether that read succeeded.
+        let _ = CloseHandle(thread);
+
+        result?;
         Ok(exit_code)
     }
+}
+
+/// Linux analog of `CreateRemoteThread` — `ptrace` has no "spawn a thread"
+/// primitive, so this hijacks one existing thread's execution context
+/// instead: freeze it, redirect `EIP`/`ESP` into the shellcode with a
+/// scratch stack, run to a planted `0xCC` trap (every shellcode routine
+/// already ends in a bare `ret`, which pops our fake return address and
+/// lands on the trap), read `EAX`, then restore every original register
+/// exactly and detach. Mirrors `GetExitCodeThread`'s role by returning EAX.
+#[cfg(target_os = "linux")]
+pub fn remote_thread(
+    process: &ProcessHandle,
+    func_addr: usize,
+    param: usize,
+) -> Result<u32, String> {
+    crate::process::linux_ptrace::call_remote(process.pid, func_addr, param)
 }
 
 /// Helper to swap endianness for injection code (little-endian)
@@ -161,95 +189,21 @@ impl D2Injector {
 
         Ok(injector)
     }
+}
 
-    /// Inject all helper functions into game memory
-    fn inject_functions(
-        &self,
-        process: &ProcessHandle,
-        d2_client: usize,
-        d2_common: usize,
-        d2_lang: usize,
-    ) -> Result<(), String> {
-        let inject_base = d2_client + d2client::INJECT_BASE;
-        let string_addr = self.string_buffer.address as u32;
-        let _params_addr = self.params_buffer.address as u32;
+/// Linux `D2Injector::new` — see below; shares this OS-agnostic
+/// `RemoteAlloc`/field shape, so `inject_functions` (identical shellcode
+/// install on every OS — it only calls the already-abstracted
+/// `ProcessHandle::write_buffer`) lives once, in the shared impl block
+/// below, rather than duplicated per OS.
 
-        // GetString injection (D2Lang_GetStringById)
-        // From D2Stats.au3:2800-2806 — calls D2Lang.dll+0x9450 by absolute address.
-        //   D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx        ; iNameID
-        //   D2Client.dll+CDE12 - 31 C0                 - xor eax,eax
-        //   D2Client.dll+CDE14 - BB *                  - mov ebx,D2Lang+0x9450
-        //   D2Client.dll+CDE19 - FF D3                 - call ebx
-        //   D2Client.dll+CDE1B - C3                    - ret
-        let get_string_target = (d2_lang + d2lang::GET_STRING_BY_ID) as u32;
-        let mut get_string_code: Vec<u8> = vec![0x8B, 0xCB, 0x31, 0xC0, 0xBB];
-        get_string_code.extend_from_slice(&swap_endian(get_string_target));
-        get_string_code.extend_from_slice(&[0xFF, 0xD3, 0xC3]);
-        process.write_buffer(self.inject_get_string, &get_string_code)?;
-
-        // GetItemName injection
-        // push 0x100 (max length)
-        // push string_addr
-        // push ebx (pUnit)
-        // call D2Client+0x914F0
-        // ret
-        let get_name_offset = (d2_client + d2client::func::GET_ITEM_NAME) as i32
-            - (inject_base + d2client::inject::GET_ITEM_NAME + 0x10) as i32;
-        let mut get_name_code: Vec<u8> = vec![0x68, 0x00, 0x01, 0x00, 0x00, 0x68];
-        get_name_code.extend_from_slice(&swap_endian(string_addr));
-        get_name_code.push(0x53); // push ebx
-        get_name_code.push(0xE8);
-        get_name_code.extend_from_slice(&(get_name_offset as u32).to_le_bytes());
-        get_name_code.push(0xC3);
-        process.write_buffer(self.inject_get_item_name, &get_name_code)?;
-
-        // GetItemStat injection
-        // D2Client.dll+CDE40 - 57                    - push edi
-        // D2Client.dll+CDE41 - BF *                  - mov edi,D2Client.dll+CDEF0 (string addr)
-        // D2Client.dll+CDE43 - 6A 00                 - push 00
-        // D2Client.dll+CDE45 - 6A 01                 - push 01
-        // D2Client.dll+CDE47 - 53                    - push ebx (pUnit)
-        // D2Client.dll+CDE4B - E8 *                  - call D2Client.dll+560B0 (GetItemStat)
-        // D2Client.dll+CDE50 - 5F                    - pop edi
-        // D2Client.dll+CDE51 - C3                    - ret
-        //
-        // NOTE: The relative offset must match the original AutoIt injection:
-        //   iIDWNTT = (D2Client+0x560B0) - (D2Client+0xCDE4E)
-        // So we subtract (inject_base + GET_ITEM_STAT + 0x10), *not* +0x0E.
-        let get_stat_offset = (d2_client + d2client::func::GET_ITEM_STAT) as i32
-            - (inject_base + d2client::inject::GET_ITEM_STAT + 0x10) as i32;
-        let mut get_stat_code: Vec<u8> = vec![0x57, 0xBF];
-        get_stat_code.extend_from_slice(&swap_endian(string_addr));
-        // push 0, push 1, push ebx (pUnit), call GetItemStatЫФ
-        get_stat_code.extend_from_slice(&[0x6A, 0x00, 0x6A, 0x01, 0x53, 0xE8]);
-        get_stat_code.extend_from_slice(&(get_stat_offset as u32).to_le_bytes());
-        get_stat_code.extend_from_slice(&[0x5F, 0xC3]);
-        process.write_buffer(self.inject_get_item_stat, &get_stat_code)?;
-
-        // GetUnitStat injection
-        // push 0; push [ebx]; push [ebx+4]; call rel32; mov [str], eax; ret
-        // rel32 base is byte after the call's imm32 (offset 0x0C).
-        let get_unit_stat_offset = (d2_common + d2common::GET_UNIT_STAT) as i32
-            - (inject_base + d2common::INJECT_GET_UNIT_STAT + 0x0C) as i32;
-        let mut get_unit_stat_code: Vec<u8> = vec![0x6A, 0x00, 0xFF, 0x33, 0xFF, 0x73, 0x04, 0xE8];
-        get_unit_stat_code.extend_from_slice(&(get_unit_stat_offset as u32).to_le_bytes());
-        get_unit_stat_code.push(0xA3);
-        get_unit_stat_code.extend_from_slice(&swap_endian(string_addr));
-        get_unit_stat_code.push(0xC3);
-        process.write_buffer(self.inject_get_unit_stat, &get_unit_stat_code)?;
-
-        // NewAutomapCell: `E8 [rel32]; C3` — call + ret. `__fastcall` with
-        // no args, so no setup needed. EAX on return = AutomapCell*.
-        let new_cell_offset = (d2_client + d2client::func::NEW_AUTOMAP_CELL) as i32
-            - (inject_base + d2client::inject::NEW_AUTOMAP_CELL + 5) as i32;
-        let mut new_cell_code: Vec<u8> = vec![0xE8];
-        new_cell_code.extend_from_slice(&(new_cell_offset as u32).to_le_bytes());
-        new_cell_code.push(0xC3);
-        process.write_buffer(self.inject_new_automap_cell, &new_cell_code)?;
-
-        Ok(())
-    }
-
+/// Public call wrappers — identical on every OS, since they only go through
+/// the already OS-abstracted `remote_thread`/`ProcessHandle::read_buffer`/
+/// `write_buffer`. Shared by both the Windows and Linux `D2Injector`, which
+/// have the same field shape (`string_buffer`/`params_buffer: RemoteAlloc`,
+/// `inject_*: usize`) even though `RemoteAlloc`/`new`/`inject_functions`
+/// differ per OS above/below.
+impl D2Injector {
     /// Get item name by calling the injected function
     pub fn get_item_name(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
         // Clear buffer before use
@@ -353,6 +307,97 @@ impl D2Injector {
         // Read result from string buffer
         process.read_memory::<u32>(self.string_buffer.address)
     }
+
+    /// Inject all helper functions into game memory. Identical on every OS
+    /// — it only calls `ProcessHandle::write_buffer`, which is already
+    /// OS-abstracted; the shellcode bytes themselves are plain x86 machine
+    /// code with no Windows/Linux distinction.
+    fn inject_functions(
+        &self,
+        process: &ProcessHandle,
+        d2_client: usize,
+        d2_common: usize,
+        d2_lang: usize,
+    ) -> Result<(), String> {
+        let inject_base = d2_client + d2client::INJECT_BASE;
+        let string_addr = self.string_buffer.address as u32;
+        let _params_addr = self.params_buffer.address as u32;
+
+        // GetString injection (D2Lang_GetStringById)
+        // From D2Stats.au3:2800-2806 — calls D2Lang.dll+0x9450 by absolute address.
+        //   D2Client.dll+CDE10 - 8B CB                 - mov ecx,ebx        ; iNameID
+        //   D2Client.dll+CDE12 - 31 C0                 - xor eax,eax
+        //   D2Client.dll+CDE14 - BB *                  - mov ebx,D2Lang+0x9450
+        //   D2Client.dll+CDE19 - FF D3                 - call ebx
+        //   D2Client.dll+CDE1B - C3                    - ret
+        let get_string_target = (d2_lang + d2lang::GET_STRING_BY_ID) as u32;
+        let mut get_string_code: Vec<u8> = vec![0x8B, 0xCB, 0x31, 0xC0, 0xBB];
+        get_string_code.extend_from_slice(&swap_endian(get_string_target));
+        get_string_code.extend_from_slice(&[0xFF, 0xD3, 0xC3]);
+        process.write_buffer(self.inject_get_string, &get_string_code)?;
+
+        // GetItemName injection
+        // push 0x100 (max length)
+        // push string_addr
+        // push ebx (pUnit)
+        // call D2Client+0x914F0
+        // ret
+        let get_name_offset = (d2_client + d2client::func::GET_ITEM_NAME) as i32
+            - (inject_base + d2client::inject::GET_ITEM_NAME + 0x10) as i32;
+        let mut get_name_code: Vec<u8> = vec![0x68, 0x00, 0x01, 0x00, 0x00, 0x68];
+        get_name_code.extend_from_slice(&swap_endian(string_addr));
+        get_name_code.push(0x53); // push ebx
+        get_name_code.push(0xE8);
+        get_name_code.extend_from_slice(&(get_name_offset as u32).to_le_bytes());
+        get_name_code.push(0xC3);
+        process.write_buffer(self.inject_get_item_name, &get_name_code)?;
+
+        // GetItemStat injection
+        // D2Client.dll+CDE40 - 57                    - push edi
+        // D2Client.dll+CDE41 - BF *                  - mov edi,D2Client.dll+CDEF0 (string addr)
+        // D2Client.dll+CDE43 - 6A 00                 - push 00
+        // D2Client.dll+CDE45 - 6A 01                 - push 01
+        // D2Client.dll+CDE47 - 53                    - push ebx (pUnit)
+        // D2Client.dll+CDE4B - E8 *                  - call D2Client.dll+560B0 (GetItemStat)
+        // D2Client.dll+CDE50 - 5F                    - pop edi
+        // D2Client.dll+CDE51 - C3                    - ret
+        //
+        // NOTE: The relative offset must match the original AutoIt injection:
+        //   iIDWNTT = (D2Client+0x560B0) - (D2Client+0xCDE4E)
+        // So we subtract (inject_base + GET_ITEM_STAT + 0x10), *not* +0x0E.
+        let get_stat_offset = (d2_client + d2client::func::GET_ITEM_STAT) as i32
+            - (inject_base + d2client::inject::GET_ITEM_STAT + 0x10) as i32;
+        let mut get_stat_code: Vec<u8> = vec![0x57, 0xBF];
+        get_stat_code.extend_from_slice(&swap_endian(string_addr));
+        // push 0, push 1, push ebx (pUnit), call GetItemStatЫФ
+        get_stat_code.extend_from_slice(&[0x6A, 0x00, 0x6A, 0x01, 0x53, 0xE8]);
+        get_stat_code.extend_from_slice(&(get_stat_offset as u32).to_le_bytes());
+        get_stat_code.extend_from_slice(&[0x5F, 0xC3]);
+        process.write_buffer(self.inject_get_item_stat, &get_stat_code)?;
+
+        // GetUnitStat injection
+        // push 0; push [ebx]; push [ebx+4]; call rel32; mov [str], eax; ret
+        // rel32 base is byte after the call's imm32 (offset 0x0C).
+        let get_unit_stat_offset = (d2_common + d2common::GET_UNIT_STAT) as i32
+            - (inject_base + d2common::INJECT_GET_UNIT_STAT + 0x0C) as i32;
+        let mut get_unit_stat_code: Vec<u8> = vec![0x6A, 0x00, 0xFF, 0x33, 0xFF, 0x73, 0x04, 0xE8];
+        get_unit_stat_code.extend_from_slice(&(get_unit_stat_offset as u32).to_le_bytes());
+        get_unit_stat_code.push(0xA3);
+        get_unit_stat_code.extend_from_slice(&swap_endian(string_addr));
+        get_unit_stat_code.push(0xC3);
+        process.write_buffer(self.inject_get_unit_stat, &get_unit_stat_code)?;
+
+        // NewAutomapCell: `E8 [rel32]; C3` — call + ret. `__fastcall` with
+        // no args, so no setup needed. EAX on return = AutomapCell*.
+        let new_cell_offset = (d2_client + d2client::func::NEW_AUTOMAP_CELL) as i32
+            - (inject_base + d2client::inject::NEW_AUTOMAP_CELL + 5) as i32;
+        let mut new_cell_code: Vec<u8> = vec![0xE8];
+        new_cell_code.extend_from_slice(&(new_cell_offset as u32).to_le_bytes());
+        new_cell_code.push(0xC3);
+        process.write_buffer(self.inject_new_automap_cell, &new_cell_code)?;
+
+        Ok(())
+    }
 }
 
 // SAFETY: Send is sound because all state lives in remote process memory;
@@ -364,22 +409,94 @@ unsafe impl Send for D2Injector {}
 #[cfg(target_os = "windows")]
 unsafe impl Sync for D2Injector {}
 
-// --- Stub for Non-Windows ---
-
-#[cfg(not(target_os = "windows"))]
+// --- Linux Implementation ---
+//
+// `string_buffer`/`params_buffer` need a real allocation the same way
+// `VirtualAllocEx` provides one on Windows — scavenging `D2Client.dll`'s
+// padding turned out to be unsafe past a couple hundred bytes (empirically,
+// only `INJECT_BASE+0x0..0x200` is genuinely free; further offsets contain
+// real data). Linux has no direct `VirtualAllocEx` equivalent reachable
+// without code already running in the target, so we get one the way any
+// native Linux injector would: write a tiny hand-built `mmap2` syscall stub
+// into the confirmed-free padding and run it once via `remote_thread`,
+// exactly like the four permanent shellcode stubs below.
+#[cfg(target_os = "linux")]
 pub struct RemoteAlloc {
     pub address: usize,
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+pub struct D2Injector {
+    pub string_buffer: RemoteAlloc,
+    pub params_buffer: RemoteAlloc,
+    pub inject_get_string: usize,
+    pub inject_get_item_name: usize,
+    pub inject_get_item_stat: usize,
+    pub inject_get_unit_stat: usize,
+    pub inject_new_automap_cell: usize,
+}
+
+#[cfg(target_os = "linux")]
+impl D2Injector {
+    pub fn new(
+        process: &ProcessHandle,
+        d2_client: usize,
+        d2_common: usize,
+        d2_lang: usize,
+    ) -> Result<Self, String> {
+        let inject_base = d2_client + d2client::INJECT_BASE;
+
+        // One 0x2000 (8 KiB) mapping covers both buffers: string_buffer at
+        // +0x0 (4096 bytes, matches the wchar[2048] stats buffer size),
+        // params_buffer at +0x1000. See `ProcessHandle::mmap_remote` for
+        // the mechanism (shared with `dps_hook`'s own region allocation).
+        let mmap_stub_addr = inject_base + d2client::inject::LINUX_MMAP_STUB;
+        let mapped = process.mmap_remote(mmap_stub_addr, 0x2000)?;
+
+        let string_buffer = RemoteAlloc { address: mapped };
+        let params_buffer = RemoteAlloc {
+            address: mapped + 0x1000,
+        };
+
+        let inject_get_string = inject_base + d2client::inject::GET_STRING;
+        let inject_get_item_name = inject_base + d2client::inject::GET_ITEM_NAME;
+        let inject_get_item_stat = inject_base + d2client::inject::GET_ITEM_STAT;
+        let inject_get_unit_stat = inject_base + d2common::INJECT_GET_UNIT_STAT;
+        let inject_new_automap_cell = inject_base + d2client::inject::NEW_AUTOMAP_CELL;
+
+        let injector = Self {
+            string_buffer,
+            params_buffer,
+            inject_get_string,
+            inject_get_item_name,
+            inject_get_item_stat,
+            inject_get_unit_stat,
+            inject_new_automap_cell,
+        };
+
+        injector.inject_functions(process, d2_client, d2_common, d2_lang)?;
+
+        Ok(injector)
+    }
+}
+
+// --- Stub for other OSes (compilation only) ---
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+pub struct RemoteAlloc {
+    pub address: usize,
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub struct D2Injector;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl D2Injector {
     pub fn new(
         _process: &crate::process::ProcessHandle,
         _d2_client: usize,
         _d2_common: usize,
+        _d2_lang: usize,
     ) -> Result<Self, String> {
         Err("Not supported on this OS".to_string())
     }

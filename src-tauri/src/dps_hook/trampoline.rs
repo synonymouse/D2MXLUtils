@@ -5,7 +5,7 @@
 //! and `docs/dps-meter-reverse-engineering.md` for the full pseudocode
 //! this builder emits.
 
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", target_os = "linux"))]
 
 use std::collections::HashMap;
 

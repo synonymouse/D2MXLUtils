@@ -5,8 +5,21 @@
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import { onMount } from 'svelte';
   import { Tabs, ThemeToggle, UpdateButton } from '../components';
-  import { windowState, itemsDictionaryStore, updaterStore, type WindowState } from '../stores';
-  import { GeneralTab, LootFilterTab, NotificationsTab, BreakpointsTab, SoundsTab } from './index';
+  import {
+    windowState,
+    itemsDictionaryStore,
+    updaterStore,
+    uniqueStatsDbStore,
+    type WindowState,
+  } from '../stores';
+  import {
+    GeneralTab,
+    LootFilterTab,
+    NotificationsTab,
+    BreakpointsTab,
+    StatsTab,
+    SoundsTab,
+  } from './index';
 
   // Scanner and game status from backend
   let scannerStatus = $state<'stopped' | 'starting' | 'running' | 'stopping' | 'error'>('stopped');
@@ -21,6 +34,7 @@
     { id: 'notifications', label: 'Notifications' },
     { id: 'sounds', label: 'Sounds' },
     { id: 'breakpoints', label: 'Breakpoints' },
+    { id: 'stats', label: 'Stats' },
   ];
 
   function getStatusColor(status: string): string {
@@ -107,6 +121,12 @@
       updaterStore.check(false);
     }, 3000);
 
+    // Same delayed-silent-check treatment — just populates the General tab's
+    // status text; the actual download always stays a manual button click.
+    const uniqueDbCheckTimer = setTimeout(() => {
+      uniqueStatsDbStore.check();
+    }, 3000);
+
     // Listen for scanner status
     listen<string>('scanner-status', (event) => {
       scannerStatus = event.payload as typeof scannerStatus;
@@ -151,6 +171,7 @@
     return () => {
       if (saveTimeout) clearTimeout(saveTimeout);
       clearTimeout(updateCheckTimer);
+      clearTimeout(uniqueDbCheckTimer);
       unlisteners.forEach((u) => u());
       itemsDictionaryStore.destroy();
       updaterStore.destroyListeners();
@@ -162,7 +183,7 @@
   <!-- Header with status -->
   <header class="header">
     <div class="brand">
-      <h1 class="title">D2MXL<span class="accent">Utils</span></h1>
+      <h1 class="title">D2MXL<span class="accent">Utils</span> Fork</h1>
       <span class="version">v{__APP_VERSION__}</span>
     </div>
 
@@ -200,6 +221,8 @@
           <SoundsTab />
         {:else if tab === 'breakpoints'}
           <BreakpointsTab />
+        {:else if tab === 'stats'}
+          <StatsTab />
         {/if}
       {/snippet}
     </Tabs>
@@ -207,7 +230,7 @@
 
   <!-- Footer -->
   <footer class="footer">
-    <span class="footer-text">Made with ❤️ by synonymouse</span>
+    <span class="footer-text">Made with ❤️ by synonymouse · Fork maintained by Pertinate</span>
   </footer>
 </main>
 

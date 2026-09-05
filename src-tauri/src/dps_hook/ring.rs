@@ -6,18 +6,16 @@
 //! u32 delta_raw (bit 31 = is_kill, bits 0-30 = old - new),
 //! u16 max_hp, u16 monster_level.
 
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", target_os = "linux"))]
 
-use windows::Win32::Foundation::HANDLE;
-
-use crate::dps_hook::{read_remote, HookEvent};
+use crate::dps_hook::{read_remote, HookEvent, ProcessRef};
 
 pub const HEADER_SIZE: usize = 0x10;
 pub const SLOT_SIZE: usize = 0x10;
 
 #[allow(dead_code)]
 pub struct RingReader {
-    pub process: HANDLE,
+    pub process: ProcessRef,
     pub ring_addr: usize,
     pub capacity: u32,
     pub tail: u32,

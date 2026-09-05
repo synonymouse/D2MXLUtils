@@ -1,12 +1,19 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
   import { Button, HotkeyInput, Toggle } from '../components';
-  import { settingsStore, updaterStore, type HotkeyConfig } from '../stores';
+  import { settingsStore, updaterStore, uniqueStatsDbStore, type HotkeyConfig } from '../stores';
 
   let verboseFilterLogging = $derived(settingsStore.settings.verboseFilterLogging);
+  let liveMatchHighlightDurationMs = $derived(settingsStore.settings.liveMatchHighlightDurationMs);
   let autoAlwaysShowItems = $derived(settingsStore.settings.autoAlwaysShowItems);
   let autoNoPickup = $derived(settingsStore.settings.autoNoPickup);
+  let showItemsHiddenIndicator = $derived(settingsStore.settings.showItemsHiddenIndicator);
   let dpsMeterEnabled = $derived(settingsStore.settings.dpsMeter?.enabled ?? false);
+  let gameCreateNamePrefix = $derived(settingsStore.settings.gameCreateNamePrefix);
+  let gameCreatePassword = $derived(settingsStore.settings.gameCreatePassword);
+  let gameCreatePasswordPrefix = $derived(settingsStore.settings.gameCreatePasswordPrefix);
+  let gameCreatePasswordUsePrefix = $derived(settingsStore.settings.gameCreatePasswordUsePrefix);
+  let gameCreateDescription = $derived(settingsStore.settings.gameCreateDescription);
 
   const UNBOUND_HOTKEY: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
 
@@ -16,7 +23,8 @@
     | 'revealHidden'
     | 'lootHistory'
     | 'itemSearch'
-    | 'dpsMeterReset';
+    | 'dpsMeterReset'
+    | 'gameCreateAutofill';
   interface HotkeyRow {
     id: HotkeyId;
     label: string;
@@ -65,6 +73,15 @@
     },
   ];
 
+  const GAME_CREATE_HOTKEY_ROWS: readonly HotkeyRow[] = [
+    {
+      id: 'gameCreateAutofill',
+      label: 'Autofill create-game fields',
+      hint: 'Click into the Game Name field first, then press this — types Name, Tab, Password, and Description (if set) for you',
+      setter: (h) => settingsStore.setGameCreateAutofillHotkey(h),
+    },
+  ];
+
   const HOTKEY_GETTERS: Record<HotkeyId, () => HotkeyConfig> = {
     toggleWindow: () => settingsStore.settings.toggleWindowHotkey,
     editOverlay: () => settingsStore.settings.editOverlayHotkey,
@@ -72,6 +89,7 @@
     lootHistory: () => settingsStore.settings.lootHistoryHotkey,
     itemSearch: () => settingsStore.settings.itemSearchHotkey,
     dpsMeterReset: () => settingsStore.settings.dpsMeter?.hotkeyReset ?? UNBOUND_HOTKEY,
+    gameCreateAutofill: () => settingsStore.settings.gameCreateAutofillHotkey,
   };
   let hotkeyValues = $derived(
     Object.fromEntries(
@@ -118,6 +136,46 @@
     }
   }
 
+  let uniqueDbState = $derived(uniqueStatsDbStore.state);
+  let uniqueDbButtonDisabled = $derived(
+    uniqueDbState.kind === 'checking' || uniqueDbState.kind === 'downloading',
+  );
+
+  function uniqueDbStatusText(): string {
+    const s = uniqueDbState;
+    switch (s.kind) {
+      case 'idle':
+        return '';
+      case 'checking':
+        return 'Checking…';
+      case 'not_downloaded':
+        return 'Not downloaded yet — click "Download" to enable roll-range annotations';
+      case 'up_to_date':
+        return 'Up to date';
+      case 'available':
+        return 'An updated database is available — click "Download"';
+      case 'downloading':
+        return 'Downloading…';
+      case 'downloaded':
+        return 'Downloaded — restart D2MXLUtils to apply';
+      case 'error':
+        return `Failed: ${s.message}`;
+    }
+  }
+
+  function uniqueDbButtonLabel(): string {
+    const s = uniqueDbState;
+    return s.kind === 'not_downloaded' || s.kind === 'available' ? 'Download' : 'Check for update';
+  }
+
+  function handleUniqueDbButtonClick() {
+    if (uniqueDbState.kind === 'not_downloaded' || uniqueDbState.kind === 'available') {
+      uniqueStatsDbStore.download();
+    } else {
+      uniqueStatsDbStore.check();
+    }
+  }
+
   const UNBOUND: HotkeyConfig = { keyCode: 0, modifiers: 0, display: 'None' };
 
   function sameChord(a: HotkeyConfig, b: HotkeyConfig): boolean {
@@ -129,7 +187,7 @@
   }
 
   function handleHotkeyChange(id: HotkeyId, hotkey: HotkeyConfig) {
-    const allRows = [...HOTKEY_ROWS, ...DPS_HOTKEY_ROWS];
+    const allRows = [...HOTKEY_ROWS, ...DPS_HOTKEY_ROWS, ...GAME_CREATE_HOTKEY_ROWS];
     if (isBound(hotkey)) {
       for (const row of allRows) {
         if (row.id === id) continue;
@@ -145,6 +203,32 @@
     updaterStore.check(true);
   }
 
+  let refreshGameDataStatus = $state<'idle' | 'refreshing' | 'done' | 'error'>('idle');
+
+  async function handleRefreshGameData() {
+    refreshGameDataStatus = 'refreshing';
+    try {
+      await invoke('refresh_game_data_caches');
+      refreshGameDataStatus = 'done';
+    } catch (err) {
+      console.error('Failed to refresh game data caches:', err);
+      refreshGameDataStatus = 'error';
+    }
+  }
+
+  function refreshGameDataStatusText(): string {
+    switch (refreshGameDataStatus) {
+      case 'idle':
+        return '';
+      case 'refreshing':
+        return 'Refreshing…';
+      case 'done':
+        return 'Done — rebuilding from the game live now (or on next attach if D2 isn’t running).';
+      case 'error':
+        return 'Failed to refresh — check d2mxlutils.log.';
+    }
+  }
+
   async function handleOpenAppFolder() {
     try {
       await invoke('open_app_folder');
@@ -157,12 +241,41 @@
     settingsStore.setVerboseFilterLogging(enabled);
   }
 
+  function setLiveMatchHighlightDuration(value: number) {
+    const clamped = Math.max(200, Math.min(5000, value));
+    settingsStore.set('liveMatchHighlightDurationMs', clamped);
+  }
+
   function handleAutoAlwaysShowItemsChange(enabled: boolean) {
     settingsStore.setAutoAlwaysShowItems(enabled);
   }
 
   function handleAutoNoPickupChange(enabled: boolean) {
     settingsStore.setAutoNoPickup(enabled);
+  }
+
+  function handleShowItemsHiddenIndicatorChange(enabled: boolean) {
+    settingsStore.set('showItemsHiddenIndicator', enabled);
+  }
+
+  function handleGameCreateNamePrefixInput(e: Event) {
+    settingsStore.setGameCreateNamePrefix((e.target as HTMLInputElement).value);
+  }
+
+  function handleGameCreatePasswordInput(e: Event) {
+    settingsStore.setGameCreatePassword((e.target as HTMLInputElement).value);
+  }
+
+  function handleGameCreatePasswordPrefixInput(e: Event) {
+    settingsStore.setGameCreatePasswordPrefix((e.target as HTMLInputElement).value);
+  }
+
+  function handleGameCreatePasswordUsePrefixChange(enabled: boolean) {
+    settingsStore.setGameCreatePasswordUsePrefix(enabled);
+  }
+
+  function handleGameCreateDescriptionInput(e: Event) {
+    settingsStore.setGameCreateDescription((e.target as HTMLInputElement).value);
   }
 
   let showChangelog = $state(false);
@@ -267,6 +380,87 @@
   </div>
 
   <div class="settings-section">
+    <h2 class="section-title">Create Game Autofill</h2>
+
+    {#each GAME_CREATE_HOTKEY_ROWS as row (row.id)}
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">{row.label}</span>
+          <span class="setting-hint">{row.hint}</span>
+        </div>
+        <HotkeyInput value={hotkeyValues[row.id]} onchange={(h) => handleHotkeyChange(row.id, h)} />
+      </div>
+    {/each}
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Game name prefix</span>
+        <span class="setting-hint"
+          >Game name = prefix + an auto-incrementing number (not saved between launches)</span
+        >
+      </div>
+      <input
+        type="text"
+        class="text-input"
+        value={gameCreateNamePrefix}
+        oninput={handleGameCreateNamePrefixInput}
+        placeholder="e.g. MyGame"
+      />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Password auto-increments too</span>
+        <span class="setting-hint">Uses the same number as the game name for this run</span>
+      </div>
+      <Toggle
+        checked={gameCreatePasswordUsePrefix}
+        onchange={handleGameCreatePasswordUsePrefixChange}
+      />
+    </div>
+
+    {#if gameCreatePasswordUsePrefix}
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Password prefix</span>
+        </div>
+        <input
+          type="text"
+          class="text-input"
+          value={gameCreatePasswordPrefix}
+          oninput={handleGameCreatePasswordPrefixInput}
+          placeholder="e.g. pw"
+        />
+      </div>
+    {:else}
+      <div class="setting-row">
+        <div class="setting-info">
+          <span class="setting-label">Password</span>
+        </div>
+        <input
+          type="text"
+          class="text-input"
+          value={gameCreatePassword}
+          oninput={handleGameCreatePasswordInput}
+        />
+      </div>
+    {/if}
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Description</span>
+        <span class="setting-hint">Left as-is if empty</span>
+      </div>
+      <input
+        type="text"
+        class="text-input"
+        value={gameCreateDescription}
+        oninput={handleGameCreateDescriptionInput}
+      />
+    </div>
+  </div>
+
+  <div class="settings-section">
     <div class="setting-row">
       <div class="setting-info">
         <span class="setting-label">Auto-toggle item highlight (alt) on new game</span>
@@ -274,6 +468,16 @@
         >
       </div>
       <Toggle checked={autoAlwaysShowItems} onchange={handleAutoAlwaysShowItemsChange} />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Show "Items hidden" indicator</span>
+        <span class="setting-hint"
+          >Shows an on-screen reminder to press Alt when item highlight is off.</span
+        >
+      </div>
+      <Toggle checked={showItemsHiddenIndicator} onchange={handleShowItemsHiddenIndicatorChange} />
     </div>
 
     <div class="setting-row">
@@ -294,6 +498,28 @@
         >
       </div>
       <Toggle checked={verboseFilterLogging} onchange={handleVerboseLoggingChange} />
+    </div>
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Show matches highlight duration</span>
+        <span class="setting-hint"
+          >How long the Loot Filter tab's "Show matches" mode keeps a rule line flashed (0.2-5s).</span
+        >
+      </div>
+      <div class="setting-control">
+        <input
+          type="range"
+          id="live-match-highlight-duration-slider"
+          min="200"
+          max="5000"
+          step="100"
+          value={liveMatchHighlightDurationMs}
+          oninput={(e) => setLiveMatchHighlightDuration(parseInt(e.currentTarget.value))}
+          class="slider"
+        />
+        <span class="setting-value">{(liveMatchHighlightDurationMs / 1000).toFixed(1)}s</span>
+      </div>
     </div>
 
     <div class="setting-row">
@@ -329,6 +555,59 @@
     {#if updateStatusText()}
       <div class="update-status" class:is-error={updaterState.kind === 'error'}>
         {updateStatusText()}
+      </div>
+    {/if}
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Unique/set roll-range database</span>
+        <span class="setting-hint">
+          Adds possible roll ranges to unique/set item stats. Maintainer-built; downloading it skips
+          every client crawling the item API themselves.
+        </span>
+      </div>
+      <div class="update-control">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={uniqueDbButtonDisabled}
+          onclick={handleUniqueDbButtonClick}
+        >
+          {uniqueDbButtonLabel()}
+        </Button>
+      </div>
+    </div>
+
+    {#if uniqueDbStatusText()}
+      <div class="update-status" class:is-error={uniqueDbState.kind === 'error'}>
+        {uniqueDbStatusText()}
+      </div>
+    {/if}
+
+    <div class="setting-row">
+      <div class="setting-info">
+        <span class="setting-label">Refresh game data cache</span>
+        <span class="setting-hint">
+          Rebuilds item/unique/set names and weapon bases from the game. Use this after an MXL patch
+          if drops look mislabeled. No restart needed — takes effect immediately if D2 is attached,
+          or on next attach otherwise.
+        </span>
+      </div>
+      <div class="update-control">
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={refreshGameDataStatus === 'refreshing'}
+          onclick={handleRefreshGameData}
+        >
+          Refresh
+        </Button>
+      </div>
+    </div>
+
+    {#if refreshGameDataStatusText()}
+      <div class="update-status" class:is-error={refreshGameDataStatus === 'error'}>
+        {refreshGameDataStatusText()}
       </div>
     {/if}
   </div>
@@ -367,9 +646,65 @@
 {/if}
 
 <style>
+  .text-input {
+    padding: var(--space-1) var(--space-2);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-primary);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    min-width: 180px;
+  }
+
   .update-control {
     display: flex;
     align-items: center;
+  }
+
+  .setting-control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .slider {
+    width: 160px;
+    height: 6px;
+    appearance: none;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+  }
+
+  .slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    background: var(--accent-primary);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    transition: transform 0.1s ease;
+  }
+
+  .slider::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+  }
+
+  .slider::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: var(--accent-primary);
+    border: none;
+    border-radius: var(--radius-full);
+    cursor: pointer;
+  }
+
+  .setting-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--text-primary);
+    min-width: 50px;
+    text-align: right;
   }
 
   .update-status {

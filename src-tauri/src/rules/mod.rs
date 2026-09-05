@@ -105,6 +105,52 @@ impl ItemTier {
     }
 }
 
+/// Character class of the player currently in-game. Matched against
+/// `UnitAny.class` (offset `unit::CLASS`) read from the player's own unit —
+/// the same struct field D2 reuses for item file-index on item units.
+/// Ids empirically confirmed live: `2` = Necromancer, matching the standard
+/// D2 class ordering (Amazon, Sorceress, Necromancer, Paladin, Barbarian,
+/// Druid, Assassin) used by the `.d2s` save format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayerClass {
+    Amazon,
+    Sorceress,
+    Necromancer,
+    Paladin,
+    Barbarian,
+    Druid,
+    Assassin,
+}
+
+impl PlayerClass {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "amazon" | "zon" => Some(Self::Amazon),
+            "sorceress" | "sorc" => Some(Self::Sorceress),
+            "necromancer" | "necro" => Some(Self::Necromancer),
+            "paladin" | "pal" | "pally" => Some(Self::Paladin),
+            "barbarian" | "barb" => Some(Self::Barbarian),
+            "druid" | "dru" => Some(Self::Druid),
+            "assassin" | "sin" => Some(Self::Assassin),
+            _ => None,
+        }
+    }
+
+    pub fn from_id(id: u32) -> Option<Self> {
+        match id {
+            0 => Some(Self::Amazon),
+            1 => Some(Self::Sorceress),
+            2 => Some(Self::Necromancer),
+            3 => Some(Self::Paladin),
+            4 => Some(Self::Barbarian),
+            5 => Some(Self::Druid),
+            6 => Some(Self::Assassin),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NotifyColor {
@@ -225,8 +271,30 @@ pub struct Rule {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sockets: Vec<u8>,
 
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub classes: Vec<PlayerClass>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_clvl: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_clvl: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_ilvl: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_ilvl: Option<u32>,
+
     #[serde(default, skip_serializing_if = "is_false")]
     pub ethereal: bool,
+
+    /// Matched against `base_name`/`category` (Median XL's "Quest Item"
+    /// items.txt type), the same mechanism the default profile already
+    /// used for its `"Quest Item|Cube Reagent"` name-pattern rule — not a
+    /// separate memory-read flag.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub quest: bool,
 
     #[serde(default, skip_serializing_if = "is_default_visibility")]
     pub visibility: Visibility,
@@ -245,6 +313,13 @@ pub struct Rule {
 
     #[serde(default, skip_serializing_if = "is_false")]
     pub map: bool,
+
+    /// 1-based source line this rule was parsed from (its own line inside a
+    /// group, not the group header). Used to highlight the rule that fired
+    /// for a drop in the editor; `0` for rules built outside the DSL parser
+    /// (e.g. in tests).
+    #[serde(default, skip_serializing_if = "is_default_source_line")]
+    pub source_line: usize,
 
     #[serde(skip)]
     compiled_name_pattern: Option<CompiledPattern>,
@@ -291,6 +366,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn is_default_source_line(line: &usize) -> bool {
+    *line == 0
+}
+
 fn is_default_visibility(v: &Visibility) -> bool {
     *v == Visibility::Default
 }
@@ -320,6 +399,10 @@ pub struct FilterDecision {
     /// map ping is a valid use case.
     #[serde(default, skip_serializing_if = "is_false")]
     pub place_on_map: bool,
+    /// Source line of the rule that decided this outcome (`None` when no
+    /// rule matched). Powers the "show matched lines" live highlight mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -409,6 +492,7 @@ impl FilterConfig {
                 None
             },
             place_on_map: rule.map,
+            matched_line: (rule.source_line != 0).then_some(rule.source_line),
         }
     }
 
@@ -421,6 +505,7 @@ impl FilterConfig {
             },
             notification: None,
             place_on_map: false,
+            matched_line: None,
         }
     }
 
@@ -488,6 +573,9 @@ mod tests {
             tier: None,
             unique_kind: None,
             sockets: 0,
+            clvl: 0,
+            ilvl: 0,
+            player_class: 0,
             filter: None,
         }
     }
@@ -887,6 +975,38 @@ mod tests {
         let rule = &config.rules[0];
         assert!(rule.compiled_name_pattern.is_none());
         assert!(rule.compiled_stat_patterns.is_empty());
+    }
+
+    #[test]
+    fn parse_dsl_records_source_line_including_inside_groups() {
+        let config =
+            crate::rules::parse_dsl("# comment\nunique gold\n\n[hide] {\n  normal\n  low\n}\n")
+                .expect("valid DSL");
+
+        assert_eq!(config.rules[0].source_line, 2);
+        assert_eq!(
+            config.rules[1].source_line, 5,
+            "group child keeps its own line"
+        );
+        assert_eq!(config.rules[2].source_line, 6);
+    }
+
+    #[test]
+    fn decide_reports_matched_line_of_winning_rule() {
+        let config = crate::rules::parse_dsl("unique gold\nset lime\n").expect("valid DSL");
+        let it = item("Some Unique", ItemQuality::Unique, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert_eq!(d.matched_line, Some(1));
+    }
+
+    #[test]
+    fn decide_reports_no_matched_line_when_no_rule_matches() {
+        let config = crate::rules::parse_dsl("unique gold\n").expect("valid DSL");
+        let it = item("Something Normal", ItemQuality::Normal, false);
+        let ctx = MatchContext::new(&it);
+        let d = config.decide(&ctx);
+        assert_eq!(d.matched_line, None);
     }
 
     #[test]

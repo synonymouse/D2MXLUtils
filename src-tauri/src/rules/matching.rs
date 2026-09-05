@@ -1,6 +1,8 @@
 //! Rule matching against a single scanned item.
 
-use super::{CompiledPattern, EnrichmentNeeds, ItemQuality, ItemTier, PartialRuleMatch, Rule};
+use super::{
+    CompiledPattern, EnrichmentNeeds, ItemQuality, ItemTier, PartialRuleMatch, PlayerClass, Rule,
+};
 use crate::notifier::ItemDropEvent;
 
 pub struct MatchContext<'a> {
@@ -34,6 +36,21 @@ impl<'a> MatchContext<'a> {
             return false;
         }
         if !self.sockets_match(&rule.sockets) {
+            return false;
+        }
+        if !self.classes_match(&rule.classes) {
+            return false;
+        }
+        if !self.level_match(rule.min_clvl, rule.max_clvl, self.item.clvl) {
+            return false;
+        }
+        if !self.level_match(rule.min_ilvl, rule.max_ilvl, self.item.ilvl) {
+            return false;
+        }
+        if rule.quest
+            && !(self.base_name_lower.contains("quest item")
+                || self.category_lower.contains("quest item"))
+        {
             return false;
         }
         if rule.ethereal && !self.item.is_ethereal {
@@ -75,6 +92,21 @@ impl<'a> MatchContext<'a> {
             return PartialRuleMatch::NoMatch;
         }
         if !self.sockets_match(&rule.sockets) {
+            return PartialRuleMatch::NoMatch;
+        }
+        if !self.classes_match(&rule.classes) {
+            return PartialRuleMatch::NoMatch;
+        }
+        if !self.level_match(rule.min_clvl, rule.max_clvl, self.item.clvl) {
+            return PartialRuleMatch::NoMatch;
+        }
+        if !self.level_match(rule.min_ilvl, rule.max_ilvl, self.item.ilvl) {
+            return PartialRuleMatch::NoMatch;
+        }
+        if rule.quest
+            && !(self.base_name_lower.contains("quest item")
+                || self.category_lower.contains("quest item"))
+        {
             return PartialRuleMatch::NoMatch;
         }
         if rule.ethereal && !self.item.is_ethereal {
@@ -173,6 +205,30 @@ impl<'a> MatchContext<'a> {
         }
         rule_sockets.iter().any(|&n| n == self.item.sockets)
     }
+
+    fn classes_match(&self, rule_classes: &[PlayerClass]) -> bool {
+        if rule_classes.is_empty() {
+            return true;
+        }
+        match PlayerClass::from_id(self.item.player_class) {
+            Some(class) => rule_classes.iter().any(|&c| c == class),
+            None => false,
+        }
+    }
+
+    fn level_match(&self, min: Option<u32>, max: Option<u32>, value: u32) -> bool {
+        if let Some(min) = min {
+            if value < min {
+                return false;
+            }
+        }
+        if let Some(max) = max {
+            if value > max {
+                return false;
+            }
+        }
+        true
+    }
 }
 
 fn pattern_matches(
@@ -209,6 +265,9 @@ mod tests {
             tier: None,
             unique_kind: None,
             sockets: 0,
+            clvl: 0,
+            ilvl: 0,
+            player_class: 0,
             filter: None,
         }
     }
@@ -232,6 +291,9 @@ mod tests {
             tier: None,
             unique_kind: None,
             sockets: 0,
+            clvl: 0,
+            ilvl: 0,
+            player_class: 0,
             filter: None,
         }
     }
@@ -255,6 +317,9 @@ mod tests {
             tier: Some(ItemTier::Sacred),
             unique_kind: None,
             sockets: 0,
+            clvl: 0,
+            ilvl: 0,
+            player_class: 0,
             filter: None,
         }
     }
@@ -391,6 +456,21 @@ mod tests {
     }
 
     #[test]
+    fn quest_rule_matches_only_quest_item_base_name() {
+        let quest_it = item_with_base("Tome of Possession", "Quest Item", "Normal", "");
+        let ctx = MatchContext::new(&quest_it);
+        let r = Rule {
+            quest: true,
+            ..Rule::default()
+        };
+        assert!(ctx.matches(&r));
+
+        let ring_it = item_with_base("Ring of the Five", "Ring", "Normal", "");
+        let ctx = MatchContext::new(&ring_it);
+        assert!(!ctx.matches(&r));
+    }
+
+    #[test]
     fn tier_rule_fails_when_item_tier_unknown() {
         let it = item("X", "Unique", "", false);
         let ctx = MatchContext::new(&it);
@@ -485,6 +565,84 @@ mod tests {
                 n
             );
         }
+    }
+
+    #[test]
+    fn class_rule_matches_listed_classes_and_rejects_others() {
+        let r = Rule {
+            classes: vec![PlayerClass::Necromancer, PlayerClass::Barbarian],
+            ..Rule::default()
+        };
+        for id in [2u32, 4] {
+            let mut it = item("X", "Normal", "", false);
+            it.player_class = id;
+            assert!(
+                MatchContext::new(&it).matches(&r),
+                "class id={} should match",
+                id
+            );
+        }
+        for id in [0u32, 1, 3, 5, 6] {
+            let mut it = item("X", "Normal", "", false);
+            it.player_class = id;
+            assert!(
+                !MatchContext::new(&it).matches(&r),
+                "class id={} must NOT match",
+                id
+            );
+        }
+    }
+
+    #[test]
+    fn clvl_range_matches_inclusive_bounds_and_rejects_outside() {
+        let r = Rule {
+            min_clvl: Some(20),
+            max_clvl: Some(99),
+            ..Rule::default()
+        };
+        for clvl in [20u32, 50, 99] {
+            let mut it = item("X", "Normal", "", false);
+            it.clvl = clvl;
+            assert!(
+                MatchContext::new(&it).matches(&r),
+                "clvl={} should match",
+                clvl
+            );
+        }
+        for clvl in [0u32, 19, 100] {
+            let mut it = item("X", "Normal", "", false);
+            it.clvl = clvl;
+            assert!(
+                !MatchContext::new(&it).matches(&r),
+                "clvl={} must NOT match",
+                clvl
+            );
+        }
+    }
+
+    #[test]
+    fn ilvl_range_open_ended_bounds() {
+        let min_only = Rule {
+            min_ilvl: Some(40),
+            ..Rule::default()
+        };
+        let mut low = item("X", "Normal", "", false);
+        low.ilvl = 39;
+        assert!(!MatchContext::new(&low).matches(&min_only));
+        let mut high = item("X", "Normal", "", false);
+        high.ilvl = 999;
+        assert!(MatchContext::new(&high).matches(&min_only));
+
+        let max_only = Rule {
+            max_ilvl: Some(99),
+            ..Rule::default()
+        };
+        let mut ok = item("X", "Normal", "", false);
+        ok.ilvl = 99;
+        assert!(MatchContext::new(&ok).matches(&max_only));
+        let mut over = item("X", "Normal", "", false);
+        over.ilvl = 100;
+        assert!(!MatchContext::new(&over).matches(&max_only));
     }
 
     #[test]

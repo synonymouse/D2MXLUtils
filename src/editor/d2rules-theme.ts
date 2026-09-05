@@ -20,6 +20,8 @@ const darkPalette = {
   socket: '#6aa9ff',
   action: '#e53935',
   notification: '#c4b870',
+  class: '#f07178',
+  level: '#82aaff',
 };
 
 const lightPalette = {
@@ -36,6 +38,8 @@ const lightPalette = {
   socket: '#1565c0',
   action: '#d32f2f',
   notification: '#ad1457',
+  class: '#c2185b',
+  level: '#1565c0',
 };
 
 /**
@@ -78,6 +82,14 @@ export const darkTheme = EditorView.theme(
     },
     '.cm-foldGutter': {
       width: '16px',
+    },
+    '.cm-foldPlaceholder': {
+      backgroundColor: 'var(--bg-elevated, #252530)',
+      border: '1px solid var(--border-primary, #2a2a35)',
+      color: 'var(--text-muted, #999)',
+      borderRadius: 'var(--radius-sm, 4px)',
+      margin: '0 2px',
+      padding: '0 4px',
     },
     '&.cm-focused .cm-cursor': {
       borderLeftColor: 'var(--accent-primary, #c7b377)',
@@ -140,6 +152,17 @@ export const lightTheme = EditorView.theme(
     '.cm-lineNumbers .cm-gutterElement': {
       padding: '0 8px',
       minWidth: '2.25em',
+    },
+    '.cm-foldGutter': {
+      width: '16px',
+    },
+    '.cm-foldPlaceholder': {
+      backgroundColor: 'var(--bg-elevated, #ececec)',
+      border: '1px solid var(--border-primary, #e0e0e0)',
+      color: 'var(--text-muted, #777)',
+      borderRadius: 'var(--radius-sm, 4px)',
+      margin: '0 2px',
+      padding: '0 4px',
     },
     '&.cm-focused .cm-cursor': {
       borderLeftColor: 'var(--accent-primary, #9a7b4f)',
@@ -206,6 +229,8 @@ function buildHighlighting(p: typeof darkPalette) {
         fontWeight: '700',
       },
       { tag: d2rulesTags.unknown, color: p.unknown },
+      { tag: d2rulesTags.class, color: p.class, fontWeight: '600' },
+      { tag: d2rulesTags.level, color: p.level, fontWeight: '600' },
     ]),
   );
 }
@@ -265,6 +290,7 @@ export const autocompleteTheme = EditorView.baseTheme({
     fontFamily: 'var(--font-mono, inherit)',
   },
   '.cm-completionIcon-base::after': { content: '""' },
+  '.cm-completionIcon-keyword::after': { content: '""' },
   '.cm-completionIcon-set::after': { content: '"set"' },
   '.cm-completionIcon-tu::after': { content: '"TU"' },
   '.cm-completionIcon-su::after': { content: '"SU"' },

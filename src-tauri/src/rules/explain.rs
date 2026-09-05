@@ -96,6 +96,9 @@ fn predicate_lines(rule: &Rule) -> Vec<String> {
     if rule.ethereal {
         out.push("Item is ethereal".to_string());
     }
+    if rule.quest {
+        out.push("Item is a quest item".to_string());
+    }
     if !rule.stat_patterns.is_empty() {
         out.push(stat_bullet(&rule.stat_patterns));
     }
@@ -142,6 +145,9 @@ fn unrestricted_categories(rule: &Rule) -> Option<String> {
     }
     if !rule.ethereal {
         missing.push("ethereal");
+    }
+    if !rule.quest {
+        missing.push("quest");
     }
     if rule.stat_patterns.is_empty() {
         missing.push("stats");

@@ -128,15 +128,56 @@ pub struct AppSettings {
     #[serde(default = "default_item_search_hotkey")]
     pub item_search_hotkey: HotkeyConfig,
 
+    /// Hotkey that autofills the create-game Name/Password/Description
+    /// fields via synthesized keystrokes — see `keystroke_sim.rs`. Click
+    /// into the Game Name field first; Tab order fills the rest. Unset
+    /// (not `HotkeyConfig::default()`, which is Ctrl+K — already claimed
+    /// by `toggle_window_hotkey`) until the user opts in, same convention
+    /// as `dps_meter.hotkey_reset`.
+    #[serde(default = "default_unset_hotkey")]
+    pub game_create_autofill_hotkey: HotkeyConfig,
+
+    /// Combined with an in-memory auto-incrementing counter (not
+    /// persisted, resets per app launch) to form the game name:
+    /// `{prefix}{index}`.
+    #[serde(default)]
+    pub game_create_name_prefix: String,
+
+    /// Fixed password, used when `game_create_password_use_prefix` is off.
+    #[serde(default)]
+    pub game_create_password: String,
+
+    /// Combined with the same counter as the name (`{prefix}{index}`),
+    /// used instead of `game_create_password` when
+    /// `game_create_password_use_prefix` is on.
+    #[serde(default)]
+    pub game_create_password_prefix: String,
+
+    #[serde(default)]
+    pub game_create_password_use_prefix: bool,
+
+    #[serde(default)]
+    pub game_create_description: String,
+
     /// When true, scanner logs per-item filter decisions (noisy; opt-in for debugging).
     #[serde(default)]
     pub verbose_filter_logging: bool,
+
+    /// How long the Loot Filter tab's "show matches" mode keeps a rule line
+    /// flashed after it decides a drop, in milliseconds.
+    #[serde(default = "default_live_match_highlight_duration_ms")]
+    pub live_match_highlight_duration_ms: u32,
 
     #[serde(default = "default_auto_always_show_items")]
     pub auto_always_show_items: bool,
 
     #[serde(default = "default_auto_no_pickup")]
     pub auto_no_pickup: bool,
+
+    /// Whether to show the "Items hidden — press Alt" overlay indicator
+    /// when the in-game item highlight toggle is off.
+    #[serde(default = "default_show_items_hidden_indicator")]
+    pub show_items_hidden_indicator: bool,
 
     /// Per-slot drop sounds. Slot index = element position + 1.
     /// Final played gain = `sound_volume * slot.volume`.
@@ -155,6 +196,11 @@ pub struct AppSettings {
     /// widget id (see `src/lib/overlay-widgets.ts`). Percent of overlay size.
     #[serde(default)]
     pub widget_positions: HashMap<String, WidgetPosition>,
+
+    /// Collapsed group-rule line numbers in the Loot Filter editor, keyed by
+    /// profile name, so folds survive switching tabs and restarting the app.
+    #[serde(default)]
+    pub folded_lines: HashMap<String, Vec<u32>>,
 }
 
 /// Window state for persistence
@@ -181,6 +227,10 @@ fn default_notification_duration() -> u32 {
     5000
 }
 
+fn default_live_match_highlight_duration_ms() -> u32 {
+    900
+}
+
 fn default_stack_direction() -> String {
     "up".to_string()
 }
@@ -198,6 +248,10 @@ fn default_auto_always_show_items() -> bool {
 }
 
 fn default_auto_no_pickup() -> bool {
+    true
+}
+
+fn default_show_items_hidden_indicator() -> bool {
     true
 }
 
@@ -222,6 +276,14 @@ fn default_loot_history_hotkey() -> HotkeyConfig {
         key_code: 0x4E,
         modifiers: 0x0001,
         display: "Alt+N".to_string(),
+    }
+}
+
+fn default_unset_hotkey() -> HotkeyConfig {
+    HotkeyConfig {
+        key_code: 0,
+        modifiers: 0,
+        display: "None".to_string(),
     }
 }
 
@@ -250,13 +312,22 @@ impl Default for AppSettings {
             reveal_hidden_hotkey: default_reveal_hidden_hotkey(),
             loot_history_hotkey: default_loot_history_hotkey(),
             item_search_hotkey: default_item_search_hotkey(),
+            game_create_autofill_hotkey: default_unset_hotkey(),
+            game_create_name_prefix: String::new(),
+            game_create_password: String::new(),
+            game_create_password_prefix: String::new(),
+            game_create_password_use_prefix: false,
+            game_create_description: String::new(),
             verbose_filter_logging: false,
+            live_match_highlight_duration_ms: default_live_match_highlight_duration_ms(),
             auto_always_show_items: default_auto_always_show_items(),
             auto_no_pickup: default_auto_no_pickup(),
+            show_items_hidden_indicator: default_show_items_hidden_indicator(),
             sounds: default_sounds(),
             goblin_alert_slot: None,
             dps_meter: DpsMeterSettings::default(),
             widget_positions: HashMap::new(),
+            folded_lines: HashMap::new(),
         }
     }
 }

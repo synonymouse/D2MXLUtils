@@ -110,6 +110,63 @@ pub fn delete_sound_file(app: AppHandle, slot: u8) -> Result<(), String> {
     Ok(())
 }
 
+/// Tells the frontend whether to route sound playback through
+/// `play_audio_bytes_native` directly instead of ever touching the
+/// webview's own `<audio>` element (`sound-player.ts` calls this once and
+/// caches the result). On Linux this isn't just a quality issue — WebKitGTK's
+/// media pipeline has been observed to abort the entire WebProcess outright
+/// on some builds/environments (not just reject the `.play()` promise,
+/// which `sound-player.ts` could otherwise catch and fall back from), so
+/// the safest thing is to never invoke it there in the first place.
+#[tauri::command]
+pub fn should_use_native_audio() -> bool {
+    cfg!(target_os = "linux")
+}
+
+/// Playback path for `should_use_native_audio() == true` platforms — see
+/// its doc comment for why the webview's own `<audio>` element isn't used
+/// there at all. Plays `bytes` directly through the system's audio
+/// device, bypassing WebKitGTK's media stack entirely. Fire-and-forget:
+/// spawns its own thread and returns immediately, matching the
+/// fire-and-forget nature of the JS `Audio.play()` call it's standing in
+/// for.
+#[tauri::command]
+pub fn play_audio_bytes_native(bytes: Vec<u8>, volume: f32) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        std::thread::spawn(move || {
+            let (_stream, stream_handle) = match rodio::OutputStream::try_default() {
+                Ok(s) => s,
+                Err(e) => {
+                    log_error(&format!("rodio OutputStream::try_default failed: {}", e));
+                    return;
+                }
+            };
+            let sink = match rodio::Sink::try_new(&stream_handle) {
+                Ok(s) => s,
+                Err(e) => {
+                    log_error(&format!("rodio Sink::try_new failed: {}", e));
+                    return;
+                }
+            };
+            match rodio::Decoder::new(std::io::Cursor::new(bytes)) {
+                Ok(source) => {
+                    sink.set_volume(volume.clamp(0.0, 1.0));
+                    sink.append(source);
+                    sink.sleep_until_end();
+                }
+                Err(e) => log_error(&format!("rodio Decoder::new failed: {}", e)),
+            }
+        });
+        Ok(())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (bytes, volume);
+        Err("native audio playback is only needed on Linux".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

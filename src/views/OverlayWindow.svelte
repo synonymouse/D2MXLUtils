@@ -79,7 +79,20 @@
 
   function addItem(item: ItemDrop, duration: number) {
     const itemWithState: ItemWithState = { ...item, exiting: false };
-    items = [itemWithState, ...items].slice(0, 100);
+    // The backend re-emits `item-drop` for the same ground item on
+    // re-evaluation (e.g. still unpicked a tick later) — prepending
+    // unconditionally left two array entries sharing the same unit_id,
+    // which breaks NotificationStack's keyed `{#each item.unit_id}` and
+    // visually layered two toasts for the same item. Replace in place
+    // instead when one's already showing.
+    const existingIndex = items.findIndex((existing) => existing.unit_id === item.unit_id);
+    if (existingIndex !== -1) {
+      const next = items.slice();
+      next[existingIndex] = itemWithState;
+      items = next;
+    } else {
+      items = [itemWithState, ...items].slice(0, 100);
+    }
 
     const existingTimer = removalTimers.get(item.unit_id);
     if (existingTimer) {

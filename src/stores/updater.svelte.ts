@@ -19,7 +19,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 
-const RELEASES_URL = 'https://github.com/synonymouse/D2MXLUtils/releases/latest';
+const RELEASES_URL = 'https://github.com/pertinate/D2MXLUtils/releases/latest';
 
 export type UpdaterState =
   | { kind: 'idle' }

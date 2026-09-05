@@ -4,6 +4,22 @@ on:
   push:
     tags:
       - "v*.*.*"
+  # Manual test runs (Actions tab, or `gh workflow run release.yml`) with
+  # no tag push required. Note: `github.ref_name` is the branch name in
+  # this case, so `softprops/action-gh-release` creates a tag/release
+  # named after the branch rather than a version — fine for verifying the
+  # pipeline builds/uploads correctly, just delete the resulting tag +
+  # release afterward.
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which platform(s) to build"
+        type: choice
+        options:
+          - both
+          - windows
+          - linux
+        default: both
 
 permissions:
   contents: write
@@ -11,6 +27,9 @@ permissions:
 
 jobs:
   build-and-release:
+    # Real tag pushes always build Windows; a manual workflow_dispatch run
+    # only skips it when explicitly testing Linux alone.
+    if: github.event_name != 'workflow_dispatch' || inputs.target == 'both' || inputs.target == 'windows'
     runs-on: windows-latest
     env:
       HUSKY: 0
@@ -65,20 +84,170 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: D2MXLUtils ${{ github.ref_name }}
+          # `github.ref_name` is only a real version on a tag push; a
+          # `workflow_dispatch` test run fires with a branch name instead,
+          # which `action-gh-release` rejects outright ("requires a tag").
+          # Fall back to a synthetic per-run tag it auto-creates pointing
+          # at the current commit — delete it after testing.
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
+          name: D2MXLUtils ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual test run {0}', github.run_number) }}
           body_path: CHANGES.md
           files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
           draft: false
           prerelease: false
 
       - name: Commit and push changelog
+        # Only for real tag-triggered releases — a manual workflow_dispatch
+        # test run has no new tag/release notes worth persisting, and
+        # skipping this avoids stray changelog commits on `master` from
+        # test runs.
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout master
           cp CHANGELOG.md CHANGELOG.md.new
-          git checkout -- CHANGELOG.md
+          # Discard everything else too, not just CHANGELOG.md — `pnpm
+          # tauri build` above leaves src-tauri/Cargo.toml modified in the
+          # working tree as a side effect, and that stray change (a) has
+          # no business landing in a "docs: update CHANGELOG.md" commit
+          # and (b) confirmed live to make `git rebase` below refuse to
+          # run at all ("cannot rebase: you have unstaged changes").
+          git checkout -- .
           mv CHANGELOG.md.new CHANGELOG.md
           git add CHANGELOG.md
-          git diff --staged --quiet || { git commit -m "docs: update CHANGELOG.md" && git push origin master; }
+          if ! git diff --staged --quiet; then
+            git commit -m "docs: update CHANGELOG.md"
+            # master can easily have moved on by now — this step runs after
+            # the full build, ~5-15 min after checkout — so rebase onto
+            # its current tip before pushing instead of just pushing and
+            # letting a non-fast-forward rejection fail the whole job
+            # (confirmed live: exactly this happened once auto-release.yml
+            # started pushing version-bump commits to master more often).
+            git fetch origin master
+            git rebase origin/master
+            git push origin master
+          fi
+
+  build-and-release-linux:
+    # Runs in parallel with build-and-release (no `needs:` — this job is
+    # entirely self-contained: its own checkout, its own build, its own
+    # release upload. It shares a tag_name with the Windows job but
+    # doesn't consume any output from it; softprops/action-gh-release
+    # safely handles both jobs appending an asset to the same release
+    # concurrently (creates it if it doesn't exist yet, uploads to it if
+    # it does), which is the standard pattern for parallel multi-platform
+    # release jobs.
+    if: github.event_name != 'workflow_dispatch' || inputs.target == 'both' || inputs.target == 'linux'
+    runs-on: ubuntu-latest
+    # Ubuntu 24.04's (`ubuntu-latest`'s host) apt-packaged webkit2gtk-4.1
+    # is several minor versions behind current — bundling it into the
+    # AppImage produced a build that crashed its own GPU/renderer process
+    # on startup ("Could not create default EGL display: EGL_BAD_PARAMETER
+    # Aborting...", page background paints but no content ever does).
+    # Building inside an Arch container instead bundles the same
+    # webkit2gtk-4.1 (2.52.x) already verified working via a local,
+    # unbundled build on Arch — confirmed the container's version, not
+    # anything in our own build steps, was the actual cause.
+    container:
+      image: archlinux:base-devel
+    env:
+      HUSKY: 0
+      # linuxdeploy bundles an older `strip` that can't parse the
+      # `.relr.dyn` ELF section newer toolchains emit by default, which
+      # made it fail on every bundled .so — see the AppImage packaging
+      # notes for the full story. Skipping strip just makes the AppImage
+      # a bit larger.
+      NO_STRIP: 1
+      # linuxdeploy/appimagetool are themselves AppImages, which need FUSE
+      # to mount — not available in a container without extra privileges.
+      # This makes them extract-and-run instead.
+      APPIMAGE_EXTRACT_AND_RUN: 1
+
+    steps:
+      # `actions/checkout` needs git, which isn't part of `base-devel`;
+      # everything else it and the later JS-based actions
+      # (`pnpm/action-setup`, `actions/setup-node`) need, they bring with
+      # them via the runner's own bundled Node.js, not the container image.
+      - name: Install git
+        run: pacman -Sy --noconfirm --needed git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            webkit2gtk-4.1 \
+            gtk3 \
+            gdk-pixbuf2 \
+            librsvg \
+            patchelf \
+            openssl \
+            file \
+            alsa-lib \
+            fuse2 \
+            curl \
+            wget
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # linuxdeploy's gtk plugin unconditionally `cp`s
+      # /usr/lib/gdk-pixbuf-2.0/2.10.0 into the AppDir and treats a
+      # missing source directory as fatal. Modern Arch's gdk-pixbuf2
+      # (2.44.7 here) has no separate loader .so files at all anymore —
+      # PNG/JPEG/etc. support is compiled directly into
+      # libgdk_pixbuf-2.0.so — so that directory legitimately doesn't
+      # exist, not because anything is missing. An empty stand-in
+      # satisfies the plugin's `cp` (nothing needs copying, the app
+      # doesn't depend on loader modules that no longer exist).
+      - name: Work around linuxdeploy gtk plugin expecting old-style gdk-pixbuf loaders
+        run: mkdir -p /usr/lib/gdk-pixbuf-2.0/2.10.0/loaders
+
+      - name: Build Tauri app (AppImage)
+        # --verbose: tauri's own summarized "failed to run linuxdeploy"
+        # error hides the actual failing subprocess/step (gtk plugin,
+        # patchelf, etc.) — verbose mode is what surfaced the real cause
+        # ("Error: patchelf not found") the last time this exact
+        # summarized error showed up, during local debugging.
+        run: pnpm tauri build --target x86_64-unknown-linux-gnu --bundles appimage --verbose
+
+      - name: Rename AppImage to match Windows binary naming
+        # Tauri names the bundle after productName + version + arch (e.g.
+        # "D2MXLUtils_1.26.18_amd64.AppImage"); the Windows job instead
+        # uploads the raw binary as-built ("d2mxlutils.exe"). Rename here so
+        # both release assets share the same plain "d2mxlutils" base name —
+        # keeping the conventional ".AppImage" capitalization (not
+        # lowercased) since updater.rs's Linux asset matcher checks for
+        # that exact extension casing.
+        run: |
+          bundle_dir=src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage
+          appimage=$(find "$bundle_dir" -maxdepth 1 -name '*.AppImage' -print -quit)
+          mv "$appimage" "$bundle_dir/d2mxlutils.AppImage"
+
+      - name: Upload AppImage to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          # Same tag as the Windows job's release step, so this appends to
+          # the release it just created rather than trying to make a new
+          # one — see that step's comment for why the fallback exists.
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
+          files: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/d2mxlutils.AppImage
+          draft: false
+          prerelease: false

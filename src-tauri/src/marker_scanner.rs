@@ -2,7 +2,7 @@
 //! `MapMarkerManager` exclusively. Reads cached filter decisions via snapshot
 //! to keep the items thread unblocked and avoid duplicate rule matching.
 
-#![cfg(target_os = "windows")]
+#![cfg(any(target_os = "windows", target_os = "linux"))]
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;

@@ -1,15 +1,21 @@
 //! State shared by the items and marker scanner threads. Wrap-once at
 //! startup, clone the outer `Arc` per thread. `injector` and
 //! `recent_events` locks must never be held simultaneously.
-
-#![cfg(target_os = "windows")]
+//!
+//! `hovered_item_hook` and `dps_hook` are inline-code-hooking subsystems,
+//! both ported to Linux (see `dps_hook/mod.rs`'s and `hovered_item.rs`'s
+//! `ProcessRef`-based splits). Everything else here is OS-agnostic once
+//! `process.rs`/`injection.rs` provide a `D2Context`/`D2Injector` for the
+//! current OS.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::dps_hook::DpsHook;
 use crate::dps_meter::DpsMeter;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::hovered_item::HoveredItemHook;
 use crate::injection::D2Injector;
 use crate::notifier::ItemDropEvent;
@@ -59,17 +65,34 @@ pub struct SharedScannerState {
     /// of tick.
     pub clear_markers: AtomicBool,
     pub stop: AtomicBool,
+    /// Set by the `refresh_game_data_caches` command; the items thread
+    /// swap-clears it at top of tick and rebuilds class/unique/set caches
+    /// plus the weapon-base catalog from current game memory. Lets a
+    /// stale-cache recovery (e.g. after an MXL content patch) happen
+    /// without an app restart.
+    pub refresh_requested: AtomicBool,
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub dps_hook: Arc<DpsHook>,
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub hovered_item_hook: Arc<HoveredItemHook>,
     pub dps_meter: Arc<RwLock<DpsMeter>>,
     /// Last observed `*pAutomapLayer`. Sentinel `-1` = uninitialised
     /// (first read records, doesn't reset). `i64` so any 32-bit pointer
     /// value (incl. 0) round-trips losslessly.
     pub last_area_token: AtomicI64,
+    /// Local unique/set roll-range template DB — see `unique_stats_db.rs`.
+    /// Empty (not an `Option`) when no local DB file was found, so lookups
+    /// are just always-miss rather than needing an extra `is_some` check
+    /// at every call site.
+    pub unique_stats_db: crate::unique_stats_db::UniqueStatsDb,
 }
 
 impl SharedScannerState {
-    pub fn new(ctx: D2Context, injector: D2Injector) -> Self {
+    pub fn new(
+        ctx: D2Context,
+        injector: D2Injector,
+        unique_stats_db: crate::unique_stats_db::UniqueStatsDb,
+    ) -> Self {
         Self {
             ctx: Arc::new(ctx),
             injector: Arc::new(Mutex::new(injector)),
@@ -80,10 +103,14 @@ impl SharedScannerState {
             recent_bfs_items: RwLock::new(HashMap::new()),
             clear_markers: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            refresh_requested: AtomicBool::new(false),
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             dps_hook: Arc::new(DpsHook::new()),
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             hovered_item_hook: Arc::new(HoveredItemHook::new()),
             dps_meter: Arc::new(RwLock::new(DpsMeter::new())),
             last_area_token: AtomicI64::new(-1),
+            unique_stats_db,
         }
     }
 

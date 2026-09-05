@@ -16,7 +16,7 @@
 //! [`ValidationError::Warning`] but do not abort parsing, so an editor can
 //! still render and reason about partially-typed rules.
 
-use super::{FilterConfig, ItemQuality, ItemTier, NotifyColor, Rule, Visibility};
+use super::{FilterConfig, ItemQuality, ItemTier, NotifyColor, PlayerClass, Rule, Visibility};
 use serde::{Deserialize, Serialize};
 
 // =====================================================================
@@ -63,7 +63,13 @@ struct Attrs {
     qualities: Option<Vec<ItemQuality>>,
     tiers: Option<Vec<ItemTier>>,
     sockets: Option<Vec<u8>>,
+    classes: Option<Vec<PlayerClass>>,
+    min_clvl: Option<u32>,
+    max_clvl: Option<u32>,
+    min_ilvl: Option<u32>,
+    max_ilvl: Option<u32>,
     ethereal: Option<bool>,
+    quest: Option<bool>,
     visibility: Option<Visibility>,
     color: Option<NotifyColor>,
     sound: Option<u8>,
@@ -86,8 +92,26 @@ impl Attrs {
         if let Some(ref s) = self.sockets {
             rule.sockets = s.clone();
         }
+        if let Some(ref c) = self.classes {
+            rule.classes = c.clone();
+        }
+        if let Some(n) = self.min_clvl {
+            rule.min_clvl = Some(n);
+        }
+        if let Some(n) = self.max_clvl {
+            rule.max_clvl = Some(n);
+        }
+        if let Some(n) = self.min_ilvl {
+            rule.min_ilvl = Some(n);
+        }
+        if let Some(n) = self.max_ilvl {
+            rule.max_ilvl = Some(n);
+        }
         if let Some(e) = self.ethereal {
             rule.ethereal = e;
+        }
+        if let Some(q) = self.quest {
+            rule.quest = q;
         }
         if let Some(v) = self.visibility {
             rule.visibility = v;
@@ -124,8 +148,26 @@ impl Attrs {
         if self.sockets.is_none() {
             self.sockets = group.sockets.clone();
         }
+        if self.classes.is_none() {
+            self.classes = group.classes.clone();
+        }
+        if self.min_clvl.is_none() {
+            self.min_clvl = group.min_clvl;
+        }
+        if self.max_clvl.is_none() {
+            self.max_clvl = group.max_clvl;
+        }
+        if self.min_ilvl.is_none() {
+            self.min_ilvl = group.min_ilvl;
+        }
+        if self.max_ilvl.is_none() {
+            self.max_ilvl = group.max_ilvl;
+        }
         if self.ethereal.is_none() {
             self.ethereal = group.ethereal;
+        }
+        if self.quest.is_none() {
+            self.quest = group.quest;
         }
         if self.visibility.is_none() {
             self.visibility = group.visibility;
@@ -258,8 +300,10 @@ pub fn parse_dsl(text: &str) -> Result<FilterConfig, Vec<ParseError>> {
                     let mut fresh = Rule::default();
                     fresh.name_pattern = rule.name_pattern.take();
                     merged.apply_to(&mut fresh);
+                    fresh.source_line = line_num;
                     rules.push(fresh);
                 } else {
+                    rule.source_line = line_num;
                     rules.push(rule);
                 }
             }
@@ -530,6 +574,13 @@ fn parse_attrs_into(
             }
             continue;
         }
+        if let Some(c) = PlayerClass::from_str(&lower) {
+            let set = attrs.classes.get_or_insert_with(Vec::new);
+            if !set.contains(&c) {
+                set.push(c);
+            }
+            continue;
+        }
         if let Some(n) = parse_socket_keyword(&lower) {
             let set = attrs.sockets.get_or_insert_with(Vec::new);
             if !set.contains(&n) {
@@ -537,9 +588,22 @@ fn parse_attrs_into(
             }
             continue;
         }
+        if let Some(tok) = parse_level_keyword(&lower) {
+            match tok {
+                LevelToken::MinClvl(n) => attrs.min_clvl = Some(n),
+                LevelToken::MaxClvl(n) => attrs.max_clvl = Some(n),
+                LevelToken::MinIlvl(n) => attrs.min_ilvl = Some(n),
+                LevelToken::MaxIlvl(n) => attrs.max_ilvl = Some(n),
+            }
+            continue;
+        }
         match lower.as_str() {
             "eth" => {
                 attrs.ethereal = Some(true);
+                continue;
+            }
+            "quest" => {
+                attrs.quest = Some(true);
                 continue;
             }
             "show" => {
@@ -595,6 +659,33 @@ fn parse_socket_keyword(lower: &str) -> Option<u8> {
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LevelToken {
+    MinClvl(u32),
+    MaxClvl(u32),
+    MinIlvl(u32),
+    MaxIlvl(u32),
+}
+
+/// `min_clvl<N>` / `max_clvl<N>` (character level) and `min_ilvl<N>` /
+/// `max_ilvl<N>` (item level) — numeric-suffix keywords, same shape as
+/// `sound<N>`/`sockets<N>`.
+fn parse_level_keyword(lower: &str) -> Option<LevelToken> {
+    if let Some(rest) = lower.strip_prefix("min_clvl") {
+        return rest.parse().ok().map(LevelToken::MinClvl);
+    }
+    if let Some(rest) = lower.strip_prefix("max_clvl") {
+        return rest.parse().ok().map(LevelToken::MaxClvl);
+    }
+    if let Some(rest) = lower.strip_prefix("min_ilvl") {
+        return rest.parse().ok().map(LevelToken::MinIlvl);
+    }
+    if let Some(rest) = lower.strip_prefix("max_ilvl") {
+        return rest.parse().ok().map(LevelToken::MaxIlvl);
+    }
+    None
 }
 
 fn parse_group_open(trimmed: &str) -> Option<&str> {
@@ -732,7 +823,17 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
         } else {
             Some(rule.sockets.clone())
         },
+        classes: if rule.classes.is_empty() {
+            None
+        } else {
+            Some(rule.classes.clone())
+        },
+        min_clvl: rule.min_clvl,
+        max_clvl: rule.max_clvl,
+        min_ilvl: rule.min_ilvl,
+        max_ilvl: rule.max_ilvl,
         ethereal: if rule.ethereal { Some(true) } else { None },
+        quest: if rule.quest { Some(true) } else { None },
         visibility: if rule.visibility == Visibility::Default {
             None
         } else {
@@ -784,14 +885,16 @@ fn validate_tokens(
 fn is_known_token(lower: &str) -> bool {
     if ItemQuality::from_str(lower).is_some()
         || ItemTier::from_str(lower).is_some()
+        || PlayerClass::from_str(lower).is_some()
         || NotifyColor::from_str(lower).is_some()
         || parse_socket_keyword(lower).is_some()
+        || parse_level_keyword(lower).is_some()
     {
         return true;
     }
     matches!(
         lower,
-        "eth" | "show" | "hide" | "notify" | "stat" | "sound_none" | "map"
+        "eth" | "quest" | "show" | "hide" | "notify" | "stat" | "sound_none" | "map"
     ) || parse_sound_keyword(lower).is_some()
 }
 
@@ -994,6 +1097,9 @@ fn rule_subsumes(later: &Rule, earlier: &Rule) -> bool {
     if later.ethereal && !earlier.ethereal {
         return false;
     }
+    if later.quest && !earlier.quest {
+        return false;
+    }
     if let Some(ref l) = later.name_pattern {
         match &earlier.name_pattern {
             Some(e) if e == l => {}
@@ -1056,6 +1162,15 @@ mod tests {
         assert_eq!(r.qualities, vec![ItemQuality::Unique]);
         assert_eq!(r.color, Some(NotifyColor::Gold));
         assert!(!r.notify);
+    }
+
+    #[test]
+    fn parses_quest_keyword() {
+        let cfg = parse_dsl("quest orange notify").unwrap();
+        assert_eq!(cfg.rules.len(), 1);
+        let r = &cfg.rules[0];
+        assert!(r.quest);
+        assert_eq!(r.color, Some(NotifyColor::Orange));
     }
 
     #[test]

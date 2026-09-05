@@ -1,7 +1,9 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import { RulesEditor, type ValidationResult } from '../editor';
-  import { ProfileSelector } from '../components';
+  import { ProfileSelector, Toggle } from '../components';
   import { settingsStore } from '../stores';
 
   type SaveState = 'saved' | 'unsaved' | 'invalid' | 'saving' | 'error';
@@ -18,6 +20,45 @@
   let saveError = $state<string | null>(null);
   let lastSavedText = $state('');
   let inflightSave: Promise<void> | null = null;
+
+  // "Show matches" live highlight — not persisted, resets to off whenever
+  // this tab (re)mounts.
+  let showMatches = $state(false);
+  let rulesEditorRef: RulesEditor;
+
+  async function handleShowMatchesChange(enabled: boolean) {
+    showMatches = enabled;
+    try {
+      await invoke('set_live_match_highlight', { enabled });
+    } catch (e) {
+      console.error('[LootFilterTab] Failed to toggle live match highlight:', e);
+    }
+  }
+
+  $effect(() => {
+    if (!showMatches) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    listen<number[]>('filter-rule-matched', (event) => {
+      rulesEditorRef?.flashLines(
+        event.payload,
+        settingsStore.settings.liveMatchHighlightDurationMs,
+      );
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  });
+
+  onDestroy(() => {
+    if (showMatches) {
+      invoke('set_live_match_highlight', { enabled: false }).catch(() => {});
+    }
+  });
 
   async function syncFilterConfig() {
     try {
@@ -160,6 +201,14 @@
 
   // handleProfileLoad covers everything; this callback is just API plumbing.
   function handleProfileSelect(_profile: { name: string } | null) {}
+
+  function handleFoldsChange(lines: number[]) {
+    if (!selectedProfile) return;
+    settingsStore.set('foldedLines', {
+      ...settingsStore.settings.foldedLines,
+      [selectedProfile]: lines,
+    });
+  }
 </script>
 
 <section class="loot-filter-tab">
@@ -188,6 +237,13 @@
     </div>
 
     <div class="header-actions">
+      <span
+        class="show-matches-toggle"
+        title="Flash the rule line that decided each drop as it happens"
+      >
+        <Toggle checked={showMatches} label="Show matches" onchange={handleShowMatchesChange} />
+      </span>
+
       {#if saveState === 'error'}
         <button
           type="button"
@@ -227,10 +283,13 @@
 
   <div class="editor-container">
     <RulesEditor
+      bind:this={rulesEditorRef}
       bind:value={dslText}
       onchange={handleChange}
       onsave={handleSave}
       onvalidate={handleValidation}
+      initialFoldedLines={settingsStore.settings.foldedLines[selectedProfile] ?? []}
+      onFoldsChange={handleFoldsChange}
     />
   </div>
 
@@ -240,8 +299,8 @@
       <div class="help-content">
         <p>Rule format (all parts optional — rules are matched last-wins):</p>
         <code
-          >["name"] [quality] [tier] [sockets] [eth] &#123;stat&#125; [color] [show|hide] [sound]
-          [notify] [stat] [map]</code
+          >["name"] [quality] [tier] [sockets] [level] [class] [eth] &#123;stat&#125; [color]
+          [show|hide] [sound] [notify] [stat] [map]</code
         >
 
         <div class="help-columns">
@@ -293,6 +352,42 @@
           </div>
 
           <div class="help-column">
+            <h4>Level</h4>
+            <ul>
+              <li>
+                <span class="kw-level">min_clvl20</span>,
+                <span class="kw-level">max_clvl99</span> (char level)
+              </li>
+              <li>
+                <span class="kw-level">min_ilvl40</span>,
+                <span class="kw-level">max_ilvl99</span> (item level)
+              </li>
+            </ul>
+          </div>
+
+          <div class="help-column">
+            <h4>Class</h4>
+            <ul>
+              <li>
+                <span class="kw-class">amazon</span> (<span class="kw-class">zon</span>),
+                <span class="kw-class">sorceress</span> (<span class="kw-class">sorc</span>)
+              </li>
+              <li>
+                <span class="kw-class">necromancer</span> (<span class="kw-class">necro</span>),
+                <span class="kw-class">paladin</span> (<span class="kw-class">pal</span>,
+                <span class="kw-class">pally</span>)
+              </li>
+              <li>
+                <span class="kw-class">barbarian</span> (<span class="kw-class">barb</span>),
+                <span class="kw-class">druid</span> (<span class="kw-class">dru</span>)
+              </li>
+              <li>
+                <span class="kw-class">assassin</span> (<span class="kw-class">sin</span>)
+              </li>
+            </ul>
+          </div>
+
+          <div class="help-column">
             <h4>Colors</h4>
             <ul>
               <li>
@@ -339,6 +434,7 @@
 
         <p class="help-note">
           <strong><span class="kw-ethereal">eth</span></strong> — match ethereal items only<br />
+          <strong><span class="kw-ethereal">quest</span></strong> — match quest items only<br />
           <strong><span class="kw-notification">stat</span></strong> — include item stats in the
           notification<br />
           <strong><span class="kw-notification">map</span></strong> — drop a red-cross marker on the
@@ -392,6 +488,13 @@
     display: flex;
     align-items: center;
     gap: var(--space-2, 8px);
+  }
+
+  .show-matches-toggle {
+    display: inline-flex;
+    align-items: center;
+    font-size: var(--text-xs, 12px);
+    color: var(--text-secondary);
   }
 
   .default-mode-badge {
@@ -603,6 +706,14 @@
     color: #7caa70;
     font-weight: 600;
   }
+  .kw-class {
+    color: #f07178;
+    font-weight: 600;
+  }
+  .kw-level {
+    color: #82aaff;
+    font-weight: 600;
+  }
 
   :global([data-theme='light']) .kw-quality {
     color: #555555;
@@ -627,6 +738,12 @@
   }
   :global([data-theme='light']) .kw-stat {
     color: #116611;
+  }
+  :global([data-theme='light']) .kw-class {
+    color: #c2185b;
+  }
+  :global([data-theme='light']) .kw-level {
+    color: #1565c0;
   }
 
   /* Literal color swatches: each color name is rendered in its own color

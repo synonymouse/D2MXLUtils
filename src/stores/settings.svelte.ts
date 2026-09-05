@@ -73,10 +73,30 @@ export interface AppSettings {
   lootHistoryHotkey: HotkeyConfig;
   /** Hotkey to open the in-game MXL item search overlay */
   itemSearchHotkey: HotkeyConfig;
+  /** Hotkey that autofills the create-game Name/Password/Description
+   *  fields via synthesized keystrokes. Click into the Game Name field
+   *  first; Tab order fills the rest. */
+  gameCreateAutofillHotkey: HotkeyConfig;
+  /** Combined with an in-memory (not persisted) auto-increment counter:
+   *  game name = `{prefix}{index}`. */
+  gameCreateNamePrefix: string;
+  /** Fixed password, used when gameCreatePasswordUsePrefix is off. */
+  gameCreatePassword: string;
+  /** Combined with the same counter as the name when
+   *  gameCreatePasswordUsePrefix is on: `{prefix}{index}`. */
+  gameCreatePasswordPrefix: string;
+  gameCreatePasswordUsePrefix: boolean;
+  gameCreateDescription: string;
   /** When true, scanner logs per-item filter decisions (noisy; opt-in debug). */
   verboseFilterLogging: boolean;
+  /** How long the Loot Filter tab's "show matches" mode keeps a rule line
+   *  flashed after it decides a drop, in milliseconds. */
+  liveMatchHighlightDurationMs: number;
   autoAlwaysShowItems: boolean;
   autoNoPickup: boolean;
+  /** Whether to show the "Items hidden — press Alt" overlay indicator
+   *  when the in-game item highlight toggle is off. */
+  showItemsHiddenIndicator: boolean;
   /** Per-slot drop sounds. Slot index = position + 1.
    *  Played gain = `soundVolume * slot.volume`. */
   sounds: SoundSlot[];
@@ -86,6 +106,9 @@ export interface AppSettings {
   /** Centralized positions for overlay widgets/windows, keyed by id.
    *  See `src/lib/overlay-widgets.ts`. Percent of overlay size. */
   widgetPositions: Record<string, WidgetPosition>;
+  /** Collapsed group-rule line numbers in the Loot Filter editor, keyed by
+   *  profile name, so folds survive switching tabs and restarting the app. */
+  foldedLines: Record<string, number[]>;
 }
 
 /** Window state interface */
@@ -129,6 +152,12 @@ const DEFAULT_ITEM_SEARCH_HOTKEY: HotkeyConfig = {
   display: 'Alt+F',
 };
 
+const DEFAULT_GAME_CREATE_AUTOFILL_HOTKEY: HotkeyConfig = {
+  keyCode: 0,
+  modifiers: 0,
+  display: 'None',
+};
+
 function defaultSounds(): SoundSlot[] {
   return Array.from({ length: 7 }, (_, i) => ({
     label: `Sound ${i + 1}`,
@@ -153,9 +182,17 @@ const DEFAULT_SETTINGS: AppSettings = {
   revealHiddenHotkey: DEFAULT_REVEAL_HIDDEN_HOTKEY,
   lootHistoryHotkey: DEFAULT_LOOT_HISTORY_HOTKEY,
   itemSearchHotkey: DEFAULT_ITEM_SEARCH_HOTKEY,
+  gameCreateAutofillHotkey: DEFAULT_GAME_CREATE_AUTOFILL_HOTKEY,
+  gameCreateNamePrefix: '',
+  gameCreatePassword: '',
+  gameCreatePasswordPrefix: '',
+  gameCreatePasswordUsePrefix: false,
+  gameCreateDescription: '',
   verboseFilterLogging: false,
+  liveMatchHighlightDurationMs: 900,
   autoAlwaysShowItems: true,
   autoNoPickup: true,
+  showItemsHiddenIndicator: true,
   sounds: defaultSounds(),
   goblinAlertSlot: null,
   dpsMeter: {
@@ -163,6 +200,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     hotkeyReset: null,
   },
   widgetPositions: {},
+  foldedLines: {},
 };
 
 /** Settings store singleton */
@@ -420,6 +458,79 @@ class SettingsStore {
     } catch (error) {
       console.error('[Settings] Failed to update item-search hotkey:', error);
     }
+  }
+
+  get gameCreateAutofillHotkey(): HotkeyConfig {
+    return this._settings.gameCreateAutofillHotkey;
+  }
+
+  get gameCreateNamePrefix(): string {
+    return this._settings.gameCreateNamePrefix;
+  }
+
+  get gameCreatePassword(): string {
+    return this._settings.gameCreatePassword;
+  }
+
+  get gameCreatePasswordPrefix(): string {
+    return this._settings.gameCreatePasswordPrefix;
+  }
+
+  get gameCreatePasswordUsePrefix(): boolean {
+    return this._settings.gameCreatePasswordUsePrefix;
+  }
+
+  get gameCreateDescription(): string {
+    return this._settings.gameCreateDescription;
+  }
+
+  /** The backend watcher needs the whole bundle together on every change
+   *  (name/password are built from the same shared index at fire time). */
+  private async syncGameCreateAutofill(): Promise<void> {
+    try {
+      await invoke('update_game_create_autofill_hotkey', {
+        config: {
+          hotkey: this._settings.gameCreateAutofillHotkey,
+          namePrefix: this._settings.gameCreateNamePrefix,
+          password: this._settings.gameCreatePassword,
+          passwordPrefix: this._settings.gameCreatePasswordPrefix,
+          passwordUsePrefix: this._settings.gameCreatePasswordUsePrefix,
+          description: this._settings.gameCreateDescription,
+        },
+      });
+    } catch (error) {
+      console.error('[Settings] Failed to update game-create autofill config:', error);
+    }
+  }
+
+  async setGameCreateAutofillHotkey(hotkey: HotkeyConfig): Promise<void> {
+    this.set('gameCreateAutofillHotkey', hotkey);
+    await this.syncGameCreateAutofill();
+  }
+
+  async setGameCreateNamePrefix(value: string): Promise<void> {
+    this.set('gameCreateNamePrefix', value);
+    await this.syncGameCreateAutofill();
+  }
+
+  async setGameCreatePassword(value: string): Promise<void> {
+    this.set('gameCreatePassword', value);
+    await this.syncGameCreateAutofill();
+  }
+
+  async setGameCreatePasswordPrefix(value: string): Promise<void> {
+    this.set('gameCreatePasswordPrefix', value);
+    await this.syncGameCreateAutofill();
+  }
+
+  async setGameCreatePasswordUsePrefix(value: boolean): Promise<void> {
+    this.set('gameCreatePasswordUsePrefix', value);
+    await this.syncGameCreateAutofill();
+  }
+
+  async setGameCreateDescription(value: string): Promise<void> {
+    this.set('gameCreateDescription', value);
+    await this.syncGameCreateAutofill();
   }
 
   setDpsMeterEnabled(enabled: boolean): void {

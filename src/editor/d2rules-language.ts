@@ -14,6 +14,8 @@ export const d2rulesTags = {
   directive: Tag.define(),
   groupBracket: Tag.define(),
   unknown: Tag.define(),
+  class: Tag.define(),
+  level: Tag.define(),
 };
 
 const QUALITY_KEYWORDS = [
@@ -67,8 +69,36 @@ function isSoundKeyword(word: string): boolean {
   return SOUND_KEYWORD_REGEX.test(word);
 }
 const DISPLAY_KEYWORDS = ['stat'];
-const MODIFIER_KEYWORDS = ['eth'];
+const MODIFIER_KEYWORDS = ['eth', 'quest'];
 const MAP_KEYWORDS = ['map'];
+
+/** Character class keywords + their short aliases (docs/filter_spec/loot-filter-dsl.md). */
+const CLASS_KEYWORDS = [
+  'amazon',
+  'zon',
+  'sorceress',
+  'sorc',
+  'necromancer',
+  'necro',
+  'paladin',
+  'pal',
+  'pally',
+  'barbarian',
+  'barb',
+  'druid',
+  'dru',
+  'assassin',
+  'sin',
+];
+
+/** Bare prefixes for `min_clvl<N>` / `max_clvl<N>` / `min_ilvl<N>` /
+ *  `max_ilvl<N>` — numeric-suffix keywords, same shape as `sound<N>`. */
+const LEVEL_KEYWORD_PREFIXES = ['min_clvl', 'max_clvl', 'min_ilvl', 'max_ilvl'];
+const LEVEL_KEYWORD_REGEX = /^(min|max)_(clvl|ilvl)\d+$/;
+
+function isLevelKeyword(word: string): boolean {
+  return LEVEL_KEYWORD_REGEX.test(word);
+}
 
 const d2rulesLanguage = StreamLanguage.define({
   name: 'd2rules',
@@ -87,6 +117,8 @@ const d2rulesLanguage = StreamLanguage.define({
     directive: d2rulesTags.directive,
     unknown: d2rulesTags.unknown,
     groupBracket: d2rulesTags.groupBracket,
+    class: d2rulesTags.class,
+    level: d2rulesTags.level,
   },
 
   token(stream) {
@@ -195,6 +227,12 @@ const d2rulesLanguage = StreamLanguage.define({
       // Sound keywords
       if (isSoundKeyword(word)) return 'keyword sound';
 
+      // Character class keywords (and short aliases)
+      if (CLASS_KEYWORDS.includes(word)) return 'keyword class';
+
+      // Character/item level keywords (min_clvl<N>, max_clvl<N>, min_ilvl<N>, max_ilvl<N>)
+      if (isLevelKeyword(word)) return 'keyword level';
+
       // Display keywords
       if (DISPLAY_KEYWORDS.includes(word)) return 'keyword display';
 
@@ -226,3 +264,41 @@ export function d2rules(): LanguageSupport {
 }
 
 export { d2rulesLanguage };
+
+export type SyntaxKeywordCategory =
+  | 'tier'
+  | 'quality'
+  | 'socket'
+  | 'color'
+  | 'visibility'
+  | 'notify'
+  | 'display'
+  | 'modifier'
+  | 'map'
+  | 'directive'
+  | 'class'
+  | 'level';
+
+export interface SyntaxKeywordEntry {
+  label: string;
+  category: SyntaxKeywordCategory;
+}
+
+/** Bare DSL keywords (outside quoted item-name patterns) offered by autocomplete. */
+export const SYNTAX_KEYWORDS: SyntaxKeywordEntry[] = [
+  ...QUALITY_KEYWORDS.map((label) => ({ label, category: 'quality' as const })),
+  ...TIER_KEYWORDS.filter((label) => !/^\d+$/.test(label)).map((label) => ({
+    label,
+    category: 'tier' as const,
+  })),
+  ...SOCKET_KEYWORDS.map((label) => ({ label, category: 'socket' as const })),
+  ...COLOR_KEYWORDS.map((label) => ({ label, category: 'color' as const })),
+  ...VISIBILITY_KEYWORDS.map((label) => ({ label, category: 'visibility' as const })),
+  ...NOTIFY_KEYWORDS.map((label) => ({ label, category: 'notify' as const })),
+  ...DISPLAY_KEYWORDS.map((label) => ({ label, category: 'display' as const })),
+  ...MODIFIER_KEYWORDS.map((label) => ({ label, category: 'modifier' as const })),
+  ...MAP_KEYWORDS.map((label) => ({ label, category: 'map' as const })),
+  ...CLASS_KEYWORDS.map((label) => ({ label, category: 'class' as const })),
+  ...LEVEL_KEYWORD_PREFIXES.map((label) => ({ label, category: 'level' as const })),
+  { label: 'default', category: 'directive' as const },
+];

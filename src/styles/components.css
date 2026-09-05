@@ -296,6 +296,17 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  /* Confirmed live (console: html.scrollHeight 759 vs clientHeight 509,
+     while every element from here up to #app reported clientHeight ==
+     scrollHeight and overflow:hidden/auto as declared): WebKitGTK isn't
+     fully containing this flex:1 + overflow:auto scroll region — long
+     tab content (e.g. Sounds with many slots) leaks its real height all
+     the way to the document root despite every ancestor's overflow:hidden
+     already being correctly applied and computed. `contain: layout`
+     forces this element's internal layout to never affect anything
+     outside it, which is the direct fix for content escaping
+     containment despite overflow being set correctly. */
+  contain: layout;
 }
 
 .settings-section {
@@ -304,6 +315,13 @@
   background: var(--bg-secondary);
   border: 1px solid var(--border-primary);
   border-radius: var(--radius-lg);
+}
+
+/* Trailing margin inside a scrollable .tab-content has nothing after it
+   to collapse against, so it just shows up as dead space at the very
+   bottom of the page. */
+.settings-section:last-child {
+  margin-bottom: 0;
 }
 
 .section-title {

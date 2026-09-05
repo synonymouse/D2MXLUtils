@@ -5,37 +5,39 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::atomic::Ordering;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::d2types::{ItemData, ScannedItem, UnitAny};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::hook_bit_tracker::{
     HookBitTracker, HookCleanupFailureLogThrottle, PendingVisibilityMaskOps,
 };
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::injection::D2Injector;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::logger::{error as log_error, info as log_info};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::loot_filter_hook::{visibility_mask_ops, LootFilterHook, VisibilityMaskOp};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::offsets::{
     d2client, d2common, d2sigma, data_tables, inventory, item_data, item_quality, items_txt, paths,
-    set_items_txt, unique_items_txt, unit, unit_type,
+    set_items_txt, stat_list, unique_items_txt, unit, unit_type,
 };
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::process::D2Context;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::rules::{FilterConfig, MatchContext, PartialFilterDecision, Visibility};
 use crate::rules::{ItemTier, Notification};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::scanner_state::{BfsItemCandidate, CachedFilterDecision, SharedScannerState};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use tauri::{AppHandle, Manager};
 
 /// MonStats.txt class IDs that count as "goblins" for the alert sound.
 /// Ported verbatim from `D2Stats.au3:$g_goblinIds`.
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const GOBLIN_CLASS_IDS: &[u32] = &[
     2774, 2775, 2776, 2779, 2780, 2781, 2784, 2785, 2786, 2787, 2788, 2789, 2790, 2791, 2792, 2793,
     2794, 2795, 2799, 2802, 2803, 2805,
@@ -90,6 +92,17 @@ pub struct ItemDropEvent {
     pub unique_kind: Option<UniqueKind>,
     #[serde(default, skip_serializing_if = "is_zero_u8")]
     pub sockets: u8,
+    /// Character level of the player at the moment this item dropped.
+    /// Sampled once per scan tick (`STAT_LEVEL`), not per item.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub clvl: u32,
+    /// Item level (`dwItemLevel`), read directly from `ItemData`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub ilvl: u32,
+    /// Player's character class id (`UnitAny.class`, 0=Amazon..6=Assassin).
+    /// Sampled once per scan tick, same cadence as `clvl`.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub player_class: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filter: Option<Notification>,
 }
@@ -103,7 +116,7 @@ fn is_zero_u8(v: &u8) -> bool {
 }
 
 /// Drop scanner that iterates through ground items
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub struct DropScanner {
     /// Shared state bundle (ctx, injector, filter_config, recent_events).
     /// Owned by this thread; Arc cloned to marker thread in Task 5.
@@ -112,6 +125,13 @@ pub struct DropScanner {
     seen_items: HashSet<u32>,
     /// When true, log per-item filter decisions (opt-in; noisy).
     verbose_filter_logging: bool,
+    /// When true, record the source line of every rule that decides an
+    /// item's outcome so the editor can flash it (opt-in; the Loot Filter
+    /// tab's "show matches" mode).
+    live_match_highlight: bool,
+    /// Rule source lines matched since the last drain, deduped in-order.
+    /// Drained by the main loop into `filter-rule-matched` events.
+    pending_matched_lines: Vec<usize>,
     /// Loot filter hook for D2Sigma.dll
     loot_hook: LootFilterHook,
     /// Indexed by `UnitAny.class`. Built lazily on first in-game tick.
@@ -139,29 +159,35 @@ pub struct DropScanner {
     /// loop into `goblin-detected` events. Same pattern as `last_pickup_updates`.
     last_goblin_events: Vec<GoblinDetectedEvent>,
     debug_get_item_stats_calls: u64,
+    /// Player's character level (`STAT_LEVEL`), refreshed once per
+    /// `tick_items` call rather than per item — see that fn.
+    char_level: u32,
+    /// Player's character class id (`UnitAny.class`), refreshed alongside
+    /// `char_level`.
+    player_class: u32,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const MISSED_TICKS_BEFORE_BIT_CLEAR: u8 = 2;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const HOOK_CLEANUP_FAILURE_LOG_SUPPRESSED_TICKS: u32 = 166;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const MAX_ITEM_SCAN_PATHS: usize = 1024;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const MAX_ITEM_SCAN_UNITS_PER_PATH: usize = 4096;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn capped_item_scan_path_count(i_paths: usize) -> (usize, bool) {
     let capped = i_paths.min(MAX_ITEM_SCAN_PATHS);
     (capped, i_paths > capped)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn item_scan_unit_index_in_bounds(index: usize) -> bool {
     index < MAX_ITEM_SCAN_UNITS_PER_PATH
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn should_enrich_bfs_candidate(
     candidate: &BfsItemCandidate,
     current_item_ids: &HashSet<u32>,
@@ -177,7 +203,7 @@ fn should_enrich_bfs_candidate(
     )
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn visibility_mask_op_description(op: VisibilityMaskOp) -> &'static str {
     match op {
         VisibilityMaskOp::SetShow => "force-show",
@@ -187,7 +213,7 @@ fn visibility_mask_op_description(op: VisibilityMaskOp) -> &'static str {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ClassInfo {
     base_name: String,
     category: Option<String>,
@@ -256,10 +282,128 @@ fn classify_unique_kind(
 /// low-tier TUs (e.g. Razordisk on Tier1 Buckler) still get the TU label.
 /// `display_name.is_empty()` marks failed `GetStringById` resolution;
 /// such records are skipped in the autocomplete snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct UniqueInfo {
     display_name: String,
     kind: Option<UniqueKind>,
+}
+
+/// The three live matching caches `DropScanner` builds by walking
+/// items.txt/UniqueItems.txt/SetItems.txt and resolving each record's name
+/// via a `D2Lang.GetStringById` remote call. On Linux those remote calls go
+/// through the ptrace-hijack machinery in `process.rs`, which is far
+/// slower per-call than Windows' `CreateRemoteThread` — building all three
+/// caches from scratch (~2500 + ~1800 + ~330 calls) dominated the 5-10s
+/// startup delay after launching the game. The underlying game data
+/// (item/unique/set names) is static per D2/MXL install, so this is cached
+/// to disk (`matching-cache.json`, see `load_matching_cache`/
+/// `save_matching_cache`) and reused across attaches instead of being
+/// rebuilt from live memory every single time.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct MatchingCache {
+    class_cache: Vec<ClassInfo>,
+    unique_cache: Vec<UniqueInfo>,
+    set_cache: Vec<String>,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const MATCHING_CACHE_FILE: &str = "matching-cache.json";
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const MATCHING_CACHE_SCHEMA_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct MatchingCacheFile {
+    schema: String,
+    cache: MatchingCache,
+    dumped_at: String,
+}
+
+/// Mirrors `weapon_families::load_from_cache`'s pattern (schema-versioned
+/// JSON in the app data dir, `None` on any miss/mismatch so the caller
+/// falls back to a live rebuild).
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub fn load_matching_cache(app: &AppHandle) -> Option<MatchingCache> {
+    let app_data = match app.path().app_data_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            log_error(&format!(
+                "matching cache: failed to resolve app data directory: {}",
+                e
+            ));
+            return None;
+        }
+    };
+
+    let path = app_data.join(MATCHING_CACHE_FILE);
+    if !path.exists() {
+        log_info(&format!("matching cache: no file at {}", path.display()));
+        return None;
+    }
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            log_error(&format!("matching cache: read failed: {}", e));
+            return None;
+        }
+    };
+
+    match serde_json::from_str::<MatchingCacheFile>(&content) {
+        Ok(file) => {
+            if file.schema != MATCHING_CACHE_SCHEMA_VERSION {
+                log_info(&format!(
+                    "matching cache: schema mismatch (file={:?}, app={:?}), ignoring",
+                    file.schema, MATCHING_CACHE_SCHEMA_VERSION
+                ));
+                return None;
+            }
+            log_info(&format!(
+                "matching cache: loaded {} classes + {} uniques + {} set items (dumped at {})",
+                file.cache.class_cache.len(),
+                file.cache.unique_cache.len(),
+                file.cache.set_cache.len(),
+                file.dumped_at
+            ));
+            Some(file.cache)
+        }
+        Err(e) => {
+            log_error(&format!("matching cache: parse failed: {}", e));
+            None
+        }
+    }
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub fn save_matching_cache(app: &AppHandle, cache: &MatchingCache) -> Result<(), String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to get app data directory: {}", e))?;
+
+    if !app_data.exists() {
+        std::fs::create_dir_all(&app_data)
+            .map_err(|e| format!("Failed to create app data directory: {}", e))?;
+    }
+
+    let path = app_data.join(MATCHING_CACHE_FILE);
+    let payload = MatchingCacheFile {
+        schema: MATCHING_CACHE_SCHEMA_VERSION.to_string(),
+        cache: cache.clone(),
+        dumped_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    };
+    let json = serde_json::to_string_pretty(&payload)
+        .map_err(|e| format!("Failed to serialize matching cache: {}", e))?;
+    std::fs::write(&path, json)
+        .map_err(|e| format!("Failed to write matching-cache.json: {}", e))?;
+    log_info(&format!(
+        "matching cache: wrote {} classes + {} uniques + {} set items to {}",
+        cache.class_cache.len(),
+        cache.unique_cache.len(),
+        cache.set_cache.len(),
+        path.display()
+    ));
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -272,7 +416,7 @@ pub struct ItemsDictionary {
     pub set_items: Vec<String>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl DropScanner {
     /// Create a new scanner using the provided shared state.
     /// `ctx` and `injector` are constructed by the caller (main.rs) and
@@ -293,6 +437,8 @@ impl DropScanner {
             state,
             seen_items: HashSet::new(),
             verbose_filter_logging: false,
+            live_match_highlight: false,
+            pending_matched_lines: Vec::new(),
             loot_hook,
             class_cache: None,
             unique_cache: None,
@@ -307,6 +453,8 @@ impl DropScanner {
             seen_goblins: HashSet::new(),
             last_goblin_events: Vec::new(),
             debug_get_item_stats_calls: 0,
+            char_level: 0,
+            player_class: 0,
         })
     }
 
@@ -326,6 +474,10 @@ impl DropScanner {
 
     pub fn set_verbose_filter_logging(&mut self, enabled: bool) {
         self.verbose_filter_logging = enabled;
+    }
+
+    pub fn set_live_match_highlight(&mut self, enabled: bool) {
+        self.live_match_highlight = enabled;
     }
 
     pub fn set_force_show_all(&self, value: bool) -> Result<(), String> {
@@ -543,6 +695,13 @@ impl DropScanner {
                         }
                     }
                 };
+
+                if self.live_match_highlight {
+                    if let Some(line) = decision.matched_line {
+                        self.pending_matched_lines.push(line);
+                    }
+                }
+
                 cached_filter_decision = Some(CachedFilterDecision::from_decision(
                     filter_generation,
                     &decision,
@@ -734,6 +893,27 @@ impl DropScanner {
             Ok(p) if p != 0 => p as usize,
             _ => return events,
         };
+
+        // Sampled once per tick (not per item) — clvl/class don't change
+        // between items in the same scan pass.
+        {
+            let injector = self.state.injector.lock().unwrap();
+            if let Ok(n) = injector.get_unit_stat(
+                &self.state.ctx.process,
+                ptr1 as u32,
+                stat_list::STAT_LEVEL as u32,
+            ) {
+                self.char_level = n;
+            }
+        }
+        if let Ok(class) = self
+            .state
+            .ctx
+            .process
+            .read_memory::<u32>(ptr1 + unit::CLASS)
+        {
+            self.player_class = class;
+        }
 
         let ptr2 = match self
             .state
@@ -1079,12 +1259,28 @@ impl DropScanner {
         self.debug_get_item_stats_calls += 1;
 
         let injector = self.state.injector.lock().unwrap();
-        if let Ok(raw_stats) = injector.get_item_stats(&self.state.ctx.process, p_unit) {
-            let cleaned = strip_color_codes(&raw_stats);
-            if !cleaned.trim().is_empty() {
-                let reversed: Vec<&str> = cleaned.lines().rev().collect();
-                event.stats = Self::format_event_stats(event.sockets, reversed.join("\n"));
-                event.runtime_stats_loaded = true;
+        match injector.get_item_stats(&self.state.ctx.process, p_unit) {
+            Ok(raw_stats) => {
+                let cleaned = strip_color_codes(&raw_stats);
+                if !cleaned.trim().is_empty() {
+                    let reversed: Vec<&str> = cleaned.lines().rev().collect();
+                    let mut stats = Self::format_event_stats(event.sockets, reversed.join("\n"));
+                    if event.quality == "Unique" || event.quality == "Set" {
+                        stats = crate::unique_stats_db::annotate_with_roll_ranges(
+                            &self.state.unique_stats_db,
+                            &event.name,
+                            event.tier,
+                            &stats,
+                        );
+                    }
+                    event.stats = stats;
+                    event.runtime_stats_loaded = true;
+                }
+            }
+            Err(e) => {
+                if self.verbose_filter_logging {
+                    log_error(&format!("get_item_stats failed for unit {}: {}", p_unit, e));
+                }
             }
         }
 
@@ -1143,6 +1339,9 @@ impl DropScanner {
             tier: self.class_tier(class),
             unique_kind,
             sockets: scanned.sockets,
+            clvl: self.char_level,
+            ilvl: scanned.item_level,
+            player_class: self.player_class,
             filter: None,
         }
     }
@@ -1222,6 +1421,39 @@ impl DropScanner {
             .as_ref()
             .and_then(|cache| cache.get(class as usize))
             .and_then(|info| info.category.clone())
+    }
+
+    /// Seed the live matching caches from a previously-saved
+    /// `MatchingCache` (see `load_matching_cache`) so `tick_items`'s
+    /// lazy-build-on-first-tick logic (`if self.class_cache.is_none()`)
+    /// skips the expensive live rebuild entirely. Only takes effect right
+    /// after construction — `tick_items` never re-checks once populated.
+    pub fn seed_matching_cache(&mut self, cache: MatchingCache) {
+        self.class_cache = Some(cache.class_cache);
+        self.unique_cache = Some(cache.unique_cache);
+        self.set_cache = Some(cache.set_cache);
+    }
+
+    /// Drop the live matching caches so the next `tick_items` call rebuilds
+    /// them from current game memory (see `if self.class_cache.is_none()`).
+    /// Used by the manual "refresh game data" command to recover from a
+    /// stale on-disk cache (e.g. after an MXL content patch) without
+    /// restarting the app.
+    pub fn clear_matching_cache(&mut self) {
+        self.class_cache = None;
+        self.unique_cache = None;
+        self.set_cache = None;
+    }
+
+    /// Snapshot of the live matching caches for persistence, once all
+    /// three have been populated (either seeded from disk or freshly
+    /// built). `None` while any is still missing.
+    pub fn matching_cache_snapshot(&self) -> Option<MatchingCache> {
+        Some(MatchingCache {
+            class_cache: self.class_cache.clone()?,
+            unique_cache: self.unique_cache.clone()?,
+            set_cache: self.set_cache.clone()?,
+        })
     }
 
     pub fn items_dictionary_snapshot(&self) -> Option<ItemsDictionary> {
@@ -1663,14 +1895,20 @@ impl DropScanner {
     pub fn drain_goblin_events(&mut self) -> Vec<GoblinDetectedEvent> {
         std::mem::take(&mut self.last_goblin_events)
     }
+
+    /// Take the rule source lines matched since the last drain (only
+    /// populated while `live_match_highlight` is enabled).
+    pub fn drain_matched_lines(&mut self) -> Vec<usize> {
+        std::mem::take(&mut self.pending_matched_lines)
+    }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn no_pickup_flag_write(d2_client: usize, on: bool) -> (usize, [u8; 1]) {
     (d2_client + d2client::NO_PICKUP_FLAG, [u8::from(on)])
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod no_pickup_tests {
     use super::*;
 
@@ -1690,7 +1928,7 @@ mod no_pickup_tests {
     }
 }
 
-#[cfg(all(test, target_os = "windows"))]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux")))]
 mod tests {
     use super::*;
     use std::collections::{HashMap, HashSet};
@@ -1790,7 +2028,7 @@ pub(crate) fn strip_color_codes(s: &str) -> String {
     result
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Drop for DropScanner {
     fn drop(&mut self) {
         // Eject the loot filter hook when scanner is destroyed
@@ -1804,13 +2042,13 @@ impl Drop for DropScanner {
 
 // --- Stub for Non-Windows ---
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 use crate::rules::FilterConfig;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub struct DropScanner;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl DropScanner {
     pub fn new(
         _loot_history: Arc<RwLock<crate::loot_history::LootHistory>>,
@@ -1826,11 +2064,17 @@ impl DropScanner {
         Vec::new()
     }
 
+    pub fn drain_matched_lines(&mut self) -> Vec<usize> {
+        Vec::new()
+    }
+
     pub fn set_filter_config(&mut self, _config: Arc<RwLock<FilterConfig>>) {}
 
     pub fn on_filter_config_changed(&mut self) {}
 
     pub fn set_verbose_filter_logging(&mut self, _enabled: bool) {}
+
+    pub fn set_live_match_highlight(&mut self, _enabled: bool) {}
 
     pub fn set_force_show_all(&self, _value: bool) -> Result<(), String> {
         Ok(())

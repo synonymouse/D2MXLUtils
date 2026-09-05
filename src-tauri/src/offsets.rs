@@ -33,6 +33,16 @@ pub mod d2client {
         /// 6-byte stub: `call NewAutomapCell; ret`. EAX on return = AutomapCell*.
         /// Placed well past INJECT_GET_UNIT_STAT (`0x54` + ~17 bytes) with pad.
         pub const NEW_AUTOMAP_CELL: usize = 0x70;
+
+        /// Linux only: staging address for a small hand-written `mmap2`
+        /// syscall stub (~40 bytes), used once per `D2Injector::new` to
+        /// allocate real `string_buffer`/`params_buffer` scratch pages —
+        /// the Linux analog of `VirtualAllocEx`. Empirically confirmed free
+        /// (all-zero for the surrounding 512 bytes on a live process) —
+        /// see `process.rs`'s `live_probe::find_free_padding_runs` test.
+        /// Placed comfortably past `NEW_AUTOMAP_CELL`'s 6-byte stub (ends
+        /// `+0x76`).
+        pub const LINUX_MMAP_STUB: usize = 0x90;
     }
 
     /// Internal D2Client functions
@@ -114,8 +124,15 @@ pub mod d2sigma {
     /// Native tooltip-builder hook. On function entry `[ESP+04]` is the
     /// current tooltip item `UnitAny*`. Used as the primary item-search hover
     /// identity source; see `docs/mxl-item-search-hover-re-session-report.md`.
-    pub const TOOLTIP_ITEM_HOOK: usize = 0xAE020;
-    pub const TOOLTIP_ITEM_HOOK_RESUME: usize = 0xAE025;
+    ///
+    /// Relocated for MXL 2.14: the function itself is byte-for-byte
+    /// unchanged (confirmed by diffing the pre-/post-2.14 `D2Sigma.dll`,
+    /// matching 119/128 bytes at the new offset, all mismatches being
+    /// embedded data-pointer immediates that shifted because `.rdata`
+    /// shrank in this build) — only its position in `.text` moved, from
+    /// `0xAE020` to `0xB4F80`.
+    pub const TOOLTIP_ITEM_HOOK: usize = 0xB4F80;
+    pub const TOOLTIP_ITEM_HOOK_RESUME: usize = 0xB4F85;
     pub const TOOLTIP_ITEM_HOOK_PATCH_SIZE: usize = 5;
     pub const TOOLTIP_ITEM_HOOK_PROLOGUE: [u8; TOOLTIP_ITEM_HOOK_PATCH_SIZE] =
         [0x55, 0x8D, 0x6C, 0x24, 0xD8];
@@ -254,7 +271,8 @@ pub mod item_data {
     /// fresh `unit_id`.
     pub const SEED: usize = 0x14; // dword
     pub const FLAGS: usize = 0x18; // dword (item flags) - offset 0 + 4 + 5*4 = 0x18
-    pub const FILE_INDEX: usize = 0x28; // dword (dwFileIndex; 0x2C is item level)
+    pub const FILE_INDEX: usize = 0x28; // dword (dwFileIndex)
+    pub const ITEM_LEVEL: usize = 0x2C; // dword (dwItemLevel)
     pub const BODY_LOCATION: usize = 0x44; // byte (equipped body slot)
     pub const ITEM_LOCATION: usize = 0x45; // byte (inventory/equipment location enum)
     pub const OWNER_INVENTORY: usize = 0x5C; // dword (owning D2InventoryStrc*)
@@ -376,6 +394,10 @@ pub mod stat_list {
     /// Stat ids from `ItemStatCost.txt`.
     pub const STAT_HITPOINTS: u16 = 6;
     pub const STAT_MAXHP: u16 = 7;
+    /// "level" — character/monster level. Already verified live for both
+    /// (see `dps_hook/trampoline.rs`'s monster-level read and
+    /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
+    pub const STAT_LEVEL: u16 = 12;
 }
 
 /// `D2MonStatsTxt` record offsets. Record size = `0x1A8`; indexing is

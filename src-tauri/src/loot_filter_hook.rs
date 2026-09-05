@@ -9,9 +9,9 @@ use windows::Win32::System::Memory::{
     PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::logger::{error as log_error, info as log_info};
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::process::{D2Context, ProcessHandle};
 use crate::rules::Visibility;
 
@@ -72,7 +72,7 @@ pub(crate) fn visibility_mask_ops(visibility: Visibility) -> &'static [Visibilit
 }
 
 /// Loot filter hook manager
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub struct LootFilterHook {
     /// Address of the hook point in D2Sigma.dll
     hook_address: usize,
@@ -96,10 +96,9 @@ pub struct LootFilterHook {
     original_bytes: [u8; PATCH_SIZE],
     is_injected: bool,
     is_reattached: bool,
-    process_handle: HANDLE,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl LootFilterHook {
     /// Create a new hook manager (not yet injected)
     pub fn new() -> Self {
@@ -116,7 +115,6 @@ impl LootFilterHook {
             original_bytes: [0; PATCH_SIZE],
             is_injected: false,
             is_reattached: false,
-            process_handle: HANDLE::default(),
         }
     }
 
@@ -156,19 +154,45 @@ impl LootFilterHook {
 
     fn fresh_inject(&mut self, ctx: &D2Context, found_addr: usize) -> Result<(), String> {
         self.hook_address = found_addr;
-        self.process_handle = ctx.process.handle;
         let offset = found_addr - ctx.d2_sigma;
 
-        self.trampoline_address = self.alloc_remote(&ctx.process, 256)?;
+        #[cfg(target_os = "windows")]
+        {
+            self.trampoline_address = self.alloc_remote(&ctx.process, 256)?;
 
-        self.g_show_all_loot = self.alloc_remote(&ctx.process, 1)?;
-        self.g_force_show_all = self.alloc_remote(&ctx.process, 1)?;
-        self.g_call_counter = self.alloc_remote(&ctx.process, 4)?;
-        self.g_last_unit_id = self.alloc_remote(&ctx.process, 4)?;
+            self.g_show_all_loot = self.alloc_remote(&ctx.process, 1)?;
+            self.g_force_show_all = self.alloc_remote(&ctx.process, 1)?;
+            self.g_call_counter = self.alloc_remote(&ctx.process, 4)?;
+            self.g_last_unit_id = self.alloc_remote(&ctx.process, 4)?;
 
-        self.g_hide_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
-        self.g_show_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
-        self.g_inspected_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+            self.g_hide_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+            self.g_show_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+            self.g_inspected_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+        }
+
+        // One `mmap_remote` call instead of 8 separate `VirtualAllocEx`-style
+        // allocations — each is a ptrace-hijacked remote call on Linux, and
+        // this hook installs once per attach alongside the DPS hook and
+        // D2Injector's own allocation, so keeping the count down matters for
+        // startup latency. Sub-divided manually, same approach D2Injector
+        // uses for its string/params scratch buffers.
+        #[cfg(target_os = "linux")]
+        {
+            const REGION_SIZE: usize = 0x8000;
+            let mmap_stub_addr = ctx.d2_client
+                + crate::offsets::d2client::INJECT_BASE
+                + crate::offsets::d2client::inject::LINUX_MMAP_STUB;
+            let region = ctx.process.mmap_remote(mmap_stub_addr, REGION_SIZE)?;
+
+            self.trampoline_address = region;
+            self.g_show_all_loot = region + 256;
+            self.g_force_show_all = region + 257;
+            self.g_call_counter = region + 260;
+            self.g_last_unit_id = region + 264;
+            self.g_hide_mask = region + 512;
+            self.g_show_mask = self.g_hide_mask + MASK_BYTES;
+            self.g_inspected_mask = self.g_show_mask + MASK_BYTES;
+        }
 
         log_info(&format!(
             "LootFilterHook: hook@D2Sigma+{:X}=0x{:08X} trampoline=0x{:08X} hide_mask=0x{:08X} show_mask=0x{:08X} inspected_mask=0x{:08X}",
@@ -200,30 +224,43 @@ impl LootFilterHook {
             .read_buffer_into(self.hook_address, &mut saved)?;
         self.original_bytes = saved;
 
-        let mut old_protect = PAGE_PROTECTION_FLAGS(0);
-        unsafe {
-            VirtualProtectEx(
-                ctx.process.handle,
-                self.hook_address as *const std::ffi::c_void,
-                PATCH_SIZE,
-                PAGE_EXECUTE_READWRITE,
-                &mut old_protect,
-            )
-            .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
-        }
+        #[cfg(target_os = "windows")]
+        let write_result = {
+            let mut old_protect = PAGE_PROTECTION_FLAGS(0);
+            unsafe {
+                VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    PAGE_EXECUTE_READWRITE,
+                    &mut old_protect,
+                )
+                .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
+            }
 
-        let jmp_patch = self.generate_jmp_patch();
-        let write_result = ctx.process.write_buffer(self.hook_address, &jmp_patch);
+            let jmp_patch = self.generate_jmp_patch();
+            let write_result = ctx.process.write_buffer(self.hook_address, &jmp_patch);
 
-        unsafe {
-            let _ = VirtualProtectEx(
-                ctx.process.handle,
-                self.hook_address as *const std::ffi::c_void,
-                PATCH_SIZE,
-                old_protect,
-                &mut old_protect,
-            );
-        }
+            unsafe {
+                let _ = VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    old_protect,
+                    &mut old_protect,
+                );
+            }
+            write_result
+        };
+
+        // `write_buffer` already falls back to PTRACE_POKEDATA for
+        // read+execute-only code pages (see `process.rs`), so no
+        // VirtualProtectEx-equivalent dance is needed here.
+        #[cfg(target_os = "linux")]
+        let write_result = {
+            let jmp_patch = self.generate_jmp_patch();
+            ctx.process.write_buffer(self.hook_address, &jmp_patch)
+        };
 
         write_result?;
 
@@ -334,7 +371,6 @@ impl LootFilterHook {
             self.hook_address = hit;
             self.trampoline_address = tramp;
             self.original_bytes = do_orig;
-            self.process_handle = ctx.process.handle;
             self.is_injected = true;
             self.is_reattached = true;
 
@@ -371,34 +407,44 @@ impl LootFilterHook {
             return Err("Hook not injected".to_string());
         }
 
-        // 1. Change memory protection to allow writing
-        let mut old_protect = PAGE_PROTECTION_FLAGS(0);
-        unsafe {
-            VirtualProtectEx(
-                ctx.process.handle,
-                self.hook_address as *const std::ffi::c_void,
-                PATCH_SIZE,
-                PAGE_EXECUTE_READWRITE,
-                &mut old_protect,
-            )
-            .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
-        }
+        // 1. Change memory protection to allow writing (Windows only —
+        // `write_buffer` already handles this via PTRACE_POKEDATA on Linux).
+        #[cfg(target_os = "windows")]
+        let write_result = {
+            let mut old_protect = PAGE_PROTECTION_FLAGS(0);
+            unsafe {
+                VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    PAGE_EXECUTE_READWRITE,
+                    &mut old_protect,
+                )
+                .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
+            }
 
-        // 2. Restore original bytes
+            // 2. Restore original bytes
+            let write_result = ctx
+                .process
+                .write_buffer(self.hook_address, &self.original_bytes);
+
+            // 3. Restore original memory protection
+            unsafe {
+                let _ = VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    old_protect,
+                    &mut old_protect,
+                );
+            }
+            write_result
+        };
+
+        #[cfg(target_os = "linux")]
         let write_result = ctx
             .process
             .write_buffer(self.hook_address, &self.original_bytes);
-
-        // 3. Restore original memory protection
-        unsafe {
-            let _ = VirtualProtectEx(
-                ctx.process.handle,
-                self.hook_address as *const std::ffi::c_void,
-                PATCH_SIZE,
-                old_protect,
-                &mut old_protect,
-            );
-        }
 
         write_result?;
 
@@ -536,7 +582,9 @@ impl LootFilterHook {
         Ok(())
     }
 
-    /// Allocate memory in remote process
+    /// Allocate memory in remote process (Windows only — Linux does one
+    /// `mmap_remote` call and sub-allocates manually, see `fresh_inject`).
+    #[cfg(target_os = "windows")]
     fn alloc_remote(&self, process: &ProcessHandle, size: usize) -> Result<usize, String> {
         let address = unsafe {
             VirtualAllocEx(
@@ -763,7 +811,7 @@ impl LootFilterHook {
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Default for LootFilterHook {
     fn default() -> Self {
         Self::new()
@@ -796,11 +844,11 @@ mod tests {
     }
 }
 
-// Stub for non-Windows (compilation only)
-#[cfg(not(target_os = "windows"))]
+// Stub for platforms without a real port (compilation only)
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub struct LootFilterHook;
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl LootFilterHook {
     pub fn new() -> Self {
         Self
@@ -854,6 +902,14 @@ impl LootFilterHook {
         Err("Not supported on this OS".to_string())
     }
 
+    pub fn clear_unit_id_bits(
+        &self,
+        _ctx: &crate::process::D2Context,
+        _unit_ids: &[u32],
+    ) -> Result<(), String> {
+        Err("Not supported on this OS".to_string())
+    }
+
     pub fn add_shown_unit_id(
         &self,
         _ctx: &crate::process::D2Context,
@@ -887,7 +943,7 @@ impl LootFilterHook {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 impl Default for LootFilterHook {
     fn default() -> Self {
         Self::new()

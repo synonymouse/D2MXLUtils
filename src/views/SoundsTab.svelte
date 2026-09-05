@@ -1,6 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { Button } from '../components';
+  import { Button, Select } from '../components';
   import { settingsStore, type SoundSlot, type SoundSource } from '../stores';
   import { playSound } from '../lib/sound-player';
 
@@ -38,9 +38,8 @@
     settingsStore.setSoundVolume(parseFloat(target.value));
   }
 
-  function handleGoblinAlertChange(e: Event) {
-    const target = e.currentTarget as HTMLSelectElement;
-    const next = target.value === '' ? null : parseInt(target.value, 10);
+  function handleGoblinAlertChange(value: string) {
+    const next = value === '' ? null : parseInt(value, 10);
     settingsStore.set('goblinAlertSlot', next);
   }
 
@@ -161,17 +160,19 @@
         </span>
       </div>
       <div class="setting-control">
-        <select
+        <Select
           class="goblin-select"
-          value={goblinAlertSlot ?? ''}
+          ariaLabel="Goblin alert sound"
+          value={goblinAlertSlot != null ? String(goblinAlertSlot) : ''}
+          options={[
+            { value: '', label: 'None' },
+            ...alertChoices.map(({ index, slot }) => ({
+              value: String(index),
+              label: slot.label || `Sound ${index}`,
+            })),
+          ]}
           onchange={handleGoblinAlertChange}
-          aria-label="Goblin alert sound"
-        >
-          <option value="">None</option>
-          {#each alertChoices as { index, slot } (index)}
-            <option value={index}>{slot.label || `Sound ${index}`}</option>
-          {/each}
-        </select>
+        />
       </div>
     </div>
   </div>
@@ -301,13 +302,10 @@
     text-align: right;
   }
 
-  .goblin-select {
-    padding: var(--space-1) var(--space-2);
-    background: var(--bg-tertiary);
-    border: 1px solid var(--border-primary);
-    border-radius: var(--radius-sm);
-    color: var(--text-primary);
-    font: inherit;
+  /* `class` passed to <Select> lands on its internal button, which is
+     rendered by that child component — Svelte's per-component style
+     scoping means this rule can't reach it without :global(). */
+  :global(.goblin-select) {
     min-width: 180px;
   }
 

@@ -54,6 +54,25 @@ select {
   color: inherit;
 }
 
+/* `color-scheme` (themes/*.css) fixes the popup from being unreadably
+   white, but only borrows the engine's generic dark UI chrome — it
+   doesn't know this app's own palette. WebKitGTK (more so than other
+   engines) honors colors set directly on <option>, so set them
+   explicitly to actually match the theme instead of settling for the
+   generic default. `inherit` (not a fixed variable) so each select's
+   popup matches its own box — different views color their <select>
+   background with different theme variables (e.g. BreakpointsTab uses
+   --bg-primary, SoundsTab uses --bg-tertiary). */
+select option {
+  background-color: inherit;
+  color: inherit;
+}
+
+select option:checked,
+select option:hover {
+  background-color: var(--accent-primary-muted);
+}
+
 button {
   cursor: pointer;
   border: none;

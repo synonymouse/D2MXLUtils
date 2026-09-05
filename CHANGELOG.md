@@ -1,5 +1,322 @@
 # Changelog
 
+## v1.26.24 — 2026-09-05
+
+### Features
+
+- Feat: add toggle for "Items hidden" overlay indicator (dea8b8a)
+
+### Other
+
+- 1.26.24 (884d85d)
+
+## v1.26.23 — 2026-09-05
+
+### Bug Fixes
+
+- Fix: relocate tooltip-item hook offset for MXL 2.14's D2Sigma.dll (4c63819)
+
+### Other
+
+- 1.26.23 (c6646d7)
+
+## v1.26.22 — 2026-09-04
+
+### Features
+
+- Feat: add manual refresh button for game data caches (26775c3)
+
+### Other
+
+- 1.26.22 (1e8c6a3)
+
+## v1.26.21 — 2026-09-04
+
+### Features
+
+- Feat(stats): cap displayed elemental/poison max resist at 90% (0d32d3e)
+
+### Other
+
+- 1.26.21 (a9e8017)
+
+## v1.26.20 — 2026-09-04
+
+### Bug Fixes
+
+- Fix(ci): rename release AppImage with capital ".AppImage" extension (b62d5f2)
+- Fix(updater): match the renamed AppImage asset case-insensitively (ccff37f)
+
+### Other
+
+- 1.26.20 (bc28665)
+
+## v1.26.19 — 2026-09-04
+
+### Bug Fixes
+
+- Fix(stats): compute Charms locally instead of trusting the engine's counter (0337095)
+- Fix(breakpoints): cache last-known data across tab switches (e703648)
+- Fix(stats): show cached data instantly and stop per-tick flicker on read failures (240909d)
+- Fix(stats): correct Life/Mana-per-point class factors, document Azurewrath (ba8cd3c)
+- Fix(stats): correct Spell Focus formula and layout tweaks (b199eb7)
+
+### Features
+
+- Feat(branding): mark this build as a community fork (81b2ce8)
+- Feat(stats): add full character Stats tab (2d188a5)
+
+### Other
+
+- 1.26.19 (2c5cdd8)
+
+## v1.26.18 — 2026-08-31
+
+### Features
+
+- Feat(rules-editor): highlight and autocomplete class/level DSL keywords (a851751)
+
+### Other
+
+- 1.26.18 (5c17c60)
+
+## v1.26.17 — 2026-08-31
+
+### Bug Fixes
+
+- Fix(rules-editor): persist group-rule fold state across tab switches and restarts (5ce20df)
+
+### Documentation
+
+- Docs: document release:skip convention for doc-only PRs (51b2827)
+- Docs: consolidate AGENTS.md into CLAUDE.md (8fdd673)
+
+### Other
+
+- 1.26.17 (cd05ef8)
+
+## v1.26.16 — 2026-08-31
+
+### Features
+
+- Feat(rules-editor): autocomplete bare DSL keywords (3a0e757)
+
+### Other
+
+- 1.26.16 (14af5a9)
+
+## v1.26.15 — 2026-08-30
+
+### Features
+
+- Feat(loot-filter): add live "show matches" rule highlighting (aeb783f)
+
+### Other
+
+- 1.26.15 (5aef644)
+
+## v1.26.14 — 2026-08-30
+
+### Features
+
+- Feat(rules-editor): add code folding for group rules (19c0ff8)
+
+### Other
+
+- 1.26.14 (d750232)
+
+## v1.26.13 — 2026-08-30
+
+### Bug Fixes
+
+- Fix(unique-stats-db): pin gh CLI calls to the correct repo (aa460d6)
+
+### Other
+
+- 1.26.13 (14adda9)
+
+## v1.26.12 — 2026-08-30
+
+### Bug Fixes
+
+- Fix(unique-stats-db): publish locally instead of via CI (blocked outright) (8cb794f)
+
+### Other
+
+- 1.26.12 (8fe07cf)
+
+## v1.26.11 — 2026-08-30
+
+### Features
+
+- Feat(unique-stats-db): publish + auto-sync the roll-range template DB (580af1e)
+
+### Other
+
+- 1.26.11 (518cdf1)
+
+## v1.26.10 — 2026-08-30
+
+### Bug Fixes
+
+- Fix(map-marker): clear persistent cache on real area/act change (ca36b63)
+
+### Other
+
+- 1.26.10 (f13eaa5)
+
+## v1.26.9 — 2026-08-30
+
+### Bug Fixes
+
+- Fix(windows): close CreateRemoteThread's handle — was leaked on every injected call (9d012a9)
+
+### Other
+
+- 1.26.9 (e76557b)
+
+## v1.26.8 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(ci): discard stray Cargo.toml modification before rebasing changelog (e4cc2db)
+
+### Other
+
+- 1.26.8 (0078112)
+
+## v1.26.7 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(ci): rebase before pushing the changelog commit, don't just push and pray (ef72810)
+
+### Other
+
+- 1.26.7 (7e1cf88)
+
+## v1.26.6 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(ci): explicitly dispatch the release build instead of relying on the tag-push cascade (1b20767)
+
+### Other
+
+- 1.26.6 (ae3d6fd)
+
+## v1.26.5 — 2026-08-29
+
+### Features
+
+- Feat(ci): auto-release on merge to master; build Windows/Linux in parallel (2dd3923)
+
+### Other
+
+- 1.26.5 (156a061)
+
+## v1.26.4 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(map-marker): attach markers as pObjects leaves, not root swaps (6b82a5f)
+
+### Other
+
+- 1.26.4 (ce3f69f)
+
+## v1.26.3 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(updater): add real Linux AppImage self-update support (c1fdf23)
+
+### Other
+
+- 1.26.3 (56ef1fc)
+
+## v1.26.2 — 2026-08-29
+
+### Other
+
+- 1.26.2 (96c607d)
+
+## v1.26.1 — 2026-08-29
+
+### Bug Fixes
+
+- Fix(updater): point self-updater and releases link at this fork (13c73cc)
+- Fix(ui): dark-mode select popups and tab-content overflow containment (c28a9be)
+- Fix(linux): unconditionally disable WebKitGTK's DMA-BUF renderer (6261605)
+- Fix(overlay): fix focus-stealing prevention after alt-tab on Linux (c769a48)
+- Fix(overlay): explicitly refocus D2 instead of trusting WM implicit behavior (73bdb57)
+
+### Features
+
+- Feat(release): add pnpm release shortcut, defaulting to patch (9161fb7)
+- Feat(dev): add F12 devtools shortcut (557f00f)
+- Feat(loot-filter): add quest filter keyword (c6ed195)
+- Feat: unique/set roll-range annotations and create-game autofill (87c3c43)
+- Feat(loot-filter): add clvl/ilvl and character-class filter keywords (b8358b1)
+
+### Other
+
+- 1.26.1 (0a4d575)
+
+### Refactor
+
+- Refactor(ui): custom Select component replacing native <select> (661cc32)
+
+## manual-19 — 2026-08-24
+
+### Bug Fixes
+
+- Fix(overlay): dedupe notification toasts by unit_id (140b7eb)
+- Fix(sounds): route Linux audio through rodio directly, never <audio> (30c9cbd)
+
+## manual-14 — 2026-08-24
+
+### Bug Fixes
+
+- Fix(ci): stand in an empty gdk-pixbuf loaders dir for linuxdeploy's gtk plugin (6158548)
+- Fix(ci): install gdk-pixbuf2 for linuxdeploy's gtk plugin (331ea55)
+- Fix(ci): install fuse2 for linuxdeploy's AppImage runtime (b352dac)
+
+### CI
+
+- Ci(debug): use --verbose on the real build instead of standalone probes (258e880)
+- Ci(debug): test env-var-only invocation and the appimage output plugin (22eb1ae)
+- Ci(debug): run linuxdeploy directly to surface its real error (1ac0763)
+- Ci: fix linuxdeploy under container (FUSE) + let manual runs pick a platform (3b904fc)
+
+## manual-7 — 2026-08-24
+
+### Bug Fixes
+
+- Fix(ci): build the Linux AppImage inside an Arch container (d276344)
+
+## manual-6 — 2026-08-24
+
+### Bug Fixes
+
+- Fix(ci): install libasound2-dev for rodio's alsa-sys build (ea623af)
+
+## manual-5 — 2026-08-24
+
+### Bug Fixes
+
+- Fix(ci): unescaped # in release name expression broke YAML parsing (49ea451)
+
+### CI
+
+- Ci: fix release step for workflow_dispatch (needs a real tag) (7071a7f)
+- Ci: allow manual test runs via workflow_dispatch (629d125)
+- Ci: add Linux AppImage build/release job (1a4566c)
+
+### Features
+
+- Feat(linux): native Linux port (process attach, injection, overlay, hotkeys) (aeff831)
+
 ## v1.26.0 — 2026-05-17
 
 ### Bug Fixes
@@ -394,26 +711,11 @@
 
 - Fix(filter): auto-load active profile on startup (0e5b82e)
 - Fix(notifier): label low-wLvl TU uniques (e.g. Razordisk) correctly (d9b6904)
-
-### Features
-
-- Feat(updater): add GitHub Releases auto-updater (b872d31)
-- Feat(filter): highlight matched stat line in drop notifications (5b198b3)
-- Feat(sound): play drop notification sounds with master volume (b821569)
-- Feat(notifications): improve drop rendering and settings preview (de19ced)
-
-### Other
-
-- 1.7.0 (bf38bce)
-
-## v1.6.0 — 2026-04-21
-
-### Bug Fixes
-
 - Fix(ui): sync header version with package.json at build time (79741a8)
 - Eliminate loot-filter label flicker on fresh drops (bff0c0d)
 - Fix reattach bug (37374c0)
 - Survive project restart without re-launching Diablo II (4f3ed6d)
+- Fix loot filter not syncing to scanner after profile load/save (d8dacab)
 
 ### CI
 
@@ -425,29 +727,17 @@
 - Move drop notifications to top-left and hide overlay window border (c0be59c)
 - Redesign drop notification layout and drop the `name` filter flag (b67fd52)
 - Normalize autocomplete dictionary and version the items cache (12ae0fb)
-
-### Features
-
-- Add hold-hotkey overlay editor to reposition drop notifications (7a645a8)
-- Add uniques and set items to autocomplete dictionary (863a50f)
-- Add items autocomplete to loot-filter rules editor (00c7341)
-
-### Other
-
-- 1.6.0 (f5dadfc)
-
-## v1.5.0 — 2026-04-19
-
-### Bug Fixes
-
-- Fix loot filter not syncing to scanner after profile load/save (d8dacab)
-
-### Changes
-
 - Removed docs (313fcfb)
 
 ### Features
 
+- Feat(updater): add GitHub Releases auto-updater (b872d31)
+- Feat(filter): highlight matched stat line in drop notifications (5b198b3)
+- Feat(sound): play drop notification sounds with master volume (b821569)
+- Feat(notifications): improve drop rendering and settings preview (de19ced)
+- Add hold-hotkey overlay editor to reposition drop notifications (7a645a8)
+- Add uniques and set items to autocomplete dictionary (863a50f)
+- Add items autocomplete to loot-filter rules editor (00c7341)
 - Support multi-quality/tier OR-matching and base_name regex (915f96a)
 - Implement MedianXL tier detection (C2 fix) (bea784d)
 - Add force-show filter mode and reduce scanner overhead (a476716)
@@ -457,6 +747,8 @@
 
 ### Other
 
+- 1.7.0 (bf38bce)
+- 1.6.0 (f5dadfc)
 - Sync pnpm-lock.yaml with package.json (7d43ef3)
 - 1.5.0 (33a5355)
 - New spec (6c9b497)

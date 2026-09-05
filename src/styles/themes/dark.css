@@ -4,6 +4,13 @@
    ============================================= */
 
 [data-theme='dark'] {
+  /* Tells WebKitGTK/the browser to render native form widgets (select
+     dropdown popups, scrollbars, etc.) with dark-appropriate default
+     colors — those aren't styled by our own CSS variables above, so
+     without this they fall back to a light UA stylesheet regardless of
+     the app's theme, showing up as a white dropdown list on a dark page. */
+  color-scheme: dark;
+
   /* Backgrounds */
   --bg-primary: #0a0a0f;
   --bg-secondary: #12121a;

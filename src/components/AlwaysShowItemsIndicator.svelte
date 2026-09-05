@@ -1,11 +1,14 @@
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
   import { onMount } from 'svelte';
+  import { settingsStore } from '../stores';
 
   let ingame = $state(false);
   let alwaysShowOn = $state<boolean | null>(null);
 
-  const visible = $derived(ingame && alwaysShowOn === false);
+  const visible = $derived(
+    ingame && alwaysShowOn === false && settingsStore.settings.showItemsHiddenIndicator,
+  );
 
   onMount(() => {
     const unlisteners: Array<() => void> = [];

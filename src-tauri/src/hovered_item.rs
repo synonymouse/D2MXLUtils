@@ -4,7 +4,7 @@
 
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::Mutex;
 
 #[cfg(target_os = "windows")]
@@ -25,15 +25,18 @@ use windows::Win32::System::SystemInformation::GetTickCount;
 
 pub(crate) const HOVERED_ITEM_FRESH_MS: u32 = 750;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(crate) struct HoveredItemHook {
     state: Mutex<Option<HookState>>,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[allow(dead_code)]
 struct HookState {
-    process: HANDLE,
+    /// Borrowed handle (Windows) / bare pid (Linux) — same shape as
+    /// `dps_hook::ProcessRef`, reused here rather than redefining an
+    /// identical per-OS split.
+    process: crate::dps_hook::ProcessRef,
     d2sigma_base: usize,
     region: usize,
     region_size: usize,
@@ -44,7 +47,7 @@ struct HookState {
 #[cfg(target_os = "windows")]
 unsafe impl Send for HookState {}
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HoveredItemSnapshot {
     p_unit: u32,
@@ -54,7 +57,7 @@ struct HoveredItemSnapshot {
     saved_regs: [u32; TOOLTIP_SAVED_REG_COUNT],
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrologueState {
     Original,
@@ -62,38 +65,38 @@ enum PrologueState {
     Mismatch([u8; crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PATCH_SIZE]),
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_SHARED_FIELDS_OFFSET: usize = 0xC0;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_STACK_ARG_COUNT: usize = 6;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_SAVED_REG_COUNT: usize = 6;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_STACK_ARG_FIELDS_OFFSET: usize = 12;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_SAVED_REG_FIELDS_OFFSET: usize =
     TOOLTIP_STACK_ARG_FIELDS_OFFSET + (TOOLTIP_STACK_ARG_COUNT - 1) * 4;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const TOOLTIP_SHARED_FIELDS_SIZE: usize =
     TOOLTIP_SAVED_REG_FIELDS_OFFSET + TOOLTIP_SAVED_REG_COUNT * 4;
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const HOVERED_ITEM_SNAPSHOT_READ_ATTEMPTS: usize = 4;
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 #[derive(Debug, Clone)]
 struct TooltipHookBlob {
     bytes: Vec<u8>,
     fields_offset: usize,
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl TooltipHookBlob {
     fn fields_addr(&self, blob_base: usize) -> usize {
         blob_base + self.fields_offset
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn build_tooltip_hook_blob(
     blob_base: usize,
     resume_addr: usize,
@@ -153,7 +156,7 @@ fn build_tooltip_hook_blob(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl HoveredItemHook {
     pub(crate) fn new() -> Self {
         Self {
@@ -174,7 +177,7 @@ impl HoveredItemHook {
             return Err("hovered-item hook already installed".to_string());
         }
 
-        let get_tick_count_addr = get_tick_count_addr()?;
+        let get_tick_count_addr = get_tick_count_addr(&ctx.process)?;
         let target = ctx.d2_sigma + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK;
         let resume = ctx.d2_sigma + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_RESUME;
 
@@ -203,8 +206,12 @@ impl HoveredItemHook {
                     ));
                 }
 
+                #[cfg(target_os = "windows")]
+                let process_ref = ctx.process.handle;
+                #[cfg(target_os = "linux")]
+                let process_ref = ctx.process.pid;
                 *state_lock = Some(HookState {
-                    process: ctx.process.handle,
+                    process: process_ref,
                     d2sigma_base: ctx.d2_sigma,
                     region: trampoline_addr,
                     region_size: REGION_SIZE,
@@ -226,23 +233,43 @@ impl HoveredItemHook {
             }
         }
 
-        let region_ptr = unsafe {
-            VirtualAllocEx(
-                ctx.process.handle,
-                None,
-                REGION_SIZE,
-                MEM_COMMIT | MEM_RESERVE,
-                PAGE_EXECUTE_READWRITE,
-            )
+        #[cfg(target_os = "windows")]
+        let region = {
+            let region_ptr = unsafe {
+                VirtualAllocEx(
+                    ctx.process.handle,
+                    None,
+                    REGION_SIZE,
+                    MEM_COMMIT | MEM_RESERVE,
+                    PAGE_EXECUTE_READWRITE,
+                )
+            };
+            if region_ptr.is_null() {
+                return Err("VirtualAllocEx for hovered-item hook region failed".to_string());
+            }
+            region_ptr as usize
         };
-        if region_ptr.is_null() {
-            return Err("VirtualAllocEx for hovered-item hook region failed".to_string());
-        }
-        let region = region_ptr as usize;
+        #[cfg(target_os = "windows")]
+        let free_region = |region: usize| unsafe {
+            let _ = VirtualFreeEx(ctx.process.handle, region as *mut c_void, 0, MEM_RELEASE);
+        };
+
+        // Linux: one `mmap_remote` call, no separate free-on-error path
+        // (mirrors DPS hook/LootFilterHook — leaked on error/uninstall,
+        // same tradeoff `injection.rs`'s `RemoteAlloc` already makes).
+        #[cfg(target_os = "linux")]
+        let region = {
+            let mmap_stub_addr = ctx.d2_client
+                + crate::offsets::d2client::INJECT_BASE
+                + crate::offsets::d2client::inject::LINUX_MMAP_STUB;
+            ctx.process.mmap_remote(mmap_stub_addr, REGION_SIZE)?
+        };
+        #[cfg(target_os = "linux")]
+        let free_region = |_region: usize| {};
 
         let blob = build_tooltip_hook_blob(region, resume, get_tick_count_addr);
         if blob.bytes.len() > REGION_SIZE {
-            let _ = unsafe { VirtualFreeEx(ctx.process.handle, region_ptr, 0, MEM_RELEASE) };
+            free_region(region);
             return Err(format!(
                 "hovered-item hook blob size {} > REGION_SIZE {}",
                 blob.bytes.len(),
@@ -251,9 +278,10 @@ impl HoveredItemHook {
         }
 
         if let Err(e) = ctx.process.write_buffer(region, &blob.bytes) {
-            let _ = unsafe { VirtualFreeEx(ctx.process.handle, region_ptr, 0, MEM_RELEASE) };
+            free_region(region);
             return Err(format!("write hovered-item trampoline blob: {}", e));
         }
+        #[cfg(target_os = "windows")]
         unsafe {
             let _ = FlushInstructionCache(
                 ctx.process.handle,
@@ -263,10 +291,15 @@ impl HoveredItemHook {
         }
 
         let patch = build_e9_patch(target, region);
-        if let Err(e) = write_remote_with_page_protection(ctx.process.handle, target, &patch) {
-            let _ = unsafe { VirtualFreeEx(ctx.process.handle, region_ptr, 0, MEM_RELEASE) };
+        #[cfg(target_os = "windows")]
+        let patch_result = write_remote_with_page_protection(ctx.process.handle, target, &patch);
+        #[cfg(target_os = "linux")]
+        let patch_result = ctx.process.write_buffer(target, &patch);
+        if let Err(e) = patch_result {
+            free_region(region);
             return Err(format!("write E9 patch at D2Sigma tooltip hook: {}", e));
         }
+        #[cfg(target_os = "windows")]
         unsafe {
             let _ = FlushInstructionCache(
                 ctx.process.handle,
@@ -275,8 +308,12 @@ impl HoveredItemHook {
             );
         }
 
+        #[cfg(target_os = "windows")]
+        let process_ref = ctx.process.handle;
+        #[cfg(target_os = "linux")]
+        let process_ref = ctx.process.pid;
         *state_lock = Some(HookState {
-            process: ctx.process.handle,
+            process: process_ref,
             d2sigma_base: ctx.d2_sigma,
             region,
             region_size: REGION_SIZE,
@@ -305,14 +342,20 @@ impl HoveredItemHook {
         };
 
         let target = state.d2sigma_base + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK;
-        if let Err(e) = write_remote_with_page_protection(state.process, target, &state.saved_bytes)
-        {
+        #[cfg(target_os = "windows")]
+        let restore_result =
+            write_remote_with_page_protection(state.process, target, &state.saved_bytes);
+        #[cfg(target_os = "linux")]
+        let restore_result =
+            crate::dps_hook::write_remote(state.process, target, &state.saved_bytes);
+        if let Err(e) = restore_result {
             crate::logger::error(&format!(
                 "Hovered-item hook uninstall: failed to restore tooltip prologue: {} — leaking region 0x{:08X} to avoid use-after-free",
                 e, state.region
             ));
             return Err(format!("restore hovered-item hook prologue: {}", e));
         }
+        #[cfg(target_os = "windows")]
         unsafe {
             let _ = FlushInstructionCache(
                 state.process,
@@ -321,8 +364,10 @@ impl HoveredItemHook {
             );
         }
 
+        // Drain any thread mid-trampoline before considering the region dead.
         std::thread::sleep(std::time::Duration::from_millis(50));
 
+        #[cfg(target_os = "windows")]
         unsafe {
             if let Err(e) =
                 VirtualFreeEx(state.process, state.region as *mut c_void, 0, MEM_RELEASE)
@@ -333,6 +378,8 @@ impl HoveredItemHook {
                 ));
             }
         }
+        // Linux: no remote-munmap primitive built yet — same leak-on-exit
+        // tradeoff as `dps_hook`/`loot_filter_hook`.
 
         crate::logger::info("Hovered-item hook uninstalled");
         Ok(())
@@ -408,15 +455,15 @@ fn write_remote_with_page_protection(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn emit_store_stack_dword(bytes: &mut Vec<u8>, stack_offset: u8, dest_addr: u32) {
     bytes.extend_from_slice(&[0x8B, 0x44, 0x24, stack_offset, 0xA3]);
     bytes.extend_from_slice(&dest_addr.to_le_bytes());
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn read_snapshot_fields(
-    process: HANDLE,
+    process: crate::dps_hook::ProcessRef,
     fields_addr: usize,
 ) -> Result<HoveredItemSnapshot, String> {
     let mut buf = [0u8; TOOLTIP_SHARED_FIELDS_SIZE];
@@ -443,7 +490,7 @@ fn read_snapshot_fields(
     })
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn stable_snapshot_from_reads(
     first: HoveredItemSnapshot,
     second: HoveredItemSnapshot,
@@ -451,7 +498,7 @@ fn stable_snapshot_from_reads(
     (first == second && first.sequence % 2 == 0).then_some(first)
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn stable_snapshot_from_read_sequence(
     reads: &[HoveredItemSnapshot],
 ) -> Option<HoveredItemSnapshot> {
@@ -460,7 +507,7 @@ fn stable_snapshot_from_read_sequence(
         .find_map(|pair| stable_snapshot_from_reads(pair[0], pair[1]))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn hovered_item_candidates(snapshot: HoveredItemSnapshot) -> Vec<(&'static str, u32)> {
     let mut candidates = Vec::new();
     for (label, value) in [
@@ -484,25 +531,28 @@ fn hovered_item_candidates(snapshot: HoveredItemSnapshot) -> Vec<(&'static str, 
     candidates
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Default for HoveredItemHook {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 impl Drop for HoveredItemHook {
     fn drop(&mut self) {
         let _ = self.uninstall();
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 const REGION_SIZE: usize = 0x1000;
 
+/// `kernel32.dll` is mapped at the same VA in every process on Windows
+/// (incl. WoW64), so reading its export from our own module table gives
+/// the right address for the remote process — `process` is unused there.
 #[cfg(target_os = "windows")]
-fn get_tick_count_addr() -> Result<usize, String> {
+fn get_tick_count_addr(_process: &crate::process::ProcessHandle) -> Result<usize, String> {
     let kernel32 = unsafe { GetModuleHandleA(s!("kernel32.dll")) }
         .map_err(|e| format!("GetModuleHandleA(kernel32): {}", e))?;
     let get_tick_count = unsafe { GetProcAddress(kernel32, s!("GetTickCount")) }
@@ -510,7 +560,16 @@ fn get_tick_count_addr() -> Result<usize, String> {
     Ok(get_tick_count as usize)
 }
 
-#[cfg(target_os = "windows")]
+/// No local `GetProcAddress` shortcut for a *remote* process — resolve
+/// `GetTickCount` against Wine's own `kernel32.dll` the same way
+/// `dps_hook`'s Linux `install` does.
+#[cfg(target_os = "linux")]
+fn get_tick_count_addr(process: &crate::process::ProcessHandle) -> Result<usize, String> {
+    let kernel32_base = process.get_module_base("kernel32.dll")?;
+    process.resolve_export(kernel32_base, "GetTickCount")
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn build_e9_patch(target_addr: usize, trampoline_addr: usize) -> [u8; 5] {
     let rel = (trampoline_addr as i64 - (target_addr + 5) as i64) as i32;
     let mut patch = [0u8; 5];
@@ -519,7 +578,7 @@ fn build_e9_patch(target_addr: usize, trampoline_addr: usize) -> [u8; 5] {
     patch
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn classify_tooltip_prologue(target_addr: usize, prologue: [u8; 5]) -> PrologueState {
     if prologue == crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PROLOGUE {
         return PrologueState::Original;
@@ -571,7 +630,7 @@ fn valid_hovered_item_location(
         && (matches!(game_location, 3 | 6 | 7) || (1..=12).contains(&body_location))
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(crate) fn read_hovered_item_name(
     shared: &crate::scanner_state::SharedScannerState,
 ) -> Result<Option<String>, String> {
@@ -580,7 +639,10 @@ pub(crate) fn read_hovered_item_name(
         None => return Ok(None),
     };
 
-    let now_ms = unsafe { GetTickCount() };
+    // Same time base the trampoline embeds (`GetTickCount`, remote on
+    // Windows / Wine's own on Linux) — see `dps_meter::now_ms`'s doc
+    // comment for why this needs no ptrace round-trip on Linux.
+    let now_ms = crate::dps_meter::now_ms();
     if !is_fresh(now_ms, snapshot.last_seen_ms, HOVERED_ITEM_FRESH_MS) {
         return Ok(None);
     }

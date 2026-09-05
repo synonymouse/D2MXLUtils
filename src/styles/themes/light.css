@@ -3,6 +3,8 @@
    ============================================= */
 
 [data-theme='light'] {
+  color-scheme: light;
+
   /* Backgrounds */
   --bg-primary: #f5f0e6;
   --bg-secondary: #ebe5d8;

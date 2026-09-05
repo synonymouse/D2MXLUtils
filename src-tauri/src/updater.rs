@@ -1,14 +1,24 @@
-//! Auto-updater: checks GitHub releases, downloads the `.exe`, atomically
-//! replaces the running executable, and restarts.
+//! Auto-updater: checks GitHub releases, downloads the platform asset,
+//! atomically replaces the running executable, and restarts.
 //!
 //! Strategy:
 //! - `self_update::backends::github::ReleaseList` fetches release metadata.
 //! - `self_update::Download` streams the binary through our `ProgressWriter`
 //!   (which emits throttled `updater-progress` events to the frontend).
-//! - `self_update::self_replace` does the Windows-safe atomic swap of the
+//! - Windows: `self_update::self_replace` does the atomic swap of the
 //!   running `.exe` with the downloaded one.
-//! - Restart is an explicit `Command::new(current_exe()).spawn()` + `exit(0)`
-//!   triggered by the user clicking the «Перезапустить» button.
+//! - Linux: the release is an AppImage, run in place — `current_exe()`
+//!   resolves to a path inside the AppImage's own read-only squashfs mount
+//!   (e.g. `/tmp/.mount_XXXXX/usr/bin/d2mxlutils`), not the `.AppImage`
+//!   file itself, so `self_replace` can't target it (nothing there is
+//!   writable). Instead this uses the `APPIMAGE` env var the AppImage
+//!   runtime sets to the real file's path, and does the swap with a plain
+//!   `rename()` over it — safe even while it's the running process' own
+//!   backing file, since Unix allows unlinking/replacing an open file (the
+//!   old inode stays valid for this process until it exits; the new file
+//!   at that path is what runs next time).
+//! - Restart is an explicit `Command::new(<exe or AppImage path>).spawn()`
+//!   + `exit(0)` triggered by the user clicking the update-ready button.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -25,8 +35,9 @@ use http::header::{HeaderValue, ACCEPT};
 
 use crate::logger::{error as log_error, info as log_info};
 
-const REPO_OWNER: &str = "synonymouse";
+const REPO_OWNER: &str = "pertinate";
 const REPO_NAME: &str = "D2MXLUtils";
+#[cfg(target_os = "windows")]
 const ASSET_NAME: &str = "d2mxlutils.exe";
 
 #[derive(serde::Serialize, Clone, Debug)]
@@ -105,7 +116,13 @@ pub fn start_update(app: AppHandle, asset_url: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn restart_app(app: AppHandle) -> Result<(), String> {
+    // Linux: current_exe() would resolve into the OLD AppImage's now-stale
+    // squashfs mount, not the freshly-renamed file at APPIMAGE's path.
+    #[cfg(target_os = "windows")]
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+    #[cfg(target_os = "linux")]
+    let exe = appimage_path()?;
+
     log_info(&format!("updater: restarting via {:?}", exe));
     std::process::Command::new(&exe)
         .spawn()
@@ -144,8 +161,29 @@ fn check_inner() -> Result<UpdateCheckResult, String> {
             let asset = rel
                 .assets
                 .iter()
-                .find(|a| a.name == ASSET_NAME)
-                .ok_or_else(|| format!("asset '{}' missing in release v{}", ASSET_NAME, ver))?;
+                .find(|a| {
+                    #[cfg(target_os = "windows")]
+                    {
+                        a.name == ASSET_NAME
+                    }
+                    #[cfg(target_os = "linux")]
+                    {
+                        // release.yml now uploads the plain lowercase
+                        // "d2mxlutils.appimage" (matching the Windows job's
+                        // "d2mxlutils.exe"), but older releases still carry
+                        // Tauri's default versioned name (e.g.
+                        // "D2MXLUtils_1.26.2_amd64.AppImage") — match by
+                        // extension, case-insensitively, to cover both.
+                        a.name.to_ascii_lowercase().ends_with(".appimage")
+                    }
+                    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+                    {
+                        false
+                    }
+                })
+                .ok_or_else(|| {
+                    format!("no matching release asset for this platform in v{}", ver)
+                })?;
 
             log_info(&format!(
                 "updater: available v{} (current v{})",
@@ -188,28 +226,79 @@ fn download_and_replace(app: &AppHandle, url: &str) -> Result<(), String> {
         .map_err(|e| format!("download: {}", e))?;
 
     writer.flush().ok();
-    drop(writer); // ensure file handle is closed before self_replace moves it
+    drop(writer); // ensure file handle is closed before the swap moves it
 
     log_info("updater: download complete, applying self-replace");
 
-    self_update::self_replace::self_replace(&tmp_path)
-        .map_err(|e| format!("self_replace: {}", e))?;
+    #[cfg(target_os = "windows")]
+    {
+        self_update::self_replace::self_replace(&tmp_path)
+            .map_err(|e| format!("self_replace: {}", e))?;
 
-    // self_replace moves the file; remove any leftover just in case.
-    let _ = std::fs::remove_file(&tmp_path);
+        // self_replace moves the file; remove any leftover just in case.
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut perms = std::fs::metadata(&tmp_path)
+            .map_err(|e| format!("stat downloaded AppImage: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&tmp_path, perms)
+            .map_err(|e| format!("chmod +x downloaded AppImage: {}", e))?;
+
+        let target = appimage_path()?;
+        // Same-directory rename (download_path() already guarantees this)
+        // so it's a same-filesystem atomic replace, valid even though
+        // `target` is this process' own running AppImage.
+        std::fs::rename(&tmp_path, &target)
+            .map_err(|e| format!("rename over running AppImage: {}", e))?;
+    }
     Ok(())
 }
 
-/// Put the downloaded file next to the running `.exe` so the subsequent
-/// `self_replace` is always a same-volume rename (works around a potential
-/// cross-drive failure when TEMP is on a different volume).
+/// Path of the running `.AppImage`, from the env var its own runtime sets
+/// (not `current_exe()` — see the module doc comment for why that resolves
+/// inside the read-only squashfs mount instead). Absent when not actually
+/// running from an AppImage (e.g. a raw dev build), which is a real error
+/// here rather than something to silently fall back from.
+#[cfg(target_os = "linux")]
+fn appimage_path() -> Result<PathBuf, String> {
+    std::env::var("APPIMAGE")
+        .map(PathBuf::from)
+        .map_err(|_| "APPIMAGE env var not set — not running from an AppImage".to_string())
+}
+
+/// Put the downloaded file next to the running executable/AppImage so the
+/// subsequent swap is always a same-volume rename (works around a
+/// potential cross-drive failure when TEMP is on a different volume, and
+/// is required on Linux anyway for the rename-over-running-file trick).
 fn download_path() -> Result<PathBuf, String> {
-    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
-    let dir = exe
-        .parent()
-        .ok_or_else(|| "current exe has no parent directory".to_string())?
-        .to_path_buf();
-    Ok(dir.join("d2mxlutils-update.new.exe"))
+    #[cfg(target_os = "windows")]
+    {
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {}", e))?;
+        let dir = exe
+            .parent()
+            .ok_or_else(|| "current exe has no parent directory".to_string())?
+            .to_path_buf();
+        Ok(dir.join("d2mxlutils-update.new.exe"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let appimage = appimage_path()?;
+        let dir = appimage
+            .parent()
+            .ok_or_else(|| "AppImage path has no parent directory".to_string())?
+            .to_path_buf();
+        Ok(dir.join("d2mxlutils-update.new.AppImage"))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        Err("unsupported platform".to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
