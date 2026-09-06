@@ -24,9 +24,14 @@ filter_commits = true
 topo_order = false
 sort_commits = "newest"
 protect_breaking_commits = true
+tag_pattern = "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
 
 commit_parsers = [
   # Noise — skip before broad groups like ^docs can match.
+  { message = "^\\d+\\.\\d+\\.\\d+$", skip = true },
+  { message = "^fix\\(updater\\): point self-updater and releases link at this fork", skip = true },
+  { message = "^feat\\(branding\\): mark this build as a community fork", skip = true },
+  { message = "^fix\\(unique-stats-db\\): pin gh CLI calls to the correct repo", skip = true },
   { message = "^docs: update CHANGELOG", skip = true },
   { message = "^[Mm]erge ", skip = true },
   { message = "^[Aa]pply cargo fmt", skip = true },

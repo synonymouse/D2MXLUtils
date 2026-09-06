@@ -132,16 +132,17 @@ sections or skip more noise.
 
 ### Pull Request Labels / Auto-Release
 
-`.github/workflows/auto-release.yml` cuts a release (version bump, tag, build)
-on **every** PR merged to `master`, unless the PR carries a label that changes
-that:
+`.github/workflows/auto-release.yml` cuts a release only when a PR merged to
+`master` has exactly one explicit release label:
 
-- **`release:skip`** — merge does not bump the version or trigger a build.
-  Apply this automatically to any PR that only touches documentation (e.g.
-  `CLAUDE.md`, `AGENTS.md`, `README.md`, `docs/**`) with no source/build
-  changes — no need to wait for the user to ask.
-- **`release:minor`** / **`release:major`** — merge bumps minor/major instead
-  of the default patch. Apply when the change warrants it.
+- **`release:patch`** — bugfix release.
+- **`release:minor`** — feature release.
+- **`release:major`** — breaking release.
+- **`release:skip`** — explicit documentation that the PR must not release.
+
+An unlabeled PR does not release. Never combine `release:skip` with a release
+label or apply more than one release label; the workflow rejects ambiguous
+combinations. Directly pushing a semver tag remains the manual release path.
 
 ### Logging in Rust Backend
 

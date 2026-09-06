@@ -35,7 +35,7 @@ use http::header::{HeaderValue, ACCEPT};
 
 use crate::logger::{error as log_error, info as log_info};
 
-const REPO_OWNER: &str = "pertinate";
+const REPO_OWNER: &str = "synonymouse";
 const REPO_NAME: &str = "D2MXLUtils";
 #[cfg(target_os = "windows")]
 const ASSET_NAME: &str = "d2mxlutils.exe";
@@ -168,12 +168,9 @@ fn check_inner() -> Result<UpdateCheckResult, String> {
                     }
                     #[cfg(target_os = "linux")]
                     {
-                        // release.yml now uploads the plain lowercase
-                        // "d2mxlutils.appimage" (matching the Windows job's
-                        // "d2mxlutils.exe"), but older releases still carry
-                        // Tauri's default versioned name (e.g.
-                        // "D2MXLUtils_1.26.2_amd64.AppImage") — match by
-                        // extension, case-insensitively, to cover both.
+                        // release.yml uploads "d2mxlutils.AppImage", while
+                        // older releases use Tauri's versioned name. Match
+                        // the extension case-insensitively to cover both.
                         a.name.to_ascii_lowercase().ends_with(".appimage")
                     }
                     #[cfg(not(any(target_os = "windows", target_os = "linux")))]

@@ -183,7 +183,7 @@
   <!-- Header with status -->
   <header class="header">
     <div class="brand">
-      <h1 class="title">D2MXL<span class="accent">Utils</span> Fork</h1>
+      <h1 class="title">D2MXL<span class="accent">Utils</span></h1>
       <span class="version">v{__APP_VERSION__}</span>
     </div>
 
@@ -230,7 +230,7 @@
 
   <!-- Footer -->
   <footer class="footer">
-    <span class="footer-text">Made with ❤️ by synonymouse · Fork maintained by Pertinate</span>
+    <span class="footer-text">Made with ❤️ by synonymouse · Contributions by Pertinate</span>
   </footer>
 </main>
 

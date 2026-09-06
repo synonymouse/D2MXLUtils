@@ -1,7 +1,7 @@
-name: Auto-release on merge to master
+name: Auto-release on labeled merge to master
 
-# Cuts a release automatically every time a PR merges into master — bumps
-# the version, commits, and pushes the tag, then explicitly dispatches
+# Cuts a release only when a merged PR has exactly one explicit release label.
+# It bumps the version, commits and pushes the tag, then explicitly dispatches
 # release.yml (with `ref` set to that tag) to do the actual build.
 #
 # Confirmed live: pushing the tag alone does NOT work. GitHub deliberately
@@ -14,11 +14,13 @@ name: Auto-release on merge to master
 # the real tag inside that run (not the branch release.yml would otherwise
 # assume for a workflow_dispatch trigger).
 #
-# Triggered on `pull_request: closed` rather than `push` to master
-# specifically so this workflow's own push (a direct commit to master, not
-# a PR) can never re-trigger itself — no loop guard needed there.
+# Triggered on `pull_request_target: closed` rather than `pull_request` so a
+# merged PR from a fork still receives the base repository's write token. The
+# workflow only checks out merged `master`; it never checks out or executes the
+# untrusted PR head. Using a PR event rather than `push` also prevents this
+# workflow's own version commit from re-triggering it.
 on:
-  pull_request:
+  pull_request_target:
     types: [closed]
     branches:
       - master
@@ -30,12 +32,63 @@ permissions:
   actions: write
 
 jobs:
-  auto-release:
-    # Only real merges (a closed-without-merging PR fires this event too),
-    # and never for a PR labeled to skip an automatic release (e.g.
-    # doc-only changes, or batching several PRs before cutting one).
-    if: github.event.pull_request.merged == true && !contains(github.event.pull_request.labels.*.name, 'release:skip')
+  select-release:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.release.outputs.enabled }}
+      type: ${{ steps.release.outputs.type }}
+
+    steps:
+      - name: Validate release labels
+        id: release
+        shell: bash
+        env:
+          HAS_SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'release:skip') }}
+          HAS_PATCH: ${{ contains(github.event.pull_request.labels.*.name, 'release:patch') }}
+          HAS_MINOR: ${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}
+          HAS_MAJOR: ${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}
+        run: |
+          release_count=0
+          release_type=""
+
+          if [[ "$HAS_PATCH" == "true" ]]; then
+            release_count=$((release_count + 1))
+            release_type="patch"
+          fi
+          if [[ "$HAS_MINOR" == "true" ]]; then
+            release_count=$((release_count + 1))
+            release_type="minor"
+          fi
+          if [[ "$HAS_MAJOR" == "true" ]]; then
+            release_count=$((release_count + 1))
+            release_type="major"
+          fi
+
+          if [[ "$release_count" -gt 1 ]]; then
+            echo "::error::A PR may have only one release label"
+            exit 1
+          fi
+          if [[ "$HAS_SKIP" == "true" && "$release_count" -gt 0 ]]; then
+            echo "::error::release:skip cannot be combined with a release label"
+            exit 1
+          fi
+
+          if [[ "$release_count" -eq 1 ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "type=$release_type" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "type=" >> "$GITHUB_OUTPUT"
+          fi
+
+  auto-release:
+    needs: select-release
+    if: needs.select-release.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: d2mxlutils-auto-release
+      cancel-in-progress: false
     env:
       HUSKY: 0
 
@@ -63,23 +116,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # release:major / release:minor labels on the merged PR pick the
-      # bump; unlabeled PRs default to patch (pnpm release's own default).
-      - name: Determine bump type from PR labels
-        id: bump
-        run: |
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:major') }}" == "true" ]]; then
-            echo "type=major" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ contains(github.event.pull_request.labels.*.name, 'release:minor') }}" == "true" ]]; then
-            echo "type=minor" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=patch" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Bump version and tag
         id: version
         run: |
-          pnpm release ${{ steps.bump.outputs.type }}
+          pnpm release ${{ needs.select-release.outputs.type }}
           echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       # Push the tag explicitly by name rather than `--follow-tags` — a
@@ -88,10 +128,10 @@ jobs:
       # on this repo; pushing exactly one new tag does. (Moot for the
       # trigger itself now — see the next step — but still the right way
       # to push a single specific tag regardless.)
-      - name: Push version bump and tag
+      - name: Push version bump and tag atomically
         run: |
-          git push origin master
-          git push origin ${{ steps.version.outputs.tag }}
+          tag="${{ steps.version.outputs.tag }}"
+          git push --atomic origin master "refs/tags/$tag:refs/tags/$tag"
 
       # See the top-of-file note: the push above cannot fire release.yml's
       # own trigger (default-GITHUB_TOKEN pushes don't cascade to other

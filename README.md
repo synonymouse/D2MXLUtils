@@ -67,13 +67,16 @@ pnpm release          # 0.1.0 → 0.1.1 (bugfixes)
 pnpm release minor    # 0.1.0 → 0.2.0 (new features)
 pnpm release major    # 0.1.0 → 1.0.0 (breaking changes)
 
-# Push with tag:
-git push --follow-tags
+# Push only the version commit and the one tag just created:
+version="$(node -p "require('./package.json').version")"
+git push --atomic origin HEAD:master \
+  "refs/tags/v${version}:refs/tags/v${version}"
 ```
 
 `pnpm release` is a thin wrapper around `pnpm version <bump>` (still works
 directly if preferred) — it doesn't push on its own, since pushing the tag
-is what triggers the real CI release build.
+is what triggers the real CI release build. Never use `git push --tags` or
+`git push --follow-tags`: a clone may contain unrelated annotated tags.
 
 This will:
 1. Update version in `package.json`, `Cargo.toml`, `Cargo.lock`, and `tauri.conf.json`

@@ -6,6 +6,8 @@
   "description": "D2MXLUtils Drop Notifier overlay (Tauri + Rust + Svelte)",
   "scripts": {
     "dev": "vite",
+    "dev:windows": "tauri dev --target i686-pc-windows-msvc",
+    "dev:linux": "tauri dev --target x86_64-unknown-linux-gnu",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "format": "prettier --write \"src/**/*.{svelte,ts,js,css}\"",
