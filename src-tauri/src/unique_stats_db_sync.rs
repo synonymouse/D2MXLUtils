@@ -31,7 +31,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::logger::{error as log_error, info as log_info};
 
-const REPO_OWNER: &str = "pertinate";
+const REPO_OWNER: &str = "synonymouse";
 const REPO_NAME: &str = "D2MXLUtils";
 const RELEASE_TAG: &str = "unique-stats-db";
 const ASSET_NAME: &str = "unique-stats-db.json";

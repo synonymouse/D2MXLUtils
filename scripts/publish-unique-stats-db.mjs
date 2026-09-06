@@ -15,18 +15,15 @@
 // Usage: node scripts/publish-unique-stats-db.mjs
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const outputPath = path.join(__dirname, "..", "unique-stats-db.json");
 const TAG = "unique-stats-db";
-// Explicit, not inferred from the current directory's git remotes: this
-// repo typically has both `origin` (the read-only upstream,
-// synonymouse/D2MXLUtils) and a personal fork remote, and `gh` picking the
-// wrong one fails with a 404 rather than anything obviously
-// repo-related — confirmed live the first time this ran.
-const REPO = "pertinate/D2MXLUtils";
+// Keep publication independent from the checkout's configured git remotes.
+const REPO = "synonymouse/D2MXLUtils";
 
 console.log("Generating unique-stats-db.json ...");
 execFileSync(
@@ -34,6 +31,28 @@ execFileSync(
   [path.join(__dirname, "generate-unique-stats-db.mjs"), outputPath],
   { stdio: "inherit" },
 );
+
+const database = JSON.parse(readFileSync(outputPath, "utf8"));
+const validGeneratedAt =
+  typeof database.generatedAt === "string" &&
+  Number.isFinite(Date.parse(database.generatedAt));
+const validEntries =
+  Array.isArray(database.entries) &&
+  database.entries.length >= 800 &&
+  database.entries.every(
+    (entry) =>
+      typeof entry?.name === "string" &&
+      entry.name.trim() !== "" &&
+      typeof entry?.stats === "string" &&
+      entry.stats.trim() !== "",
+  );
+
+if (!validGeneratedAt || !validEntries) {
+  throw new Error(
+    "Refusing to publish an invalid or partial Unique Stats DB (expected a timestamp and at least 800 complete entries)",
+  );
+}
+console.log(`Validated ${database.entries.length} entries before publication.`);
 
 function releaseExists() {
   try {
@@ -64,6 +83,9 @@ if (releaseExists()) {
       outputPath,
       "--repo",
       REPO,
+      "--target",
+      "master",
+      "--latest=false",
       "--title",
       "Unique/Set Stats DB",
       "--notes",

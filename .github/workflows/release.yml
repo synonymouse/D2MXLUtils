@@ -4,12 +4,9 @@ on:
   push:
     tags:
       - "v*.*.*"
-  # Manual test runs (Actions tab, or `gh workflow run release.yml`) with
-  # no tag push required. Note: `github.ref_name` is the branch name in
-  # this case, so `softprops/action-gh-release` creates a tag/release
-  # named after the branch rather than a version — fine for verifying the
-  # pipeline builds/uploads correctly, just delete the resulting tag +
-  # release afterward.
+  # Manual branch runs build the selected platform(s) without publishing.
+  # A dispatch with `--ref <version-tag>` publishes that existing tag; this
+  # is how auto-release.yml bypasses GITHUB_TOKEN's workflow recursion guard.
   workflow_dispatch:
     inputs:
       target:
@@ -25,8 +22,35 @@ permissions:
   contents: write
   pull-requests: read
 
+concurrency:
+  group: d2mxlutils-release
+  cancel-in-progress: false
+
 jobs:
+  validate-release-ref:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tags must use strict vMAJOR.MINOR.PATCH format"
+            exit 1
+          fi
+
+          expected="v$(node -p "require('./package.json').version")"
+          if [[ "$GITHUB_REF_NAME" != "$expected" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package version $expected"
+            exit 1
+          fi
+
   build-and-release:
+    needs: validate-release-ref
     # Real tag pushes always build Windows; a manual workflow_dispatch run
     # only skips it when explicitly testing Linux alone.
     if: github.event_name != 'workflow_dispatch' || inputs.target == 'both' || inputs.target == 'windows'
@@ -82,15 +106,11 @@ jobs:
         run: pnpm tauri build --target i686-pc-windows-msvc
 
       - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # `github.ref_name` is only a real version on a tag push; a
-          # `workflow_dispatch` test run fires with a branch name instead,
-          # which `action-gh-release` rejects outright ("requires a tag").
-          # Fall back to a synthetic per-run tag it auto-creates pointing
-          # at the current commit — delete it after testing.
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
-          name: D2MXLUtils ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual test run {0}', github.run_number) }}
+          tag_name: ${{ github.ref_name }}
+          name: D2MXLUtils ${{ github.ref_name }}
           body_path: CHANGES.md
           files: src-tauri/target/i686-pc-windows-msvc/release/d2mxlutils.exe
           draft: false
@@ -101,7 +121,7 @@ jobs:
         # test run has no new tag/release notes worth persisting, and
         # skipping this avoids stray changelog commits on `master` from
         # test runs.
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
@@ -131,9 +151,10 @@ jobs:
           fi
 
   build-and-release-linux:
-    # Runs in parallel with build-and-release (no `needs:` — this job is
-    # entirely self-contained: its own checkout, its own build, its own
-    # release upload. It shares a tag_name with the Windows job but
+    needs: validate-release-ref
+    # Runs in parallel with build-and-release after the shared validation
+    # job. Each platform job has its own checkout, build, and release upload.
+    # It shares a tag_name with the Windows job but
     # doesn't consume any output from it; softprops/action-gh-release
     # safely handles both jobs appending an asset to the same release
     # concurrently (creates it if it doesn't exist yet, uploads to it if
@@ -232,22 +253,19 @@ jobs:
         # Tauri names the bundle after productName + version + arch (e.g.
         # "D2MXLUtils_1.26.18_amd64.AppImage"); the Windows job instead
         # uploads the raw binary as-built ("d2mxlutils.exe"). Rename here so
-        # both release assets share the same plain "d2mxlutils" base name —
-        # keeping the conventional ".AppImage" capitalization (not
-        # lowercased) since updater.rs's Linux asset matcher checks for
-        # that exact extension casing.
+        # both release assets share the same plain "d2mxlutils" base name.
+        # Keep the conventional ".AppImage" capitalization; updater.rs
+        # matches that extension case-insensitively.
         run: |
           bundle_dir=src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage
           appimage=$(find "$bundle_dir" -maxdepth 1 -name '*.AppImage' -print -quit)
           mv "$appimage" "$bundle_dir/d2mxlutils.AppImage"
 
       - name: Upload AppImage to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          # Same tag as the Windows job's release step, so this appends to
-          # the release it just created rather than trying to make a new
-          # one — see that step's comment for why the fallback exists.
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('manual-{0}', github.run_number) }}
+          tag_name: ${{ github.ref_name }}
           files: src-tauri/target/x86_64-unknown-linux-gnu/release/bundle/appimage/d2mxlutils.AppImage
           draft: false
           prerelease: false
