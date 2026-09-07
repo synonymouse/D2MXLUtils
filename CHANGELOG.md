@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.27.1 — 2026-09-07
+
+### Bug Fixes
+
+- Fix(breakpoints): match wereform/merc/block breakpoints to the reference calculator (eabf7c8)
+- Fix(main): back off scanner reattach and throttle breakpoints polling (a8d2e5f)
+- Fix(map-marker): stop crashes and memory leaks around area transitions (7f8a290)
+
 ## v1.27.0 — 2026-09-06
 
 ### Bug Fixes
