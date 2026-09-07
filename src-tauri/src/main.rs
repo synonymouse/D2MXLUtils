@@ -33,7 +33,7 @@ mod unique_stats_db_sync;
 mod updater;
 mod weapon_families;
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -116,6 +116,18 @@ struct AppState {
     /// to rebuild its class/unique/set caches without an app restart.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     scanner_shared_state: Arc<RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>>,
+    /// Consecutive `D2Injector::new` failures since the last successful
+    /// attach. The Linux backend hijacks a live thread via ptrace, which
+    /// only succeeds when it catches that thread outside a syscall — while
+    /// the player is actively in-game (vs. idle at a menu) essentially
+    /// every thread is busy most of the time, so this can fail for real,
+    /// non-transient reasons. `spawn_auto_scanner` backs off its retry
+    /// interval based on this counter instead of retrying every ~300ms —
+    /// a live session logged 100+ failed ptrace attach attempts in under a
+    /// minute against an actively-running game process, which is the
+    /// leading suspect for a game crash that immediately followed.
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    attach_failure_streak: Arc<AtomicU32>,
 }
 
 const GAME_STATUS_UNKNOWN: u8 = 0;
@@ -197,6 +209,7 @@ fn start_scanner_internal(
     #[cfg(any(target_os = "windows", target_os = "linux"))] scanner_shared_state: Arc<
         RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>,
     >,
+    #[cfg(any(target_os = "windows", target_os = "linux"))] attach_failure_streak: Arc<AtomicU32>,
     app_handle: AppHandle,
 ) {
     // Check if already running
@@ -247,8 +260,12 @@ fn start_scanner_internal(
                     ctx.d2_common,
                     ctx.d2_lang,
                 ) {
-                    Ok(i) => i,
+                    Ok(i) => {
+                        attach_failure_streak.store(0, Ordering::Relaxed);
+                        i
+                    }
                     Err(e) => {
+                        attach_failure_streak.fetch_add(1, Ordering::Relaxed);
                         log_error(&format!("Failed to create D2Injector: {}", e));
                         if let Err(e) = app_handle.emit("scanner-status", "error") {
                             log_error(&format!("Failed to emit event (error): {}", e));
@@ -426,6 +443,15 @@ fn start_scanner_internal(
             // throttle to ~300 ms at 30 ms tick instead of every tick.
             let mut stats_tick_counter: u32 = 0;
             const STATS_CHECK_EVERY: u32 = 10;
+            // Breakpoints tab is 2 units x 6 GetUnitStat calls, each a
+            // CreateRemoteThread into the game process. Left unthrottled
+            // this fired every 30 ms tick — ~400 remote threads/sec into an
+            // old, single-threaded-assumption engine for as long as the tab
+            // stayed open, reported as a memory leak while it's open.
+            // Breakpoint stats only change on gear/buff swaps, so the same
+            // ~300 ms cadence as the stats sheet above is plenty responsive.
+            let mut breakpoints_tick_counter: u32 = 0;
+            const BREAKPOINTS_CHECK_EVERY: u32 = 10;
 
             // Main scanning loop
             while is_scanning.load(Ordering::SeqCst) {
@@ -771,6 +797,8 @@ fn start_scanner_internal(
 
                     #[cfg(any(target_os = "windows", target_os = "linux"))]
                     if breakpoints_polling.load(Ordering::Relaxed) {
+                        breakpoints_tick_counter = breakpoints_tick_counter.wrapping_add(1);
+                        if breakpoints_tick_counter % BREAKPOINTS_CHECK_EVERY == 0 {
                         let injector = shared_state.injector.lock().unwrap();
                         let player_result = breakpoints::read_unit_breakpoint_data(
                             &shared_state.ctx,
@@ -810,6 +838,7 @@ fn start_scanner_internal(
                         };
                         if let Err(e) = app_handle.emit("breakpoints-update", &payload) {
                             log_error(&format!("Failed to emit breakpoints-update: {}", e));
+                        }
                         }
                     }
 
@@ -1016,6 +1045,7 @@ fn spawn_auto_scanner(
     #[cfg(any(target_os = "windows", target_os = "linux"))] scanner_shared_state: Arc<
         RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>,
     >,
+    #[cfg(any(target_os = "windows", target_os = "linux"))] attach_failure_streak: Arc<AtomicU32>,
     app_handle: AppHandle,
 ) {
     thread::spawn(move || {
@@ -1041,6 +1071,8 @@ fn spawn_auto_scanner(
                     dps_reset_pending.clone(),
                     #[cfg(any(target_os = "windows", target_os = "linux"))]
                     scanner_shared_state.clone(),
+                    #[cfg(any(target_os = "windows", target_os = "linux"))]
+                    attach_failure_streak.clone(),
                     app_handle.clone(),
                 );
             }
@@ -1050,8 +1082,24 @@ fn spawn_auto_scanner(
             // attaching (up to 2s of the reported 5-10s "time to ready").
             // `is_diablo2_running()` is cheap (a single X11 property read
             // over the shared connection on Linux, `FindWindowW` on
-            // Windows), so polling this often is not a real cost.
-            thread::sleep(Duration::from_millis(300));
+            // Windows), so polling this often is not a real cost. But a
+            // *failed* attach is not cheap on Linux — `D2Injector::new`
+            // hijacks a live thread via ptrace, and retrying that at this
+            // same 300ms cadence against an actively-playing game (where
+            // every thread is usually mid-syscall, so the attach keeps
+            // failing for real, non-transient reasons) hammered the game
+            // process with 100+ ptrace attach/detach cycles in under a
+            // minute in one observed session — the leading suspect for a
+            // crash that immediately followed. Back off exponentially on
+            // consecutive failures instead of retrying at full speed.
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            let poll_ms = match attach_failure_streak.load(Ordering::Relaxed) {
+                0 => 300,
+                n => (300u64 * 2u64.pow(n.min(6))).min(10_000),
+            };
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            let poll_ms = 300u64;
+            thread::sleep(Duration::from_millis(poll_ms));
         }
     });
 }
@@ -2447,7 +2495,11 @@ fn main() {
                 dps_reset_pending: Arc::new(AtomicBool::new(false)),
                 #[cfg(any(target_os = "windows", target_os = "linux"))]
                 scanner_shared_state: scanner_shared_state.clone(),
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                attach_failure_streak: Arc::new(AtomicU32::new(0)),
             };
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            let attach_failure_streak = state.attach_failure_streak.clone();
             let is_scanning = state.is_scanning.clone();
             let should_auto_scan = state.should_auto_scan.clone();
             let filter_config = state.filter_config.clone();
@@ -2585,6 +2637,8 @@ fn main() {
                 dps_reset_pending.clone(),
                 #[cfg(any(target_os = "windows", target_os = "linux"))]
                 scanner_shared_state.clone(),
+                #[cfg(any(target_os = "windows", target_os = "linux"))]
+                attach_failure_streak.clone(),
                 app_handle,
             );
 
