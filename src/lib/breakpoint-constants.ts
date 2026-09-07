@@ -116,22 +116,38 @@ export const WEAPON_TYPES: WeaponType[] = [
   { token: 'scrd', name: 'Sorceress Crystal Swords', primaryAnim: '1HS', blockAnim: '1HS' },
 ];
 
-// Wereform morphs and Rogue merc force HTH weaponAnim for every anim type.
-// `castPrefix` overrides the COF prefix used for cast (normally "SC").
+// Wereform morphs and the Rogue/Town Guard/Shapeshifter mercs force HTH
+// weaponAnim for every anim type — mirrors dev.median-xl.com/speedcalc's
+// per-`subject` ATanim/GHanim switches, which override to `*A1HTH`/`*GHHTH`
+// for all of these regardless of equipped weapon (Iron Wolf and Son of
+// Harrogath mercs get no such override there, so they're absent here too).
 export interface CharOverride {
   allAnims: string;
-  isWereform: boolean;
+  /** Overrides the COF prefix used for cast (normally "SC") — Deathlord
+   *  and Treewarden's SC table reuses their own `A1HTH` (attack) anim
+   *  data in the reference calculator, not a dedicated cast anim. */
   castPrefix?: string;
+  /** Overrides the COF prefix used for block (normally "BL") — Deathlord,
+   *  Treewarden and Superbeast's BL table reuses their `GHHTH` (hit
+   *  recovery) anim data in the reference calculator: `TH`/`~Z` have no
+   *  distinct `*BLHTH` entry in SpeedcalcData.txt at all, and the
+   *  reference ignores `0N`'s (which does exist) the same way. */
+  blPrefix?: string;
+  /** Werebear's `TGBLHTH` animSpeed in SpeedcalcData.txt is 220, but the
+   *  reference calculator hardcodes 200 for its Block table instead of
+   *  using that value — replicated here to match its output exactly. */
+  blAnimSpeedOverride?: number;
 }
 
 export const CHAR_OVERRIDES: Record<string, CharOverride> = {
-  '40': { allAnims: 'HTH', isWereform: true },
-  TG: { allAnims: 'HTH', isWereform: true },
-  OW: { allAnims: 'HTH', isWereform: true },
-  '~Z': { allAnims: 'HTH', isWereform: true },
-  '0N': { allAnims: 'HTH', isWereform: true, castPrefix: 'A1' },
-  TH: { allAnims: 'HTH', isWereform: true, castPrefix: 'A1' },
-  RG: { allAnims: 'HTH', isWereform: false },
+  '40': { allAnims: 'HTH' },
+  TG: { allAnims: 'HTH', blAnimSpeedOverride: 200 },
+  OW: { allAnims: 'HTH' },
+  '~Z': { allAnims: 'HTH', blPrefix: 'GH' },
+  '0N': { allAnims: 'HTH', castPrefix: 'A1', blPrefix: 'GH' },
+  TH: { allAnims: 'HTH', castPrefix: 'A1', blPrefix: 'GH' },
+  RG: { allAnims: 'HTH' },
+  GU: { allAnims: 'HTH' },
 };
 
 const CLASS_SPECIFIC_TOKENS: Record<string, string[]> = {
@@ -207,7 +223,12 @@ export function findWeaponTypeByWclass(
 }
 
 export const STARTING_FRAME_CLASSES = new Set(['AM', 'SO']);
-export const STARTING_FRAME_ANIMS = new Set(['1HS', '1HT', '2HS', '2HT', 'STF']);
+// Mirrors the reference calculator's `StartingFrame = 2` weapon cases
+// exactly: 1HT (daggers/javelins), 1HS (default bucket + Throwing Axes),
+// 2HS (Two-Handed Swords), and STF. Spears (2HT) are a separate weapon
+// case there that never sets `StartingFrame` — it stays 0 — so 2HT must
+// NOT be in this set even though it looks like a sibling of 1HT/2HS.
+export const STARTING_FRAME_ANIMS = new Set(['1HS', '1HT', '2HS', 'STF']);
 
 export const THROWING_FAMILIES = new Set(['tkni', 'jave', 'ajav', 'taxe']);
 
