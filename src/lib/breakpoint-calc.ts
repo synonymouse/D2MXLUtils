@@ -71,6 +71,8 @@ function resolveAnimLookup(
   let animPrefix: string = animType;
   if (override?.castPrefix && animType === 'SC') {
     animPrefix = override.castPrefix;
+  } else if (override?.blPrefix && animType === 'BL') {
+    animPrefix = override.blPrefix;
   }
 
   if (isThrowing && animType === 'A1' && !override) {
@@ -116,30 +118,6 @@ function calcDefensiveFpa(
   const divisor = Math.floor((animSpeed * (50 + eStat + skillSlow)) / 100);
   if (divisor <= 0) return frames;
   return Math.ceil((256 * frames) / divisor) - 1;
-}
-
-function calcWereformAttackFpa(
-  table: SpeedcalcTable,
-  charToken: string,
-  ias: number,
-  wsm: number,
-  skillSlow: number,
-): number | null {
-  const nuEntry = lookupAnim(table, charToken, 'NU', 'HTH');
-  const a1Entry = lookupAnim(table, charToken, 'A1', 'HTH');
-  if (!nuEntry || !a1Entry) return null;
-
-  const eIAS = Math.floor((120 * ias) / (120 + ias));
-  const inner = Math.floor(((100 + eIAS - wsm) * a1Entry.animSpeed) / 100);
-  if (inner <= 0) return null;
-  const wAnimSpeed = Math.floor(
-    (256 * nuEntry.frames) / Math.floor((256 * a1Entry.frames) / inner),
-  );
-
-  const effective = Math.min(eIAS - wsm + skillSlow, 75);
-  const divisor = Math.floor((wAnimSpeed * (100 + effective)) / 100);
-  if (divisor <= 0) return null;
-  return Math.ceil((256 * a1Entry.frames) / divisor) - 1;
 }
 
 function findRequiredStat(targetFpa: number, calcFn: (stat: number) => number): number {
@@ -197,6 +175,9 @@ export function computeBreakpointTable(
   if (!anim) return null;
 
   const override = CHAR_OVERRIDES[params.charToken];
+  if (animType === 'BL' && override?.blAnimSpeedOverride !== undefined) {
+    anim.animSpeed = override.blAnimSpeedOverride;
+  }
   const skillSlow = params.debuff;
   const hasStartingFrame =
     animType === 'A1' &&
@@ -214,22 +195,25 @@ export function computeBreakpointTable(
   switch (animType) {
     case 'A1':
       currentStat = params.ias;
-      if (override?.isWereform) {
-        const charToken = params.charToken;
-        calcFn = (s) =>
-          calcWereformAttackFpa(table, charToken, s, params.wsm, skillSlow) ?? anim.frames;
-      } else {
-        calcFn = (s) =>
-          calcAttackFpa(
-            anim.frames,
-            anim.animSpeed,
-            s,
-            params.wsm,
-            skillSlow,
-            hasStartingFrame,
-            throwingPenalty,
-          );
-      }
+      // Wereforms use the same plain attack formula as everyone else, just
+      // with HTH anim data (already selected via `override.allAnims` in
+      // `resolveAnimLookup`) — the reference calculator's separate
+      // NU/A1-frame-derived wereform math (dev.median-xl.com/speedcalc's
+      // `Weremorph > 0` branch of `doAttackMaths`) is dead code there: every
+      // `Weremorph = ...` assignment in `calculateAttack` is commented out,
+      // so `Weremorph` is always 0 and that branch never actually runs.
+      // Porting it here made our morph breakpoints diverge from the live
+      // tool's real (plain-formula) output.
+      calcFn = (s) =>
+        calcAttackFpa(
+          anim.frames,
+          anim.animSpeed,
+          s,
+          params.wsm,
+          skillSlow,
+          hasStartingFrame,
+          throwingPenalty,
+        );
       break;
     case 'SC':
       currentStat = params.fcr;

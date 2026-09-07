@@ -245,11 +245,25 @@ Implemented in `src-tauri/src/map_marker.rs` (`MapMarkerManager`). Follows
 this document's algorithm directly:
 
 - `find_leaf_slot` — the `insert()` walk above, as a plain read loop.
-- `attach_chain` — builds the new cells (chained to each other, tail stays
-  a real leaf), then calls `find_leaf_slot` and writes the head there.
-- `detach_chain` — tracks the exact slot it attached under
-  (`chain_parent_slot`) and clears just that slot back to `NULL`. Since our
-  chain is a genuine leaf, this can never disconnect an engine-owned node.
+- `reconcile_chain` — diffs the linked chain against the current wanted
+  set and touches only what changed: unlinks markers no longer wanted (or
+  whose position moved) by pointing their predecessor at whatever they
+  themselves pointed to next, then allocates cells only for markers that
+  aren't already placed and appends them at the tail (or via
+  `find_leaf_slot` if the chain is currently empty). Markers that are
+  still wanted at the same position are left untouched.
+  >  **Why not just rebuild the whole batch every tick?** An earlier
+  >  version detached and reallocated *everything* on any single change.
+  >  `NewAutomapCell`s are never freed (the engine reclaims the whole pool
+  >  on area change — see below), so that leaked one never-reused cell per
+  >  already-placed marker on every addition. Confirmed live: `Game.exe`'s
+  >  RSS climbing continuously during Map Notifier use, dropping only on
+  >  area change, worsening as more matched items accumulated since each
+  >  new one reallocated the whole growing set instead of just itself.
+- `detach_all` — the full-teardown case (`clear`, e.g. on game exit or the
+  filter losing all `map` rules): clears just the head slot
+  (`chain_parent_slot`) back to `NULL`, which detaches the *entire* chain
+  in one write since it's a straight line reachable only from that slot.
 - A per-area `persistent` cache with pickup/TTL heuristics sits on top,
   independent of the above — see that module's own doc comments.
 
