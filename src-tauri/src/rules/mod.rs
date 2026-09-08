@@ -26,6 +26,8 @@ use serde::{Deserialize, Serialize};
 
 use regex::Regex;
 
+pub use crate::notifier::UniqueKind;
+
 // =====================================================================
 // Enums
 // =====================================================================
@@ -267,6 +269,12 @@ pub struct Rule {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tiers: Vec<ItemTier>,
+
+    /// Unique-item rarity tier (`tu`/`su`/`ssu`/`sssu`), independent of
+    /// `qualities` — specifying one implies the item must be Unique quality
+    /// with that wLvl band, so `sssu` alone is a valid, complete rule.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique_kinds: Vec<UniqueKind>,
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sockets: Vec<u8>,

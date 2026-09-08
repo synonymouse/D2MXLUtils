@@ -2,6 +2,7 @@
 
 use super::{
     CompiledPattern, EnrichmentNeeds, ItemQuality, ItemTier, PartialRuleMatch, PlayerClass, Rule,
+    UniqueKind,
 };
 use crate::notifier::ItemDropEvent;
 
@@ -33,6 +34,9 @@ impl<'a> MatchContext<'a> {
             return false;
         }
         if !self.tiers_match(&rule.tiers) {
+            return false;
+        }
+        if !self.unique_kinds_match(&rule.unique_kinds) {
             return false;
         }
         if !self.sockets_match(&rule.sockets) {
@@ -89,6 +93,9 @@ impl<'a> MatchContext<'a> {
             return PartialRuleMatch::NoMatch;
         }
         if !self.tiers_match(&rule.tiers) {
+            return PartialRuleMatch::NoMatch;
+        }
+        if !self.unique_kinds_match(&rule.unique_kinds) {
             return PartialRuleMatch::NoMatch;
         }
         if !self.sockets_match(&rule.sockets) {
@@ -195,6 +202,16 @@ impl<'a> MatchContext<'a> {
         }
         match self.item.tier {
             Some(item_tier) => rule_tiers.iter().any(|&t| t == item_tier),
+            None => false,
+        }
+    }
+
+    fn unique_kinds_match(&self, rule_unique_kinds: &[UniqueKind]) -> bool {
+        if rule_unique_kinds.is_empty() {
+            return true;
+        }
+        match self.item.unique_kind {
+            Some(kind) => rule_unique_kinds.iter().any(|&k| k == kind),
             None => false,
         }
     }
@@ -643,6 +660,47 @@ mod tests {
         let mut over = item("X", "Normal", "", false);
         over.ilvl = 100;
         assert!(!MatchContext::new(&over).matches(&max_only));
+    }
+
+    #[test]
+    fn unique_kind_rule_matches_only_that_band_and_rejects_others() {
+        let r = Rule {
+            unique_kinds: vec![UniqueKind::Sssu],
+            ..Rule::default()
+        };
+        let mut sssu = item("X", "Unique", "", false);
+        sssu.unique_kind = Some(UniqueKind::Sssu);
+        assert!(MatchContext::new(&sssu).matches(&r));
+
+        let mut tu = item("X", "Unique", "", false);
+        tu.unique_kind = Some(UniqueKind::Tu);
+        assert!(!MatchContext::new(&tu).matches(&r));
+
+        // Non-unique item with no unique_kind never matches a bare rarity rule.
+        let normal = item("X", "Normal", "", false);
+        assert!(!MatchContext::new(&normal).matches(&r));
+    }
+
+    #[test]
+    fn multi_unique_kind_rule_matches_any_listed_band() {
+        let r = Rule {
+            unique_kinds: vec![UniqueKind::Ssu, UniqueKind::Sssu],
+            ..Rule::default()
+        };
+        for k in [UniqueKind::Ssu, UniqueKind::Sssu] {
+            let mut it = item("X", "Unique", "", false);
+            it.unique_kind = Some(k);
+            assert!(MatchContext::new(&it).matches(&r), "{:?} should match", k);
+        }
+        for k in [UniqueKind::Tu, UniqueKind::Su] {
+            let mut it = item("X", "Unique", "", false);
+            it.unique_kind = Some(k);
+            assert!(
+                !MatchContext::new(&it).matches(&r),
+                "{:?} must NOT match",
+                k
+            );
+        }
     }
 
     #[test]

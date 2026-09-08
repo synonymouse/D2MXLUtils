@@ -16,7 +16,9 @@
 //! [`ValidationError::Warning`] but do not abort parsing, so an editor can
 //! still render and reason about partially-typed rules.
 
-use super::{FilterConfig, ItemQuality, ItemTier, NotifyColor, PlayerClass, Rule, Visibility};
+use super::{
+    FilterConfig, ItemQuality, ItemTier, NotifyColor, PlayerClass, Rule, UniqueKind, Visibility,
+};
 use serde::{Deserialize, Serialize};
 
 // =====================================================================
@@ -62,6 +64,7 @@ struct Attrs {
     stat_patterns: Option<Vec<String>>,
     qualities: Option<Vec<ItemQuality>>,
     tiers: Option<Vec<ItemTier>>,
+    unique_kinds: Option<Vec<UniqueKind>>,
     sockets: Option<Vec<u8>>,
     classes: Option<Vec<PlayerClass>>,
     min_clvl: Option<u32>,
@@ -88,6 +91,9 @@ impl Attrs {
         }
         if let Some(ref t) = self.tiers {
             rule.tiers = t.clone();
+        }
+        if let Some(ref k) = self.unique_kinds {
+            rule.unique_kinds = k.clone();
         }
         if let Some(ref s) = self.sockets {
             rule.sockets = s.clone();
@@ -144,6 +150,9 @@ impl Attrs {
         }
         if self.tiers.is_none() {
             self.tiers = group.tiers.clone();
+        }
+        if self.unique_kinds.is_none() {
+            self.unique_kinds = group.unique_kinds.clone();
         }
         if self.sockets.is_none() {
             self.sockets = group.sockets.clone();
@@ -574,6 +583,13 @@ fn parse_attrs_into(
             }
             continue;
         }
+        if let Some(k) = UniqueKind::from_str(&lower) {
+            let set = attrs.unique_kinds.get_or_insert_with(Vec::new);
+            if !set.contains(&k) {
+                set.push(k);
+            }
+            continue;
+        }
         if let Some(c) = PlayerClass::from_str(&lower) {
             let set = attrs.classes.get_or_insert_with(Vec::new);
             if !set.contains(&c) {
@@ -818,6 +834,11 @@ fn attrs_from_rule(rule: &Rule) -> Attrs {
         } else {
             Some(rule.tiers.clone())
         },
+        unique_kinds: if rule.unique_kinds.is_empty() {
+            None
+        } else {
+            Some(rule.unique_kinds.clone())
+        },
         sockets: if rule.sockets.is_empty() {
             None
         } else {
@@ -885,6 +906,7 @@ fn validate_tokens(
 fn is_known_token(lower: &str) -> bool {
     if ItemQuality::from_str(lower).is_some()
         || ItemTier::from_str(lower).is_some()
+        || UniqueKind::from_str(lower).is_some()
         || PlayerClass::from_str(lower).is_some()
         || NotifyColor::from_str(lower).is_some()
         || parse_socket_keyword(lower).is_some()
@@ -1394,6 +1416,28 @@ mod tests {
             vec![ItemQuality::Magic, ItemQuality::Rare, ItemQuality::Unique]
         );
         assert_eq!(cfg.rules[0].visibility, Visibility::Hide);
+    }
+
+    #[test]
+    fn bare_rarity_keyword_parses_into_unique_kinds() {
+        let cfg = parse_dsl("sssu map").unwrap();
+        assert_eq!(cfg.rules[0].unique_kinds, vec![UniqueKind::Sssu]);
+        assert!(cfg.rules[0].map);
+        assert!(validate_dsl("sssu map").is_empty());
+    }
+
+    #[test]
+    fn multi_rarity_tokens_accumulate_into_set() {
+        let cfg = parse_dsl("tu su ssu sssu notify").unwrap();
+        assert_eq!(
+            cfg.rules[0].unique_kinds,
+            vec![
+                UniqueKind::Tu,
+                UniqueKind::Su,
+                UniqueKind::Ssu,
+                UniqueKind::Sssu,
+            ]
+        );
     }
 
     #[test]

@@ -319,6 +319,11 @@
                 <span class="kw-quality">normal</span>, <span class="kw-quality">low</span>,
                 <span class="kw-quality">superior</span>
               </li>
+              <li>
+                <span class="kw-quality">tu</span>, <span class="kw-quality">su</span>,
+                <span class="kw-quality">ssu</span>, <span class="kw-quality">sssu</span>
+                (unique rarity tiers)
+              </li>
             </ul>
           </div>
 

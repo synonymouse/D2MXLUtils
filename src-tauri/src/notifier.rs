@@ -236,6 +236,17 @@ pub enum UniqueKind {
 }
 
 impl UniqueKind {
+    /// Parse a loot-filter DSL rarity keyword (`tu`/`su`/`ssu`/`sssu`).
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "tu" => Some(Self::Tu),
+            "su" => Some(Self::Su),
+            "ssu" => Some(Self::Ssu),
+            "sssu" => Some(Self::Sssu),
+            _ => None,
+        }
+    }
+
     fn from_wlvl(wlvl: u16) -> Option<Self> {
         match wlvl {
             2..=100 => Some(UniqueKind::Tu),

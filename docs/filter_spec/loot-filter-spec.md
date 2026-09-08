@@ -56,7 +56,7 @@ A group header accepts all rule attributes **except a name pattern**. Name patte
 ## Rule Anatomy
 
 ```
-[name-pattern] [quality] [tier] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
+[name-pattern] [quality] [rarity] [tier] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
 ```
 
 All components are optional. A line with zero attributes is valid but is a no-op (matches everything, does nothing).
@@ -72,13 +72,14 @@ A rule matches an item when **all** specified criteria are satisfied.
 | Name | `"regex"` | regex matches either the runtime display name or the items.txt base type name (case-insensitive OR) |
 | Stat | `{regex}...` | every listed regex matches the item stat text (AND), case-insensitive |
 | Quality | `unique`, `set`, `rare`, `magic`, `craft`, `honor`, `normal`, `superior`, `low` | item quality equals one of the listed keywords (OR) |
+| Rarity | `tu`, `su`, `ssu`, `sssu` | Unique item's wLvl-derived rarity band equals one of the listed keywords (OR); implies Unique quality, and never matches non-unique items |
 | Tier | `0`–`4`, `sacred`, `angelic`, `master` | MedianXL item tier equals one of the listed keywords (OR) |
 | Sockets | `sockets0`–`sockets6` | item socket count equals one of the listed numbers (OR) |
 | Ethereal | `eth` | item is ethereal |
 
-Quality, tier, and sockets each accept multiple keywords in a single rule;
-the rule matches if the item's value equals any of the listed ones. A rule
-with no keyword in a category matches any value in that category.
+Quality, rarity, tier, and sockets each accept multiple keywords in a single
+rule; the rule matches if the item's value equals any of the listed ones. A
+rule with no keyword in a category matches any value in that category.
 
 Invalid regex falls back to plain substring matching.
 
