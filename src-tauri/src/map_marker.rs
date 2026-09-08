@@ -11,29 +11,6 @@
 //! missing. Leaf insertion never touches the root, so engine-owned icons
 //! are never at risk of being swapped out from under it.
 //!
-//! `reconcile_chain` adds/removes only the markers that actually changed
-//! since the last tick, leaving unrelated cells linked and untouched. An
-//! earlier version detached and reallocated the *entire* wanted set on any
-//! single change; since cells are never freed (see below), that leaked one
-//! never-reused cell per already-placed marker on every addition —
-//! confirmed live as `Game.exe` memory climbing continuously during Map
-//! Notifier use (dropping only on area change), worsening as more matched
-//! items accumulated because each new one reallocated the whole growing
-//! set instead of just itself.
-//!
-//! `try_relink_chain` extends that same "don't reallocate what's still
-//! good" principle across a *layer* switch, not just a wanted-set change.
-//! `layer` flips on ordinary Room2 crossings within the same area, not
-//! only on a true area/act change — a town alone is subdivided into many
-//! small Room2s, so just walking around flips it constantly. Forgetting
-//! the chain on every such flip (the previous behavior) forced a full
-//! reallocation of the entire wanted set on every crossing — confirmed
-//! live as `Game.exe` memory climbing specifically while moving around
-//! town rather than standing still. `try_relink_chain` instead re-splices
-//! the *existing* cells onto the new layer's tree, verified sane first;
-//! a real area/act change (where the old pool genuinely is gone) fails
-//! that check and falls back to the old, safe forget-and-rebuild path.
-//!
 //! A per-area `persistent` cache keeps markers sticky when the player walks
 //! past an item and its room unloads. Entries are evicted either when BFS
 //! misses them AND the player is within `PICKUP_THRESHOLD_SUBTILES` (assumed
@@ -55,7 +32,6 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
 use crate::injection::D2Injector;
-use crate::logger::info as log_info;
 use crate::offsets::{
     automap_cell, automap_layer, d2client, item_path, paths, player_path, room1, unit, unit_type,
 };
@@ -93,6 +69,11 @@ pub const MARKER_TTL: Duration = Duration::from_secs(20 * 60);
 /// nothing else cleared it in between.
 pub const AREA_CHANGE_JUMP_SUBTILES: i32 = 60;
 
+/// Maximum number of automap marker cells to allocate and place simultaneously.
+/// Prevents runaway cell allocation when there are hundreds of filtered drops,
+/// avoiding memory exhaustion in Diablo II's 32-bit address space.
+pub const MAX_MARKER_CELLS: usize = 100;
+
 pub struct MapMarkerManager {
     last_layer: u32,
     /// Remote address of the slot whose value = our chain head — the
@@ -100,19 +81,13 @@ pub struct MapMarkerManager {
     /// `layer + P_OBJECTS` itself, only when the tree was empty). Never
     /// rewritten to point elsewhere once picked; zero when not attached.
     chain_parent_slot: u32,
-    /// Cells currently linked into the tree, in chain order, as
-    /// `(unit_id, cell_addr, cell_x, cell_y)`. `placed[0]` is the head; the
+    /// Cells we've allocated, in chain order. `placed[0]` is the head; the
     /// last cell's `pLess` is 0 — we're a genuine leaf chain, not a splice
-    /// back into the engine's tree (see `reconcile_chain`). Tracking the
-    /// unit_id/position per cell (not just raw addresses) is what lets
-    /// `reconcile_chain` add/remove only what actually changed instead of
-    /// tearing down and reallocating the whole batch on every tick — a
-    /// full-rebuild-per-tick design leaks a fresh, never-freed cell per
-    /// *already-placed* marker on every single addition, which compounds
-    /// as more items accumulate (confirmed live: `Game.exe`'s RSS climbing
-    /// during Map Notifier use, dropping only on area change when the
-    /// engine reclaims the whole pool).
-    placed: Vec<(u32, u32, i32, i32)>,
+    /// back into the engine's tree (see `attach_chain`).
+    placed: Vec<u32>,
+    /// Detached cells available for reuse across ticks and room transitions.
+    /// Never free individual cells: the game owns their backing pool.
+    spare_cells: Vec<u32>,
     last_hash: u64,
     persistent: HashMap<u32, MarkerItem>,
     /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
@@ -123,15 +98,6 @@ pub struct MapMarkerManager {
     /// compare against the last *real* position once the player reappears,
     /// not treat "no reading yet" as a jump. See `AREA_CHANGE_JUMP_SUBTILES`.
     last_player_sub: Option<(i32, i32)>,
-    /// Diagnostic only: total `AutomapCell`s allocated this session, plus
-    /// how many times `reconcile_chain` has actually added cells. Cells are
-    /// never freed by design (the engine reclaims the whole pool on area
-    /// change), so a reattach rate far above "the wanted marker set
-    /// actually changed" would leak into the game's own memory — logged
-    /// periodically to confirm or rule this out against reports of
-    /// `Game.exe`'s RSS climbing during Map Notifier use.
-    total_cells_allocated: u64,
-    reattach_count: u64,
 }
 
 impl MapMarkerManager {
@@ -140,12 +106,11 @@ impl MapMarkerManager {
             last_layer: 0,
             chain_parent_slot: 0,
             placed: Vec::new(),
+            spare_cells: Vec::new(),
             last_hash: 0,
             persistent: HashMap::new(),
             last_seen: HashMap::new(),
             last_player_sub: None,
-            total_cells_allocated: 0,
-            reattach_count: 0,
         }
     }
 
@@ -154,16 +119,27 @@ impl MapMarkerManager {
     pub fn clear(&mut self, ctx: &D2Context) -> Result<(), String> {
         let layer = read_layer(ctx).unwrap_or(0);
         if layer != 0 && layer == self.last_layer {
-            let _ = self.detach_all(ctx);
+            let _ = self.detach_chain(ctx);
         }
         self.chain_parent_slot = 0;
         self.placed.clear();
+        self.spare_cells.clear();
         self.last_hash = 0;
         self.persistent.clear();
         self.last_seen.clear();
         self.last_layer = 0;
         self.last_player_sub = None;
         Ok(())
+    }
+
+    /// The marker scanner can observe loading before tick() runs. Forget
+    /// addresses without touching memory the game may already have freed.
+    pub fn invalidate_cells(&mut self) {
+        self.last_layer = 0;
+        self.chain_parent_slot = 0;
+        self.placed.clear();
+        self.spare_cells.clear();
+        self.last_hash = 0;
     }
 
     pub fn tick(
@@ -182,6 +158,7 @@ impl MapMarkerManager {
             self.last_layer = 0;
             self.chain_parent_slot = 0;
             self.placed.clear();
+            self.spare_cells.clear();
             self.last_hash = 0;
             return Ok(());
         }
@@ -196,35 +173,28 @@ impl MapMarkerManager {
             if is_area_change(self.last_player_sub, (px, py)) {
                 self.persistent.clear();
                 self.last_seen.clear();
+                let _ = self.detach_chain(ctx);
+                self.placed.clear();
+                self.spare_cells.clear();
+                self.chain_parent_slot = 0;
+                self.last_hash = 0;
             }
             self.last_player_sub = Some((px, py));
         }
 
-        // Layer switch (Room2 crossing or layer reallocation): try to
-        // re-splice our *existing* cells onto the new layer's tree rather
-        // than discarding them. Room2 crossings happen purely from
-        // walking — a town is subdivided into many small Room2s, so
-        // ordinary movement flips `layer` constantly even within the same
-        // area, which is exactly why the persistent cache above isn't
-        // wiped here. Treating every such flip as "the old cells are gone,
-        // allocate a whole fresh batch" (the previous behavior) leaked one
-        // never-reused cell per already-placed marker on every single
-        // Room2 crossing — confirmed live: `Game.exe` memory climbing
-        // specifically while moving around town, not while standing
-        // still. `try_relink_chain` verifies each existing cell still
-        // looks like a genuine `AutomapCell` we wrote before trusting it,
-        // and falls back to the old forget-and-rebuild behavior if that
-        // check (or the relink write itself) fails — so a wrong
-        // assumption here degrades to correct-but-wasteful rather than
-        // writing through memory that may genuinely have been reclaimed
-        // (e.g. on a real area/act change, already handled above).
+        // Layer switch (Room2 crossing or layer reallocation): detach from
+        // the old layer and keep existing cells in spare_cells for reuse.
+        // AutomapCell allocations come from a global pool (D2Client NewAutomapCell),
+        // not the individual layer, so discarding spare_cells here would permanently
+        // leak memory in Game.exe every time the player crosses rooms.
         if layer != self.last_layer {
-            self.last_layer = layer;
-            if !self.placed.is_empty() && !self.try_relink_chain(ctx, layer) {
-                self.chain_parent_slot = 0;
-                self.placed.clear();
-                self.last_hash = 0;
+            let _ = self.detach_chain(ctx);
+            if !self.placed.is_empty() {
+                self.spare_cells.append(&mut self.placed);
             }
+            self.chain_parent_slot = 0;
+            self.last_hash = 0;
+            self.last_layer = layer;
         }
 
         // Tamper check: if the slot we attached under (root or some
@@ -232,14 +202,15 @@ impl MapMarkerManager {
         // or MXL wrote through/past us and our chain is orphaned. Force
         // rebuild.
         if self.chain_parent_slot != 0 {
-            if let Some(&(_, head_cell, _, _)) = self.placed.first() {
+            if let Some(&head) = self.placed.first() {
                 let current = ctx
                     .process
                     .read_memory::<u32>(self.chain_parent_slot as usize)
                     .unwrap_or(0);
-                if current != head_cell {
+                if current != head {
                     self.chain_parent_slot = 0;
                     self.placed.clear();
+                    self.spare_cells.clear();
                     self.last_hash = 0;
                 }
             }
@@ -261,236 +232,160 @@ impl MapMarkerManager {
         if hash == self.last_hash && self.chain_parent_slot != 0 {
             return Ok(());
         }
+        if wanted.is_empty() && self.chain_parent_slot == 0 {
+            self.last_hash = hash;
+            return Ok(());
+        }
 
-        self.reconcile_chain(ctx, injector, layer, &wanted)?;
+        self.detach_chain(ctx)?;
+
+        if wanted.is_empty() {
+            self.last_hash = hash;
+            return Ok(());
+        }
+
+        self.attach_chain(ctx, injector, layer, &wanted)?;
         self.last_hash = hash;
         Ok(())
     }
 
-    /// Unlink the whole chain from the tree in one write (nulling the head
-    /// slot detaches every cell reachable from it, regardless of how many
-    /// there are) and drop all bookkeeping. Used for full teardowns
-    /// (`clear`) where we're discarding the marker set entirely, not for
-    /// per-tick reconciliation — see `reconcile_chain` for that. No-op if
-    /// someone else already overwrote the slot (tamper case).
-    fn detach_all(&mut self, ctx: &D2Context) -> Result<(), String> {
-        if self.chain_parent_slot != 0 {
-            if let Some(&(_, head_cell, _, _)) = self.placed.first() {
-                let current = ctx
+    /// Recycle only a chain that is still exactly ours. If the engine added
+    /// children or replaced a link, leave that tree alone and discard all
+    /// reusable addresses instead of disconnecting or rewriting foreign nodes.
+    fn detach_chain(&mut self, ctx: &D2Context) -> Result<(), String> {
+        if self.chain_parent_slot == 0 || self.placed.is_empty() {
+            return Ok(());
+        }
+        let current = ctx
+            .process
+            .read_memory::<u32>(self.chain_parent_slot as usize)?;
+        let intact = current == self.placed[0]
+            && chain_is_intact(&self.placed, |cell| {
+                let less = ctx
                     .process
-                    .read_memory::<u32>(self.chain_parent_slot as usize)
-                    .unwrap_or(0);
-                if current == head_cell {
-                    ctx.process
-                        .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())?;
-                }
-            }
+                    .read_memory::<u32>(cell as usize + automap_cell::P_LESS)?;
+                let more = ctx
+                    .process
+                    .read_memory::<u32>(cell as usize + automap_cell::P_MORE)?;
+                Ok((less, more))
+            })?;
+        if intact {
+            ctx.process
+                .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())?;
+            self.spare_cells.append(&mut self.placed);
+        } else {
+            self.placed.clear();
+            self.spare_cells.clear();
         }
         self.chain_parent_slot = 0;
-        self.placed.clear();
         Ok(())
     }
 
-    /// Try to re-splice the existing `placed` chain onto `layer`'s tree
-    /// in place, without allocating anything. Returns `false` (caller
-    /// should fall back to forgetting the chain and rebuilding from
-    /// scratch) if either the sanity check or the relink write itself
-    /// doesn't check out — never leaves the chain half-linked, since a
-    /// failed write here means we simply didn't touch the tree at all.
-    ///
-    /// The sanity check (each cell still reads back `fSaved == 1` and the
-    /// exact sprite id we wrote) guards against the one case this
-    /// shouldn't be attempted: a real area/act change tore down the old
-    /// layer's whole pool and this memory got reused for something else.
-    /// A genuine Room2-crossing layer switch shouldn't disturb our cells
-    /// at all — they simply become unreachable from the old tree — so
-    /// this check should pass every time in that case and only ever trip
-    /// on the teardown case we want to avoid relinking through.
-    fn try_relink_chain(&mut self, ctx: &D2Context, layer: u32) -> bool {
-        for &(_, cell_addr, _, _) in &self.placed {
-            let f_saved = ctx
-                .process
-                .read_memory::<u32>(cell_addr as usize + automap_cell::F_SAVED)
-                .unwrap_or(0);
-            let n_cell_no = ctx
-                .process
-                .read_memory::<u16>(cell_addr as usize + automap_cell::N_CELL_NO)
-                .unwrap_or(0);
-            if f_saved != 1 || n_cell_no != automap_cell::CROSS_CELL_NO {
-                return false;
-            }
-        }
-
-        let objects_slot = layer + automap_layer::P_OBJECTS as u32;
-        let Ok(attach_slot) = find_leaf_slot(ctx, objects_slot) else {
-            return false;
-        };
-        let slot_still_empty = ctx
-            .process
-            .read_memory::<u32>(attach_slot as usize)
-            .unwrap_or(0)
-            == 0;
-        if !slot_still_empty {
-            return false;
-        }
-
-        let head_cell = self.placed[0].1;
-        if ctx
-            .process
-            .write_buffer(attach_slot as usize, &head_cell.to_le_bytes())
-            .is_err()
-        {
-            return false;
-        }
-
-        self.chain_parent_slot = attach_slot;
-        true
-    }
-
-    /// Reconcile the linked chain against `wanted`, touching only what
-    /// actually changed: unlink markers no longer wanted (or whose
-    /// position moved), then allocate and append cells only for markers
-    /// that aren't already placed. Cells for markers that are still wanted
-    /// at the same position are left completely alone.
-    ///
-    /// This replaces an earlier design that detached and reallocated the
-    /// *entire* wanted set on every change. Since `NewAutomapCell`s are
-    /// never freed (the engine reclaims the whole pool on area change),
-    /// that leaked one fresh, never-reused cell per already-placed marker
-    /// on every single addition — harmless for a couple of markers, but
-    /// confirmed live to leak `Game.exe` memory continuously (dropping
-    /// only on area change) once enough matched items accumulate during
-    /// Map Notifier use, since each new drop reallocated the whole
-    /// growing set instead of just the one new marker.
-    fn reconcile_chain(
+    /// Allocate cells for `wanted` and attach them as a leaf hanging off
+    /// the existing `pObjects` tree, per the engine's own verified
+    /// insertion algorithm (walk `pLess` from the root until a NULL slot,
+    /// attach there — "order is irrelevant, the renderer walks the entire
+    /// tree"; see the map-marker RE notes). Earlier versions of this
+    /// instead swapped `pObjects` itself to point at our new head — the
+    /// single most contended slot in the structure, since the engine's own
+    /// quest/shrine-icon insertion also reads/writes it — which is the
+    /// prime suspect for those markers occasionally going missing. Leaf
+    /// insertion touches only one `pLess` field deep in the tree, the same
+    /// kind of write the engine's own insertion makes, so we're
+    /// indistinguishable from one more native icon rather than a
+    /// structural rewrite of the root every rebuild.
+    fn attach_chain(
         &mut self,
         ctx: &D2Context,
         injector: &D2Injector,
         layer: u32,
         wanted: &[MarkerItem],
     ) -> Result<(), String> {
-        let wanted_by_id: HashMap<u32, &MarkerItem> =
-            wanted.iter().map(|m| (m.unit_id, m)).collect();
-
-        // Remove entries no longer wanted, or whose position changed (a
-        // unit_id reused for a new drop at a different spot — reconcile
-        // reflects the new position, which won't match the stale placed
-        // one). Unlinking a middle node just points its predecessor at
-        // whatever the removed node itself pointed to next.
-        let mut i = 0;
-        while i < self.placed.len() {
-            let (unit_id, cell_addr, cx, cy) = self.placed[i];
-            let keep = wanted_by_id
-                .get(&unit_id)
-                .map(|m| m.cell_x == cx && m.cell_y == cy)
-                .unwrap_or(false);
-            if keep {
-                i += 1;
-                continue;
-            }
-            let predecessor_slot = if i == 0 {
-                self.chain_parent_slot
-            } else {
-                self.placed[i - 1].1 + automap_cell::P_LESS as u32
-            };
-            let next_ptr = ctx
-                .process
-                .read_memory::<u32>((cell_addr + automap_cell::P_LESS as u32) as usize)
-                .unwrap_or(0);
-            if predecessor_slot != 0 {
-                ctx.process
-                    .write_buffer(predecessor_slot as usize, &next_ptr.to_le_bytes())?;
-            }
-            self.placed.remove(i);
-        }
-        if self.placed.is_empty() {
-            self.chain_parent_slot = 0;
-        }
-
-        // Add entries that aren't already placed.
-        let placed_ids: HashSet<u32> = self.placed.iter().map(|p| p.0).collect();
-        let additions: Vec<&MarkerItem> = wanted
-            .iter()
-            .filter(|m| !placed_ids.contains(&m.unit_id))
-            .collect();
-        if additions.is_empty() {
-            return Ok(());
-        }
-
-        let mut new_cells: Vec<u32> = Vec::with_capacity(additions.len());
-        for item in &additions {
-            let cell = injector.new_automap_cell(&ctx.process)?;
-            if cell == 0 {
-                return Err("NewAutomapCell returned NULL".to_string());
-            }
-            write_cell_fields(ctx, cell, item.cell_x, item.cell_y)?;
-            new_cells.push(cell);
-        }
-        for i in 0..new_cells.len().saturating_sub(1) {
-            let pless_slot = (new_cells[i] + automap_cell::P_LESS as u32) as usize;
-            ctx.process
-                .write_buffer(pless_slot, &new_cells[i + 1].to_le_bytes())?;
-        }
-
-        // The allocation loop above makes one remote-thread call per new
-        // marker and can take tens of milliseconds for a large batch —
-        // long enough for an act/waypoint transition or a bulk automap
-        // rebuild (e.g. a full map reveal) to tear down this `layer` and
-        // let its memory get reused for something else entirely.
-        // Re-validate immediately before touching the tree: walking/
-        // writing through a stale slot would corrupt whatever now lives
-        // at that address instead of just losing this batch of markers —
-        // the leading suspect for the "Error #8" crashes reported around
-        // act/WP transitions, map reveals, and TP-to-town. Bailing here
-        // abandons the newly allocated cells (same as any other pool cell
-        // the engine reclaims on area change) and leaves `placed` as-is;
-        // the next tick's normal layer-switch handling rebuilds cleanly.
-        if read_layer(ctx).unwrap_or(0) != layer {
-            return Ok(());
-        }
-
-        let is_first_batch = self.placed.is_empty();
-        let attach_slot = if let Some(&(_, tail_cell, _, _)) = self.placed.last() {
-            tail_cell + automap_cell::P_LESS as u32
+        let wanted = if wanted.len() > MAX_MARKER_CELLS {
+            &wanted[..MAX_MARKER_CELLS]
         } else {
-            find_leaf_slot(ctx, layer + automap_layer::P_OBJECTS as u32)?
+            wanted
         };
-
-        // Re-check right before the write too: find_leaf_slot's own walk
-        // takes time on a large tree, and a concurrent insert (ours or the
-        // engine's own icon placement) could have claimed this exact slot
-        // in the interim — overwriting it would silently orphan that node.
-        let slot_still_empty = ctx
-            .process
-            .read_memory::<u32>(attach_slot as usize)
-            .unwrap_or(0)
-            == 0;
-        if !slot_still_empty || read_layer(ctx).unwrap_or(0) != layer {
+        if wanted.is_empty() {
             return Ok(());
         }
 
-        ctx.process
-            .write_buffer(attach_slot as usize, &new_cells[0].to_le_bytes())?;
+        let objects_slot = layer + automap_layer::P_OBJECTS as u32;
 
-        if is_first_batch {
-            self.chain_parent_slot = attach_slot;
+        // Retain newly allocated cells even if a later allocation/write fails.
+        // Normal rebuilds only grow to the high-water mark, rather than
+        // allocating the entire surviving marker set on every item change.
+        grow_cell_pool(&mut self.spare_cells, wanted.len(), || {
+            injector.new_automap_cell(&ctx.process)
+        })?;
+        if read_layer(ctx)? != layer {
+            self.invalidate_cells();
+            return Err("Automap layer changed during marker allocation".to_string());
+        }
+        let cells = &self.spare_cells[..wanted.len()];
+        for (item, &cell) in wanted.iter().zip(cells) {
+            write_cell_fields(ctx, cell, item.cell_x, item.cell_y)?;
         }
 
-        self.reattach_count += 1;
-        self.total_cells_allocated += new_cells.len() as u64;
-        if self.reattach_count % 20 == 0 {
-            log_info(&format!(
-                "map_marker: {} reconciliations, {} cells allocated this session (never freed by design; should now track new/moved markers, not the whole accumulated set)",
-                self.reattach_count, self.total_cells_allocated
-            ));
+        // Chain our own cells together; the tail stays a real leaf
+        // (pLess = 0, already zeroed by write_cell_fields) rather than
+        // splicing back into the engine's tree.
+        for i in 0..cells.len().saturating_sub(1) {
+            let pless_slot = (cells[i] + automap_cell::P_LESS as u32) as usize;
+            ctx.process
+                .write_buffer(pless_slot, &cells[i + 1].to_le_bytes())?;
         }
 
-        for (item, cell) in additions.iter().zip(new_cells) {
-            self.placed
-                .push((item.unit_id, cell, item.cell_x, item.cell_y));
+        let attach_slot = find_leaf_slot(ctx, objects_slot)?;
+        let head = cells[0];
+        // A failed write may still have published the pointer. Do not offer
+        // those cells for reuse after an ambiguous publication failure.
+        self.placed = self.spare_cells.drain(..wanted.len()).collect();
+        self.chain_parent_slot = attach_slot;
+        if let Err(e) = ctx
+            .process
+            .write_buffer(attach_slot as usize, &head.to_le_bytes())
+        {
+            self.invalidate_cells();
+            return Err(e);
         }
         Ok(())
     }
+}
+
+// These helpers share the production allocation/ownership decisions with
+// tests, without requiring a live game process.
+fn grow_cell_pool(
+    cells: &mut Vec<u32>,
+    needed: usize,
+    mut allocate: impl FnMut() -> Result<u32, String>,
+) -> Result<(), String> {
+    let needed = needed.min(MAX_MARKER_CELLS);
+    while cells.len() < needed {
+        let cell = allocate()?;
+        if cell == 0 {
+            return Err("NewAutomapCell returned NULL".to_string());
+        }
+        cells.push(cell);
+    }
+    // Keep every chain ordered by address. A renderer can still hold the old
+    // detached head while we rewrite cells; retaining this order prevents
+    // transient back-links/cycles as old and new links overlap.
+    cells.sort_unstable();
+    Ok(())
+}
+
+fn chain_is_intact(
+    cells: &[u32],
+    mut read_links: impl FnMut(u32) -> Result<(u32, u32), String>,
+) -> Result<bool, String> {
+    for (i, &cell) in cells.iter().enumerate() {
+        let (less, more) = read_links(cell)?;
+        if less != cells.get(i + 1).copied().unwrap_or(0) || more != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Whether `current` is far enough from `last` (Manhattan distance in
@@ -740,6 +635,77 @@ fn hash_markers(items: &[MarkerItem]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rebuilds_reuse_cells_at_the_high_water_mark() {
+        let mut spare = Vec::new();
+        let mut placed = Vec::new();
+        let mut allocations = 0;
+        for needed in (0..=100).chain((0..100).rev()).cycle().take(2010) {
+            spare.append(&mut placed);
+            grow_cell_pool(&mut spare, needed, || {
+                allocations += 1;
+                Ok(allocations)
+            })
+            .unwrap();
+            placed = spare.drain(..needed).collect();
+        }
+        assert_eq!(allocations, 100);
+    }
+
+    #[test]
+    fn allocation_failure_preserves_unpublished_cells_for_retry() {
+        let mut cells = Vec::new();
+        let mut calls = 0;
+        assert!(grow_cell_pool(&mut cells, 3, || {
+            calls += 1;
+            if calls == 2 {
+                Err("allocation failed".into())
+            } else {
+                Ok(calls)
+            }
+        })
+        .is_err());
+        assert_eq!(cells, vec![1]);
+        assert!(grow_cell_pool(&mut cells, 3, || Ok(0)).is_err());
+        assert_eq!(cells, vec![1]);
+        grow_cell_pool(&mut cells, 3, || {
+            calls += 1;
+            Ok(calls)
+        })
+        .unwrap();
+        assert_eq!(cells, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn reuse_keeps_links_forward_even_when_spares_precede_detached_cells() {
+        let mut cells = vec![300, 100, 200];
+        grow_cell_pool(&mut cells, 3, || panic!("must reuse existing cells")).unwrap();
+        assert_eq!(cells, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn recycling_rejects_foreign_children_and_unreadable_links() {
+        assert!(chain_is_intact(&[10, 20], |p| Ok((if p == 10 { 20 } else { 0 }, 0))).unwrap());
+        assert!(!chain_is_intact(&[10, 20], |_| Ok((20, 99))).unwrap());
+        assert!(!chain_is_intact(&[10, 20], |_| Ok((99, 0))).unwrap());
+        assert!(chain_is_intact(&[10], |_| Err("unreadable".into())).is_err());
+    }
+
+    #[test]
+    fn loading_invalidates_all_cell_addresses_without_losing_marker_cache() {
+        let mut manager = MapMarkerManager::new();
+        manager.last_layer = 123;
+        manager.chain_parent_slot = 456;
+        manager.placed.push(10);
+        manager.spare_cells.push(20);
+        manager.persistent.insert(1, mk(1, 50, 50));
+        manager.invalidate_cells();
+        assert!(manager.placed.is_empty() && manager.spare_cells.is_empty());
+        assert_eq!(manager.last_layer, 0);
+        assert_eq!(manager.chain_parent_slot, 0);
+        assert_eq!(manager.persistent.len(), 1);
+    }
 
     fn mk(uid: u32, sx: i32, sy: i32) -> MarkerItem {
         let (cx, cy) = sub_to_cell(sx, sy);
