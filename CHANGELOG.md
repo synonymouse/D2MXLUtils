@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.27.2 — 2026-09-08
+
+### Bug Fixes
+
+- Fix(map-marker): rotate the marker cache when over the cell cap (e296ab4)
+- Fix(map-marker): recycle automap cells instead of leaking them per rebuild (bb364bb)
+
+### Features
+
+- Feat(loot-filter): add unique rarity tier filtering (tu/su/ssu/sssu) (bac6031)
+
 ## v1.27.1 — 2026-09-07
 
 ### Bug Fixes
