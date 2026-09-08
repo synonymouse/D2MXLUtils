@@ -1,7 +1,7 @@
 //! Plain-English explainer for a single line of the loot-filter DSL.
 
 use super::dsl::{classify_line, ParsedLine};
-use super::{ItemQuality, ItemTier, NotifyColor, Rule, Visibility};
+use super::{ItemQuality, ItemTier, NotifyColor, Rule, UniqueKind, Visibility};
 
 pub fn explain_line(line: &str) -> Option<String> {
     match classify_line(line) {
@@ -93,6 +93,9 @@ fn predicate_lines(rule: &Rule) -> Vec<String> {
     if !rule.qualities.is_empty() {
         out.push(quality_bullet(&rule.qualities));
     }
+    if !rule.unique_kinds.is_empty() {
+        out.push(unique_kind_bullet(&rule.unique_kinds));
+    }
     if rule.ethereal {
         out.push("Item is ethereal".to_string());
     }
@@ -123,6 +126,15 @@ fn quality_bullet(qualities: &[ItemQuality]) -> String {
     }
 }
 
+fn unique_kind_bullet(kinds: &[UniqueKind]) -> String {
+    if kinds.len() == 1 {
+        format!("Rarity is {}", kinds[0].label())
+    } else {
+        let labels: Vec<&str> = kinds.iter().map(|k| k.label()).collect();
+        format!("Rarity is one of: {}", labels.join(", "))
+    }
+}
+
 fn stat_bullet(patterns: &[String]) -> String {
     if patterns.len() == 1 {
         format!("Has stat pattern: \"{}\"", patterns[0])
@@ -142,6 +154,9 @@ fn unrestricted_categories(rule: &Rule) -> Option<String> {
     }
     if rule.qualities.is_empty() {
         missing.push("quality");
+    }
+    if rule.unique_kinds.is_empty() {
+        missing.push("rarity");
     }
     if !rule.ethereal {
         missing.push("ethereal");
@@ -359,6 +374,19 @@ mod tests {
     fn group_header_with_no_defaults() {
         let s = explain_line("[] {").unwrap();
         assert!(s.contains("(no defaults set)"));
+    }
+
+    #[test]
+    fn rarity_predicate_rendered() {
+        let s = explain_line("sssu map").unwrap();
+        assert!(s.contains("Rarity is SSSU"));
+        assert!(s.contains("Drop a marker on the automap"));
+    }
+
+    #[test]
+    fn multi_rarity_predicate_rendered() {
+        let s = explain_line("tu su hide").unwrap();
+        assert!(s.contains("Rarity is one of: TU, SU"));
     }
 
     #[test]

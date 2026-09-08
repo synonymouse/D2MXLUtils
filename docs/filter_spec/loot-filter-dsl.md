@@ -106,6 +106,28 @@ hides magic, rare, and unique items. Duplicates are collapsed.
 
 ---
 
+### Rarity (Unique tiers)
+
+| Keyword | Rarity |
+|---|---|
+| `tu` | Tiered Unique (wLvl 2–100, or a Tier1–4 base with wLvl 0/1) |
+| `su` | Super Unique (wLvl 101–115) |
+| `ssu` | Sacred Super Unique (wLvl 116–120) |
+| `sssu` | Sacred Super Super Unique (wLvl 121+) |
+
+Independent of `quality` — only Unique-quality items carry a rarity band, so
+a bare `sssu` rule already implies Unique quality without also writing
+`unique`. Multiple rarity keywords **OR together**, same as quality.
+Non-unique items (and uniques the game reports as `wLvl` 0/1 on a non-Tier1–4
+base) never match a rarity rule.
+
+```
+[sssu map] { . }         # red-cross marker on every SSSU drop
+tu su hide               # hide low/mid-tier uniques, keep SSU/SSSU visible
+```
+
+---
+
 ### Tier (MedianXL)
 
 | Keyword | Tier |
@@ -383,10 +405,11 @@ hide default      # hide unmatched items
 show default      # show unmatched items (implicit default)
 
 # General rule form
-[name-pattern] [quality] [tier] [socket] [level] [class] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
+[name-pattern] [quality] [rarity] [tier] [socket] [level] [class] [eth] [{stat-pattern}]* [color] [show|hide] [sound] [notify] [stat] [map]
 
 # Atoms
 quality    := low | normal | superior | magic | set | rare | unique | craft | honor
+rarity     := tu | su | ssu | sssu
 tier       := 0 | 1 | 2 | 3 | 4 | sacred | angelic | master
 socket     := sockets0 | sockets1 | sockets2 | sockets3 | sockets4 | sockets5 | sockets6
 level      := min_clvl<N> | max_clvl<N> | min_ilvl<N> | max_ilvl<N>

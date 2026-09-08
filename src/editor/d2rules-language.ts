@@ -33,6 +33,10 @@ const QUALITY_KEYWORDS = [
   'superior',
 ];
 
+/** Unique-item rarity tiers (wLvl banding), independent of `unique` — see
+ *  docs/filter_spec/loot-filter-dsl.md#quality. */
+const RARITY_KEYWORDS = ['tu', 'su', 'ssu', 'sssu'];
+
 const TIER_KEYWORDS = ['sacred', 'angelic', 'master', '0', '1', '2', '3', '4'];
 
 const SOCKET_KEYWORDS = [
@@ -198,7 +202,9 @@ const d2rulesLanguage = StreamLanguage.define({
         return 'keyword unknown';
       }
 
-      if (QUALITY_KEYWORDS.includes(word)) return 'keyword quality';
+      if (QUALITY_KEYWORDS.includes(word) || RARITY_KEYWORDS.includes(word)) {
+        return 'keyword quality';
+      }
 
       // Tier keywords
       if (TIER_KEYWORDS.includes(word)) return 'keyword tier';
@@ -287,6 +293,7 @@ export interface SyntaxKeywordEntry {
 /** Bare DSL keywords (outside quoted item-name patterns) offered by autocomplete. */
 export const SYNTAX_KEYWORDS: SyntaxKeywordEntry[] = [
   ...QUALITY_KEYWORDS.map((label) => ({ label, category: 'quality' as const })),
+  ...RARITY_KEYWORDS.map((label) => ({ label, category: 'quality' as const })),
   ...TIER_KEYWORDS.filter((label) => !/^\d+$/.test(label)).map((label) => ({
     label,
     category: 'tier' as const,
