@@ -93,6 +93,15 @@ pub struct MapMarkerManager {
     /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
     /// (orphans are GC'd at the end of `reconcile_persistent`).
     last_seen: HashMap<u32, Instant>,
+    /// First-stamp per unit_id, set once and never refreshed — unlike
+    /// `last_seen` (which every BFS-confirmed sighting bumps to `now`,
+    /// making it useless for telling old drops from new ones while both
+    /// are still on the ground). Used only to pick which markers to keep
+    /// when `persistent` exceeds `MAX_MARKER_CELLS`: evict the oldest
+    /// first-seen entries so new drops always get a slot instead of the
+    /// same low-unit_id batch camping there forever. Kept in lockstep with
+    /// `persistent` (orphans are GC'd at the end of `reconcile_persistent`).
+    first_seen: HashMap<u32, Instant>,
     /// Last known player subtile position, tracked across ticks. Not
     /// reset by a `None` reading (e.g. mid-loading-screen) — we want to
     /// compare against the last *real* position once the player reappears,
@@ -110,6 +119,7 @@ impl MapMarkerManager {
             last_hash: 0,
             persistent: HashMap::new(),
             last_seen: HashMap::new(),
+            first_seen: HashMap::new(),
             last_player_sub: None,
         }
     }
@@ -127,6 +137,7 @@ impl MapMarkerManager {
         self.last_hash = 0;
         self.persistent.clear();
         self.last_seen.clear();
+        self.first_seen.clear();
         self.last_layer = 0;
         self.last_player_sub = None;
         Ok(())
@@ -173,6 +184,7 @@ impl MapMarkerManager {
             if is_area_change(self.last_player_sub, (px, py)) {
                 self.persistent.clear();
                 self.last_seen.clear();
+                self.first_seen.clear();
                 let _ = self.detach_chain(ctx);
                 self.placed.clear();
                 self.spare_cells.clear();
@@ -219,12 +231,14 @@ impl MapMarkerManager {
         let wanted = reconcile_persistent(
             &mut self.persistent,
             &mut self.last_seen,
+            &mut self.first_seen,
             newly_matched,
             explicitly_unmarked,
             bfs_unit_ids,
             player_sub,
             PICKUP_THRESHOLD_SUBTILES,
             MARKER_TTL,
+            MAX_MARKER_CELLS,
             Instant::now(),
         );
 
@@ -404,16 +418,20 @@ fn is_area_change(last: Option<(i32, i32)>, current: (i32, i32)) -> bool {
 
 /// Reconcile `persistent` against this tick's BFS results. Pure so it can
 /// be unit-tested without a live process. Returns the sorted list of
-/// markers to render (deterministic for stable hashing).
+/// markers to render (deterministic for stable hashing), capped at
+/// `max_markers` by evicting the oldest-dropped entries first — see
+/// `first_seen`'s doc comment for why `last_seen` can't be used for this.
 fn reconcile_persistent(
     persistent: &mut HashMap<u32, MarkerItem>,
     last_seen: &mut HashMap<u32, Instant>,
+    first_seen: &mut HashMap<u32, Instant>,
     newly_matched: &[MarkerItem],
     explicitly_unmarked: &HashSet<u32>,
     bfs_unit_ids: &HashSet<u32>,
     player_sub: Option<(i32, i32)>,
     pickup_threshold: i32,
     ttl: Duration,
+    max_markers: usize,
     now: Instant,
 ) -> Vec<MarkerItem> {
     persistent.retain(|uid, _| !explicitly_unmarked.contains(uid));
@@ -421,6 +439,7 @@ fn reconcile_persistent(
     for m in newly_matched {
         persistent.insert(m.unit_id, *m);
         last_seen.insert(m.unit_id, now);
+        first_seen.entry(m.unit_id).or_insert(now);
     }
 
     // Close + invisible = picked up.
@@ -439,6 +458,22 @@ fn reconcile_persistent(
         None => false,
     });
     last_seen.retain(|uid, _| persistent.contains_key(uid));
+    first_seen.retain(|uid, _| persistent.contains_key(uid));
+
+    // Over the marker-cell cap: keep the most recently dropped `max_markers`
+    // entries, evicting the rest. Without this, a persistent set that grows
+    // past the cap (nothing here evicts by count on its own) always loses
+    // the same oldest-unit_id batch to `attach_chain`'s own truncation,
+    // permanently blocking every later drop from ever getting a marker.
+    if persistent.len() > max_markers {
+        let mut by_age: Vec<(u32, Instant)> = first_seen.iter().map(|(&u, &t)| (u, t)).collect();
+        by_age.sort_unstable_by_key(|&(uid, t)| (t, uid));
+        for &(uid, _) in by_age.iter().take(by_age.len() - max_markers) {
+            persistent.remove(&uid);
+            last_seen.remove(&uid);
+            first_seen.remove(&uid);
+        }
+    }
 
     let mut out: Vec<MarkerItem> = persistent.values().copied().collect();
     out.sort_by_key(|m| (m.unit_id, m.cell_x, m.cell_y));
@@ -757,20 +792,84 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_over_cap_evicts_oldest_and_admits_newest() {
+        // Fill to exactly the cap, all seen on the same BFS pass (as if the
+        // player has been standing in a room full of unpicked matched
+        // items for a while — everything's `last_seen` ties at `now`).
+        let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
+        let bfs: HashSet<u32> = (1..=10u32).collect();
+        let t0 = Instant::now();
+        let initial: Vec<MarkerItem> = (1..=10u32)
+            .map(|uid| mk(uid, 10 + uid as i32, 10))
+            .collect();
+        reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &mut first_seen,
+            &initial,
+            &HashSet::new(),
+            &bfs,
+            Some((0, 0)),
+            32,
+            Duration::from_secs(3600),
+            10,
+            t0,
+        );
+        assert_eq!(persistent.len(), 10);
+
+        // A new item (unit_id 11) drops a tick later; every old one is
+        // still on the ground and still BFS-visible, so nothing would
+        // naturally age out on its own.
+        let t1 = t0 + Duration::from_millis(100);
+        let mut bfs_next = bfs.clone();
+        bfs_next.insert(11);
+        let out = reconcile_persistent(
+            &mut persistent,
+            &mut last_seen,
+            &mut first_seen,
+            &[mk(11, 999, 10)],
+            &HashSet::new(),
+            &bfs_next,
+            Some((0, 0)),
+            32,
+            Duration::from_secs(3600),
+            10,
+            t1,
+        );
+
+        // Still capped at 10, the newest drop got a slot, and the very
+        // oldest one (unit_id 1) was the one evicted to make room.
+        assert_eq!(out.len(), 10);
+        assert!(
+            out.iter().any(|m| m.unit_id == 11),
+            "new drop must be admitted once the cap is enforced"
+        );
+        assert!(
+            !out.iter().any(|m| m.unit_id == 1),
+            "oldest marker must be evicted to make room for the new one"
+        );
+    }
+
+    #[test]
     fn reconcile_upserts_new_matches() {
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let matched = [mk(1, 50, 50), mk(2, 60, 60)];
         let bfs: HashSet<u32> = [1u32, 2].iter().copied().collect();
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &matched,
             &HashSet::new(),
             &bfs,
             Some((55, 55)),
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             Instant::now(),
         );
         assert_eq!(out.len(), 2);
@@ -782,18 +881,21 @@ mod tests {
         // Player at origin, item far away, BFS doesn't see → walked away.
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let now = Instant::now();
         persistent.insert(42u32, mk(42, 200, 200));
         last_seen.insert(42u32, now);
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &[],
             &HashSet::new(),
             &HashSet::new(),
             Some((0, 0)),
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             now,
         );
         assert_eq!(out.len(), 1);
@@ -804,18 +906,21 @@ mod tests {
         // Player next to item, BFS doesn't see → picked up.
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let now = Instant::now();
         persistent.insert(42u32, mk(42, 55, 55));
         last_seen.insert(42u32, now);
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &[],
             &HashSet::new(),
             &HashSet::new(),
             Some((50, 50)),
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             now,
         );
         assert!(out.is_empty());
@@ -826,6 +931,7 @@ mod tests {
         let mut persistent = HashMap::new();
         persistent.insert(42u32, mk(42, 55, 55));
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let now = Instant::now();
         last_seen.insert(42u32, now);
 
@@ -836,12 +942,14 @@ mod tests {
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &[],
             &explicitly_unmarked,
             &bfs,
             Some((50, 50)),
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             now,
         );
         assert!(out.is_empty());
@@ -853,6 +961,7 @@ mod tests {
         // unit_id reused for a new drop at a different spot.
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let now = Instant::now();
         persistent.insert(42u32, mk(42, 10, 10));
         last_seen.insert(42u32, now);
@@ -861,12 +970,14 @@ mod tests {
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &matched,
             &HashSet::new(),
             &bfs,
             Some((100, 100)),
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             now,
         );
         assert_eq!(out.len(), 1);
@@ -877,18 +988,21 @@ mod tests {
     fn reconcile_keeps_everything_when_player_pos_unknown() {
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let now = Instant::now();
         persistent.insert(42u32, mk(42, 50, 50));
         last_seen.insert(42u32, now);
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &[],
             &HashSet::new(),
             &HashSet::new(),
             None,
             32,
             Duration::from_secs(3600),
+            MAX_MARKER_CELLS,
             now,
         );
         assert_eq!(out.len(), 1);
@@ -898,18 +1012,21 @@ mod tests {
     fn reconcile_evicts_after_ttl() {
         let mut persistent = HashMap::new();
         let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
         let early = Instant::now();
         persistent.insert(42u32, mk(42, 200, 200));
         last_seen.insert(42u32, early);
         let out = reconcile_persistent(
             &mut persistent,
             &mut last_seen,
+            &mut first_seen,
             &[],
             &HashSet::new(),
             &HashSet::new(),
             Some((0, 0)),
             32,
             Duration::from_secs(60),
+            MAX_MARKER_CELLS,
             early + Duration::from_secs(120),
         );
         assert!(out.is_empty());
