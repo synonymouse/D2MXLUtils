@@ -37,6 +37,34 @@ use crate::offsets::{
 };
 use crate::process::D2Context;
 
+mod child_detach;
+mod diagnostics;
+use diagnostics::{Diagnostics, Failure, Reason, Stage};
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/diagnostic_tests.rs"]
+mod diagnostic_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/observation_tests.rs"]
+mod observation_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/child_detach_tests.rs"]
+mod child_detach_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/child_rejection_tests.rs"]
+mod child_rejection_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/child_fault_tests.rs"]
+mod child_fault_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/child_root_tests.rs"]
+mod child_root_tests;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct MarkerItem {
     pub unit_id: u32,
@@ -89,6 +117,7 @@ pub struct MapMarkerManager {
     /// Never free individual cells: the game owns their backing pool.
     spare_cells: Vec<u32>,
     cells_trusted: bool,
+    diagnostics: Diagnostics,
     last_hash: u64,
     persistent: HashMap<u32, MarkerItem>,
     /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
@@ -119,6 +148,7 @@ impl MapMarkerManager {
             placed: Vec::new(),
             spare_cells: Vec::new(),
             cells_trusted: true,
+            diagnostics: Diagnostics::default(),
             last_hash: 0,
             persistent: HashMap::new(),
             last_seen: HashMap::new(),
@@ -154,6 +184,7 @@ impl MapMarkerManager {
         self.spare_cells.clear();
         self.last_hash = 0;
         self.cells_trusted = true;
+        self.diagnostics = Diagnostics::default();
     }
 
     pub fn reset_session(&mut self) {
@@ -229,6 +260,16 @@ impl MapMarkerManager {
                     .read_memory::<u32>(self.chain_parent_slot as usize)?;
                 if current != head {
                     self.cells_trusted = false;
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::TickParent,
+                            reason: Reason::ParentMismatch {
+                                expected_parent: head,
+                                actual_parent: current,
+                            },
+                        },
+                    );
                     return self.require_trusted_cells();
                 }
             }
@@ -269,9 +310,8 @@ impl MapMarkerManager {
         Ok(())
     }
 
-    /// Recycle only a chain that is still exactly ours. If the engine added
-    /// children or replaced a link, leave that tree alone and quarantine all
-    /// addresses instead of disconnecting or rewriting foreign nodes.
+    /// Recycle an intact chain, or a narrowly verified same-layer tail-child
+    /// splice. All other topology changes quarantine the addresses.
     fn detach_chain(&mut self, ctx: &D2Context) -> Result<(), String> {
         if self.chain_parent_slot == 0 || self.placed.is_empty() {
             return Ok(());
@@ -279,6 +319,8 @@ impl MapMarkerManager {
         let current = ctx
             .process
             .read_memory::<u32>(self.chain_parent_slot as usize)?;
+        let mut mismatch = None;
+        let mut index = 0;
         let intact = current == self.placed[0]
             && chain_is_intact(&self.placed, |cell| {
                 let less = ctx
@@ -287,16 +329,79 @@ impl MapMarkerManager {
                 let more = ctx
                     .process
                     .read_memory::<u32>(cell as usize + automap_cell::P_MORE)?;
+                let expected_less = self.placed.get(index + 1).copied().unwrap_or(0);
+                if less != expected_less || more != 0 {
+                    mismatch = Some(if index + 1 == self.placed.len() {
+                        Reason::TailChild {
+                            index,
+                            cell,
+                            expected_less,
+                            actual_less: less,
+                            expected_more: 0,
+                            actual_more: more,
+                        }
+                    } else {
+                        Reason::InternalLinks {
+                            index,
+                            cell,
+                            expected_less,
+                            actual_less: less,
+                            expected_more: 0,
+                            actual_more: more,
+                        }
+                    });
+                }
+                index += 1;
                 Ok((less, more))
             })?;
         if intact {
             self.cells_trusted = false;
             ctx.process
-                .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())?;
+                .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())
+                .inspect_err(|_| {
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::DetachWrite,
+                            reason: Reason::WriteAmbiguous {
+                                index: None,
+                                cell: None,
+                                slot: self.chain_parent_slot,
+                                expected_value: Some(0),
+                            },
+                        },
+                    )
+                })?;
             self.cells_trusted = true;
             self.spare_cells.append(&mut self.placed);
         } else {
             self.cells_trusted = false;
+            if let Some(
+                reason @ Reason::TailChild {
+                    actual_less: child,
+                    actual_more: 0,
+                    ..
+                },
+            ) = mismatch
+            {
+                if child != 0 {
+                    return self.detach_child(ctx, (child, reason));
+                }
+            }
+            let failure = match mismatch {
+                Some(reason) => Failure {
+                    stage: Stage::DetachLinks,
+                    reason,
+                },
+                None => Failure {
+                    stage: Stage::DetachParent,
+                    reason: Reason::ParentMismatch {
+                        expected_parent: self.placed[0],
+                        actual_parent: current,
+                    },
+                },
+            };
+            self.record_quarantine(ctx, failure);
             return self.require_trusted_cells();
         }
         self.chain_parent_slot = 0;
@@ -341,31 +446,144 @@ impl MapMarkerManager {
             injector.new_automap_cell(&ctx.process).inspect_err(|_| {
                 self.cells_trusted = false;
             })
+        })
+        .inspect_err(|_| {
+            if !self.cells_trusted {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::Allocation,
+                        reason: Reason::AllocationUnknown {
+                            index: self.spare_cells.len(),
+                        },
+                    },
+                );
+            }
         })?;
         self.cells_trusted = false;
-        if read_layer(ctx)? != layer {
+        let observed = read_layer(ctx).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::AllocationLayer,
+                    reason: Reason::ReadFailed { slot: None },
+                },
+            )
+        })?;
+        if observed != layer {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::AllocationLayer,
+                    reason: Reason::LayerMismatch {
+                        expected_layer: layer,
+                        actual_layer: observed,
+                    },
+                },
+            );
             return Err("Automap layer changed during marker allocation".to_string());
         }
-        let cells = &self.spare_cells[..wanted.len()];
-        for (item, &cell) in wanted.iter().zip(cells) {
-            write_cell_fields(ctx, cell, item.cell_x, item.cell_y)?;
+        for (index, item) in wanted.iter().enumerate() {
+            let cell = self.spare_cells[index];
+            write_cell_fields(ctx, cell, item.cell_x, item.cell_y).inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::PrepareCell,
+                        reason: Reason::PreparationWriteAmbiguous {
+                            index,
+                            cell,
+                            expected_less: 0,
+                            expected_more: 0,
+                        },
+                    },
+                )
+            })?;
         }
 
         // Chain our own cells together; the tail stays a real leaf
         // (pLess = 0, already zeroed by write_cell_fields) rather than
         // splicing back into the engine's tree.
-        for i in 0..cells.len().saturating_sub(1) {
-            let pless_slot = (cells[i] + automap_cell::P_LESS as u32) as usize;
+        for i in 0..wanted.len().saturating_sub(1) {
+            let cell = self.spare_cells[i];
+            let next = self.spare_cells[i + 1];
+            let pless_slot = cell + automap_cell::P_LESS as u32;
             ctx.process
-                .write_buffer(pless_slot, &cells[i + 1].to_le_bytes())?;
+                .write_buffer(pless_slot as usize, &next.to_le_bytes())
+                .inspect_err(|_| {
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::LinkCell,
+                            reason: Reason::WriteAmbiguous {
+                                index: Some(i),
+                                cell: Some(cell),
+                                slot: pless_slot,
+                                expected_value: Some(next),
+                            },
+                        },
+                    )
+                })?;
         }
 
-        let attach_slot = find_leaf_slot(ctx, objects_slot)?;
-        let head = cells[0];
-        if read_layer(ctx)? != layer {
+        let attach_slot = find_leaf_slot(ctx, objects_slot).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::FindSlot,
+                    reason: Reason::LeafSearchFailed,
+                },
+            )
+        })?;
+        let head = self.spare_cells[0];
+        let observed = read_layer(ctx).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationLayer,
+                    reason: Reason::ReadFailed { slot: None },
+                },
+            )
+        })?;
+        if observed != layer {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationLayer,
+                    reason: Reason::LayerMismatch {
+                        expected_layer: layer,
+                        actual_layer: observed,
+                    },
+                },
+            );
             return Err("Automap layer changed before marker publication".to_string());
         }
-        if ctx.process.read_memory::<u32>(attach_slot as usize)? != 0 {
+        let current = ctx
+            .process
+            .read_memory::<u32>(attach_slot as usize)
+            .inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::PublicationSlot,
+                        reason: Reason::ReadFailed {
+                            slot: Some(attach_slot),
+                        },
+                    },
+                )
+            })?;
+        if current != 0 {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationSlot,
+                    reason: Reason::AttachSlotChanged {
+                        slot: attach_slot,
+                        expected_parent: 0,
+                        actual_parent: current,
+                    },
+                },
+            );
             return Err("Automap attach slot changed before marker publication".to_string());
         }
         // A failed write may still have published the pointer. Do not offer
@@ -373,8 +591,23 @@ impl MapMarkerManager {
         self.placed = self.spare_cells.drain(..wanted.len()).collect();
         self.chain_parent_slot = attach_slot;
         ctx.process
-            .write_buffer(attach_slot as usize, &head.to_le_bytes())?;
+            .write_buffer(attach_slot as usize, &head.to_le_bytes())
+            .inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::Publish,
+                        reason: Reason::WriteAmbiguous {
+                            index: None,
+                            cell: Some(head),
+                            slot: attach_slot,
+                            expected_value: Some(head),
+                        },
+                    },
+                )
+            })?;
         self.cells_trusted = true;
+        self.diagnostics.published_layer = Some(layer);
         Ok(())
     }
 }

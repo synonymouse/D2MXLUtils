@@ -16,6 +16,7 @@ use windows::Win32::System::Threading::{
 
 use crate::offsets::{d2client, d2common, d2lang};
 use crate::process::ProcessHandle;
+use crate::stat_telemetry::{InjectorCall, StatTelemetryCounters};
 
 /// Allocated memory region in the target process
 #[cfg(target_os = "windows")]
@@ -138,6 +139,7 @@ fn swap_endian(value: u32) -> [u8; 4] {
 /// Injector for D2 game functions
 #[cfg(target_os = "windows")]
 pub struct D2Injector {
+    pub(crate) telemetry: StatTelemetryCounters,
     #[cfg(test)]
     pub(crate) marker_allocator: Option<std::sync::Mutex<MarkerTestAllocator>>,
     /// Allocated buffer for strings/data in game memory
@@ -177,6 +179,7 @@ impl D2Injector {
         let inject_new_automap_cell = inject_base + d2client::inject::NEW_AUTOMAP_CELL;
 
         let injector = Self {
+            telemetry: StatTelemetryCounters::default(),
             #[cfg(test)]
             marker_allocator: None,
             string_buffer,
@@ -213,6 +216,7 @@ impl MarkerTestAllocator {
 impl D2Injector {
     pub(crate) fn for_marker_test(cells: impl Iterator<Item = u32>) -> Self {
         Self {
+            telemetry: StatTelemetryCounters::default(),
             marker_allocator: Some(std::sync::Mutex::new(MarkerTestAllocator {
                 cells: cells.map(Ok).collect(),
                 calls: 0,
@@ -251,6 +255,7 @@ impl D2Injector {
 impl D2Injector {
     /// Get item name by calling the injected function
     pub fn get_item_name(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
+        self.telemetry.injector_attempt(InjectorCall::GetItemName);
         // Clear buffer before use
         // Original D2Stats reads wchar[256] → 512 bytes
         let zeros = vec![0u8; 512];
@@ -274,6 +279,7 @@ impl D2Injector {
 
     /// Get item stats by calling the injected function
     pub fn get_item_stats(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
+        self.telemetry.injector_attempt(InjectorCall::GetItemStats);
         // Clear buffer before use
         // Original D2Stats reads wchar[2048] → 4096 bytes
         let zeros = vec![0u8; 4096];
@@ -305,6 +311,7 @@ impl D2Injector {
         name_id: u16,
         max_chars: usize,
     ) -> Result<String, String> {
+        self.telemetry.injector_attempt(InjectorCall::GetString);
         // remote_thread returns the thread's exit code which is EAX from our
         // shellcode — for GetStringById this is a pointer into the game's
         // string table (UTF-16).
@@ -327,6 +334,8 @@ impl D2Injector {
     /// Allocate a fresh `AutomapCell` from the game's pool. Caller fills
     /// the fields; the engine reclaims the cell on area change.
     pub fn new_automap_cell(&self, process: &ProcessHandle) -> Result<u32, String> {
+        self.telemetry
+            .injector_attempt(InjectorCall::NewAutomapCell);
         #[cfg(all(test, target_os = "windows"))]
         if let Some(allocator) = &self.marker_allocator {
             return allocator.lock().unwrap().allocate();
@@ -342,6 +351,7 @@ impl D2Injector {
         p_unit: u32,
         stat_id: u32,
     ) -> Result<u32, String> {
+        self.telemetry.injector_attempt(InjectorCall::GetUnitStat);
         // Write params: [stat_id, p_unit]
         process.write_buffer(self.params_buffer.address, &stat_id.to_le_bytes())?;
         process.write_buffer(self.params_buffer.address + 4, &p_unit.to_le_bytes())?;
@@ -476,6 +486,7 @@ pub struct RemoteAlloc {
 
 #[cfg(target_os = "linux")]
 pub struct D2Injector {
+    pub(crate) telemetry: StatTelemetryCounters,
     pub string_buffer: RemoteAlloc,
     pub params_buffer: RemoteAlloc,
     pub inject_get_string: usize,
@@ -514,6 +525,7 @@ impl D2Injector {
         let inject_new_automap_cell = inject_base + d2client::inject::NEW_AUTOMAP_CELL;
 
         let injector = Self {
+            telemetry: StatTelemetryCounters::default(),
             string_buffer,
             params_buffer,
             inject_get_string,

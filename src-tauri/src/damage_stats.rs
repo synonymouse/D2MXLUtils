@@ -9,11 +9,12 @@
 //! table. Confirmed by `offsets::d2common::ITEMS_TXT = 0x9FB98`, which is
 //! byte-identical to D2Stats.au3's `$g_hD2Common + 0x9FB98`.
 //!
-//! Unlike D2Stats (which manually sums the unit's raw `StatList`), we call
-//! the game's own `D2Common::GetUnitStat` via the existing code-injection
-//! path (`D2Injector::get_unit_stat`, already used by `breakpoints.rs`).
-//! That returns the same aggregated-across-layers value D2Stats computes
-//! by hand, so the downstream formula is unchanged.
+//! Unlike D2Stats' manual `StatList` summation, acquisition uses the shared
+//! validated direct reader through `StatReadContext`. Missing optional stats
+//! become zero; a direct read error falls back to one injected
+//! `D2Common::GetUnitStat` call for that stat. The existing damage formulas
+//! and scaling are unchanged. Direct/injected parity remains unverified
+//! against a live game.
 
 use serde::Serialize;
 
@@ -21,6 +22,10 @@ use crate::breakpoints::read_equipped_weapon;
 use crate::injection::D2Injector;
 use crate::offsets::{d2common, items_txt};
 use crate::process::D2Context;
+use crate::stat_telemetry::StatConsumer;
+use crate::unit_stats_reader::fallback::StatReadContext;
+#[cfg(all(test, target_os = "windows"))]
+mod stat_acquisition_tests;
 
 #[derive(Debug, Clone, Copy, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -84,7 +89,7 @@ const STAT_POISON_MAX: u32 = 58;
 /// `Ok(None)` means the unit pointer is null or has no weapon in the
 /// right-hand slot (bare-handed) — same early-out as
 /// `CalculateWeaponDamage`'s `if (not $pWeapon) then return`. `Err(())`
-/// means a `GetUnitStat` call failed partway through — see
+/// means a direct read and its legacy `GetUnitStat` fallback both failed — see
 /// `stats_panel::read_unit_character_stats` for why callers should keep the
 /// last good snapshot instead of treating this like a real zero.
 pub fn read_unit_damage_stats(
@@ -105,12 +110,8 @@ pub fn read_unit_damage_stats(
 
     let (str_bonus, dex_bonus, is_1h, is_2h) = read_weapon_damage_fields(ctx, file_index as usize);
 
-    let stat = |id: u32| -> Result<i32, ()> {
-        injector
-            .get_unit_stat(&ctx.process, p_unit, id)
-            .map(|v| v as i32)
-            .map_err(|_| ())
-    };
+    let acquisition = StatReadContext::new(ctx, injector, StatConsumer::Damage);
+    let stat = |id: u32| acquisition.read_stat(p_unit, id);
 
     let str_total = stat(STAT_STRENGTH)?;
     let dex_total = stat(STAT_DEXTERITY)?;

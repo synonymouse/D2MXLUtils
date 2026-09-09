@@ -72,6 +72,7 @@ pub mod d2common {
     /// Dereference once to get the base of the struct that holds pointers
     /// to all .txt tables. Same as `$g_pD2sgpt` in D2Stats.au3:259.
     pub const SGPT_DATA_TABLES: usize = 0x99E1C;
+    pub const GLOBAL_STAT_FLAGS_PTR: usize = 0x890B0;
 
     /// GetUnitStat function
     pub const GET_UNIT_STAT: usize = 0x38B70;
@@ -112,6 +113,15 @@ pub mod data_tables {
     pub const SET_ITEMS_TXT_COUNT: usize = 0xC1C;
     pub const UNIQUE_ITEMS_TXT_PTR: usize = 0xC24;
     pub const UNIQUE_ITEMS_TXT_COUNT: usize = 0xC28;
+    pub const ITEM_STAT_COST_TXT_PTR: usize = 0xBCC;
+    pub const ITEM_STAT_COST_TXT_COUNT: usize = 0xBD4;
+}
+
+pub mod item_stat_cost {
+    pub const RECORD_SIZE: usize = 0x144;
+    pub const FIELD_OP_FLAG: usize = 0x05;
+    pub const FIELD_OP_PARAM: usize = 0x18;
+    pub const FIELD_OP_BASE: usize = 0x2C;
 }
 
 /// D2Sigma.dll offsets (Median XL specific)
@@ -380,6 +390,11 @@ pub mod set_items_txt {
 #[allow(dead_code)]
 pub mod stat_list {
     pub const UNIT_TO_STATS_LIST: usize = 0x5C;
+    pub const SL_FLAGS: usize = 0x10;
+    pub const SL_FLAG_EX: u32 = 0x8000_0000;
+    pub const SL_OWNER_UNIT: usize = 0x44;
+    pub const SL_FULL_PSTAT: usize = 0x48;
+    pub const SL_FULL_STAT_COUNT: usize = 0x4C;
     pub const SL_PSTAT: usize = 0x24;
     pub const SL_STAT_COUNT: usize = 0x28;
     pub const SL_STAT_CAPACITY: usize = 0x2A;
@@ -398,6 +413,7 @@ pub mod stat_list {
     /// (see `dps_hook/trampoline.rs`'s monster-level read and
     /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
     pub const STAT_LEVEL: u16 = 12;
+    pub const STAT_SOCKETS: u16 = 0xC2;
 }
 
 /// `D2MonStatsTxt` record offsets. Record size = `0x1A8`; indexing is
