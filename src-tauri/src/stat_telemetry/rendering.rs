@@ -1,10 +1,16 @@
 use super::lifecycle::TelemetryEvent;
 use super::memory::ProcessMemorySample;
-use super::{
-    rate_per_second, InjectorCall, StatConsumer, TelemetrySnapshot, DIRECT_LABELS, FALLBACK_LABELS,
-};
+use super::{InjectorCall, StatConsumer, TelemetrySnapshot, DIRECT_LABELS, FALLBACK_LABELS};
 use serde_json::{json, Map, Value};
 use std::time::Duration;
+
+pub(crate) fn rate_per_second(count: u64, elapsed: Duration) -> Option<f64> {
+    if elapsed.is_zero() {
+        return None;
+    }
+    // Conversion is intentionally approximate: rates are observational, counters remain exact u64.
+    Some(count as f64 / elapsed.as_secs_f64())
+}
 
 fn metrics<const N: usize>(delta: &[u64; N], cumulative: &[u64; N], elapsed: Duration) -> Value {
     let rates = delta.map(|count| rate_per_second(count, elapsed));

@@ -61,6 +61,10 @@ mod child_rejection_tests;
 #[path = "map_marker/child_fault_tests.rs"]
 mod child_fault_tests;
 
+#[cfg(all(test, target_os = "windows"))]
+#[path = "map_marker/child_root_tests.rs"]
+mod child_root_tests;
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct MarkerItem {
     pub unit_id: u32,

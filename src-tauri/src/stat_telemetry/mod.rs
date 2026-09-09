@@ -12,6 +12,7 @@ mod lifecycle;
 pub(crate) mod memory;
 mod rendering;
 pub(crate) use lifecycle::TelemetrySession;
+pub(crate) use rendering::rate_per_second;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum StatConsumer {
@@ -212,14 +213,6 @@ impl TelemetrySnapshot {
     pub fn has_activity(&self) -> bool {
         self != &Self::default()
     }
-}
-
-pub(crate) fn rate_per_second(count: u64, elapsed: Duration) -> Option<f64> {
-    if elapsed.is_zero() {
-        return None;
-    }
-    // Conversion is intentionally approximate: rates are observational, counters remain exact u64.
-    Some(count as f64 / elapsed.as_secs_f64())
 }
 
 pub(crate) fn try_snapshot<T>(
