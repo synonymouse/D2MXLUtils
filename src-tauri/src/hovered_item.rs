@@ -164,7 +164,11 @@ impl HoveredItemHook {
         }
     }
 
-    pub(crate) fn install(&self, ctx: &crate::process::D2Context) -> Result<(), String> {
+    pub(crate) fn install(
+        &self,
+        ctx: &crate::process::D2Context,
+        verbose: bool,
+    ) -> Result<(), String> {
         if ctx.d2_sigma == 0 {
             return Err("D2Sigma.dll not found".to_string());
         }
@@ -225,6 +229,9 @@ impl HoveredItemHook {
                 return Ok(());
             }
             PrologueState::Mismatch(actual) => {
+                if verbose {
+                    log_relocation_diagnostic(ctx);
+                }
                 return Err(format!(
                     "tooltip hook prologue mismatch: expected {:02X?}, got {:02X?} — D2Sigma.dll may have been updated; RVA needs reverification",
                     crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PROLOGUE,
@@ -576,6 +583,51 @@ fn build_e9_patch(target_addr: usize, trampoline_addr: usize) -> [u8; 5] {
     patch[0] = 0xE9;
     patch[1..5].copy_from_slice(&rel.to_le_bytes());
     patch
+}
+
+/// Diagnostic-only: on a prologue mismatch, scan the rest of `D2Sigma.dll`
+/// for the tooltip-builder function's mostly-invariant byte signature (see
+/// `offsets::d2sigma::TOOLTIP_ITEM_HOOK_SIGNATURE`) and log where it
+/// actually lives now. This does not install the hook there — it only
+/// saves a manual binary diff the next time MXL relocates the function
+/// again, by pointing straight at the new offset to put in `offsets.rs`.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn log_relocation_diagnostic(ctx: &crate::process::D2Context) {
+    if ctx.d2_sigma_size == 0 {
+        crate::logger::info(
+            "[ItemSearch] tooltip hook signature scan skipped: D2Sigma.dll size unknown",
+        );
+        return;
+    }
+
+    let pattern = crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_SIGNATURE;
+    let Some(hit) =
+        ctx.process
+            .scan_pattern_wildcard(ctx.d2_sigma, ctx.d2_sigma_size, pattern, ctx.d2_sigma)
+    else {
+        crate::logger::info(
+            "[ItemSearch] tooltip hook signature scan found no match — the function body itself may have changed, not just relocated",
+        );
+        return;
+    };
+
+    let ambiguous = ctx
+        .process
+        .scan_pattern_wildcard(ctx.d2_sigma, ctx.d2_sigma_size, pattern, hit + 1)
+        .is_some();
+    let rva = hit - ctx.d2_sigma;
+    if ambiguous {
+        crate::logger::info(&format!(
+            "[ItemSearch] tooltip hook signature scan found multiple matches (first at D2Sigma+0x{:X}) — too ambiguous to trust, manual RE still needed",
+            rva
+        ));
+    } else {
+        crate::logger::info(&format!(
+            "[ItemSearch] tooltip hook signature scan found the relocated function at D2Sigma+0x{:X} (offsets.rs currently has TOOLTIP_ITEM_HOOK = 0x{:X}) — update the constant",
+            rva,
+            crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK
+        ));
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]

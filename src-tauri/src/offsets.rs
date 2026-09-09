@@ -164,6 +164,65 @@ pub mod d2sigma {
     /// argument is readable at `[ESP+28]` until registers/flags are restored.
     pub const TOOLTIP_ITEM_ARG_AFTER_PUSHFD_PUSHAD: usize = 0x28;
 
+    /// Diagnostic-only AOB signature for the same function `TOOLTIP_ITEM_HOOK`
+    /// patches. It has relocated twice now (`0xAE020` -> `0xB4F80` ->
+    /// `0xB4E70`) while staying byte-for-byte identical apart from one
+    /// embedded data-pointer immediate (wildcarded below, `None` at indices
+    /// 11-14) — every relocation observed so far only shifted that pointer.
+    /// Used solely to log where the function actually lives when
+    /// `TOOLTIP_ITEM_HOOK`'s prologue check fails, so the next fix doesn't
+    /// need a fresh manual diff of two `D2Sigma.dll` builds. Not used to
+    /// install the hook automatically — see `hovered_item::install`.
+    pub const TOOLTIP_ITEM_HOOK_SIGNATURE: &[Option<u8>] = &[
+        Some(0x55),
+        Some(0x8D),
+        Some(0x6C),
+        Some(0x24),
+        Some(0xD8),
+        Some(0x83),
+        Some(0xEC),
+        Some(0x28),
+        Some(0x6A),
+        Some(0xFF),
+        Some(0x68),
+        None,
+        None,
+        None,
+        None,
+        Some(0x64),
+        Some(0xA1),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x50),
+        Some(0x64),
+        Some(0x89),
+        Some(0x25),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x81),
+        Some(0xEC),
+        Some(0x98),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x53),
+        Some(0x56),
+        Some(0x57),
+        Some(0x8B),
+        Some(0xD9),
+        Some(0xC7),
+        Some(0x45),
+        Some(0x24),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+        Some(0x00),
+    ];
+
     /// Absolute low-memory range where RE found the native UTF-16 tooltip text
     /// buffer. It can remain stale on empty hover, so do not use it as the
     /// primary hovered-item identity source; use the D2Sigma+AE020 pUnit hook.
