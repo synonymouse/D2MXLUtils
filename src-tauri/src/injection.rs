@@ -138,6 +138,8 @@ fn swap_endian(value: u32) -> [u8; 4] {
 /// Injector for D2 game functions
 #[cfg(target_os = "windows")]
 pub struct D2Injector {
+    #[cfg(test)]
+    pub(crate) marker_allocator: Option<std::sync::Mutex<MarkerTestAllocator>>,
     /// Allocated buffer for strings/data in game memory
     pub string_buffer: RemoteAlloc,
     /// Allocated buffer for parameters
@@ -175,6 +177,8 @@ impl D2Injector {
         let inject_new_automap_cell = inject_base + d2client::inject::NEW_AUTOMAP_CELL;
 
         let injector = Self {
+            #[cfg(test)]
+            marker_allocator: None,
             string_buffer,
             params_buffer,
             inject_get_string,
@@ -188,6 +192,47 @@ impl D2Injector {
         injector.inject_functions(process, d2_client, d2_common, d2_lang)?;
 
         Ok(injector)
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+pub(crate) struct MarkerTestAllocator {
+    pub cells: std::collections::VecDeque<Result<u32, String>>,
+    pub calls: usize,
+}
+
+#[cfg(all(test, target_os = "windows"))]
+impl MarkerTestAllocator {
+    fn allocate(&mut self) -> Result<u32, String> {
+        self.calls += 1;
+        self.cells.pop_front().expect("marker fixture exhausted")
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+impl D2Injector {
+    pub(crate) fn for_marker_test(cells: impl Iterator<Item = u32>) -> Self {
+        Self {
+            marker_allocator: Some(std::sync::Mutex::new(MarkerTestAllocator {
+                cells: cells.map(Ok).collect(),
+                calls: 0,
+            })),
+            string_buffer: RemoteAlloc {
+                handle: HANDLE::default(),
+                address: 0,
+                size: 0,
+            },
+            params_buffer: RemoteAlloc {
+                handle: HANDLE::default(),
+                address: 0,
+                size: 0,
+            },
+            inject_get_string: 0,
+            inject_get_item_name: 0,
+            inject_get_item_stat: 0,
+            inject_get_unit_stat: 0,
+            inject_new_automap_cell: 0,
+        }
     }
 }
 
@@ -282,6 +327,10 @@ impl D2Injector {
     /// Allocate a fresh `AutomapCell` from the game's pool. Caller fills
     /// the fields; the engine reclaims the cell on area change.
     pub fn new_automap_cell(&self, process: &ProcessHandle) -> Result<u32, String> {
+        #[cfg(all(test, target_os = "windows"))]
+        if let Some(allocator) = &self.marker_allocator {
+            return allocator.lock().unwrap().allocate();
+        }
         let cell = remote_thread(process, self.inject_new_automap_cell, 0)?;
         Ok(cell)
     }
