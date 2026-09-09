@@ -4,10 +4,12 @@
 //! D2Stats reads these by manually summing the unit's raw `StatList`
 //! (`UpdateStatValueMem` / `FixStats`), which requires several bug-workarounds
 //! (zeroing velocity stats, halving life regen, etc — see `FixStats`). We
-//! instead call the game's own `D2Common::GetUnitStat` per stat id via the
-//! existing code-injection path (`D2Injector::get_unit_stat`), which returns
-//! the engine's already-correct aggregated value directly, so none of those
-//! workarounds are needed (same rationale as `damage_stats.rs`).
+//! prefer a validated bulk read through `StatReadContext`, using the shared
+//! reader's descriptor selection and ItemStatCost adjustments rather than
+//! those manual-summation workarounds. If that read fails or level is missing
+//! or nonpositive, we retain one legacy `D2Common::GetUnitStat` sweep via
+//! `D2Injector::get_unit_stat`. Scaling and derived formulas remain unchanged;
+//! direct/injected parity has not been verified against a live game.
 //!
 //! Stat ids are vanilla D2 `ItemStatCost.txt` row indices (MXL keeps the
 //! vanilla core numbering stable). The frontend owns labels/grouping/tooltips
@@ -20,6 +22,10 @@ use crate::breakpoints::resolve_item_type_chain;
 use crate::injection::D2Injector;
 use crate::offsets::{d2common, inventory, item_data, items_txt, stat_list, unit};
 use crate::process::D2Context;
+use crate::stat_telemetry::StatConsumer;
+use crate::unit_stats_reader::fallback::StatReadContext;
+#[cfg(all(test, target_os = "windows"))]
+mod stat_acquisition_tests;
 
 /// Every stat id shown anywhere in the Stats tab (character data, attributes,
 /// speed, combat, resistances, misc, minions, life/mana-on-hit, absorb, and
@@ -87,7 +93,8 @@ pub struct CharacterStats {
     /// class-specific constants (e.g. life-per-vitality).
     pub class: u32,
     /// Aggregate (fully merged, includes item/skill bonuses) stat values,
-    /// read via the engine's own `GetUnitStat`.
+    /// acquired direct-first with legacy `GetUnitStat` fallback, then scaled
+    /// and supplemented by the local overrides and derived rows below.
     pub stats: BTreeMap<u32, i32>,
     /// Unmerged (no item/skill bonuses) values for `BASE_STAT_IDS`, read
     /// directly from the unit's own StatList.
@@ -96,18 +103,16 @@ pub struct CharacterStats {
 
 /// Reads the full character-stats sheet for one unit.
 ///
-/// Returns `None` only when the unit pointer is null (no player/merc — a
-/// real, stable condition). A `GetUnitStat` call failing partway through
-/// the ~100-id sweep (the injector's remote-thread call can miss
-/// transiently under load) does *not* abort the whole read or zero that
-/// stat — `previous` (the last successfully-merged snapshot, tracked by the
-/// caller in `main.rs`) is consulted per-id instead, so one flaky call
-/// doesn't blank out or stall the entire sheet. Aborting the whole sweep on
-/// any single failure was tried first and made things worse: with ~100
-/// sequential remote-thread calls, the odds of *at least one* failing in a
-/// given sweep are much higher than any individual call failing, so under a
-/// flaky injector (e.g. under Wine) a full clean sweep could become rare
-/// enough that the tab never recovers from "no data".
+/// Returns `None` when the unit pointer is null or cannot be read. A validated
+/// direct bulk result supplies the raw values, with missing optional stats
+/// treated as zero. A reader error or missing/nonpositive level triggers
+/// exactly one legacy per-ID sweep, without retrying direct reads per ID.
+/// During that fallback sweep, a failed `GetUnitStat` uses the already-scaled
+/// per-ID value from `previous` (tracked in `main.rs`), or zero if unavailable.
+/// Historically, aborting the entire injected sweep on any failure made the
+/// sheet stall under flaky injection: a fully successful ~100-call sweep
+/// could be rare. Retaining per-ID last-good values preserves that recovery
+/// behavior when direct acquisition is unavailable.
 pub fn read_unit_character_stats(
     ctx: &D2Context,
     injector: &D2Injector,
@@ -125,10 +130,16 @@ pub fn read_unit_character_stats(
         .read_memory::<u32>(p_unit as usize + unit::CLASS)
         .unwrap_or(0);
 
+    let acquisition = StatReadContext::new(ctx, injector, StatConsumer::Stats);
+    let direct = acquisition.read_bulk(p_unit, STAT_IDS);
     let mut stats = BTreeMap::new();
     for &id in STAT_IDS {
-        let value = match injector.get_unit_stat(&ctx.process, p_unit, id) {
-            Ok(raw) => scale_life_mana(id, raw as i32),
+        let raw = match &direct {
+            Ok(values) => Ok(values.get(&id).copied().unwrap_or(0)),
+            Err(()) => acquisition.legacy_stat(p_unit, id),
+        };
+        let value = match raw {
+            Ok(raw) => scale_life_mana(id, raw),
             Err(_) => previous
                 .and_then(|p| p.stats.get(&id))
                 .copied()
