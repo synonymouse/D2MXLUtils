@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.27.5 — 2026-09-09
+
+### Bug Fixes
+
+- Fix(map-marker): constrain tail-child recovery and record quarantine causes (46a06f5)
+
+### Features
+
+- Feat(notifier): read level and sockets through validated acquisition (312dc9f)
+- Feat(damage): use direct-first stats without changing formulas (1dacf4d)
+- Feat(breakpoints): use direct-first stat acquisition (7b57fe7)
+- Feat(stats): prefer direct bulk acquisition for character sheets (719fedf)
+- Feat(stats): add validated direct reader with bounded legacy fallback (44b419a)
+- Feat(telemetry): observe stat acquisition and injector attempts per session (936478f)
+
+### Miscellaneous
+
+- Chore: enforce consistent line endings (854cdbb)
+
+### Refactor
+
+- Refactor: keep telemetry and marker regression modules focused (9acd173)
+
 ## v1.27.4 — 2026-09-09
 
 ### Bug Fixes
