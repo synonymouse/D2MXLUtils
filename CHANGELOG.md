@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.27.3 — 2026-09-09
+
+### CI
+
+- Ci: upload Windows build artifact on manual workflow_dispatch runs (426fe8f)
+
+### Features
+
+- Feat: direct memory stat reads, safer loot-filter eject, self-owned marker cells (072fa31)
+
 ## v1.27.2 — 2026-09-08
 
 ### Bug Fixes
