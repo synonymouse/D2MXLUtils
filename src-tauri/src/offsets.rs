@@ -33,6 +33,9 @@ pub mod d2client {
         /// 6-byte stub: `call NewAutomapCell; ret`. EAX on return = AutomapCell*.
         /// Placed well past INJECT_GET_UNIT_STAT (`0x54` + ~17 bytes) with pad.
         pub const NEW_AUTOMAP_CELL: usize = 0x70;
+        /// Published automap marker cell buffer pointer (dword in injection padding).
+        /// Persists across scanner re-attachments for the lifetime of Game.exe.
+        pub const CELL_BUFFER_PTR: usize = 0x80;
 
         /// Linux only: staging address for a small hand-written `mmap2`
         /// syscall stub (~40 bytes), used once per `D2Injector::new` to
@@ -87,6 +90,9 @@ pub mod d2common {
     /// `STATLIST_SetStat` (D2Common ordinal 10261). Leaf called by
     /// `STATLIST_SetUnitStat`. Kept as a reference; not currently hooked.
     pub const STATLIST_SET_STAT: usize = 0x3A280;
+
+    /// Global pointer used by GetUnitStat for item stat cost flag checks (0x6fdd90b0 - 0x6fd50000)
+    pub const GLOBAL_STAT_FLAGS_PTR: usize = 0x890B0;
 }
 
 /// Field offsets inside `D2DataTablesStrc` (the struct pointed to by
@@ -112,6 +118,17 @@ pub mod data_tables {
     pub const SET_ITEMS_TXT_COUNT: usize = 0xC1C;
     pub const UNIQUE_ITEMS_TXT_PTR: usize = 0xC24;
     pub const UNIQUE_ITEMS_TXT_COUNT: usize = 0xC28;
+    /// `ItemStatCost.txt` table pointer and count in `sgptDataTables`
+    pub const ITEM_STAT_COST_TXT_PTR: usize = 0xBCC;
+    pub const ITEM_STAT_COST_TXT_COUNT: usize = 0xBD4;
+}
+
+/// ItemStatCost record field offsets
+pub mod item_stat_cost {
+    pub const RECORD_SIZE: usize = 0x144;
+    pub const FIELD_OP_FLAG: usize = 0x05; // u8 (op flag byte checked against global mask)
+    pub const FIELD_OP_PARAM: usize = 0x18; // u8 (shift parameter)
+    pub const FIELD_OP_BASE: usize = 0x2C; // i32 (floor/threshold)
 }
 
 /// D2Sigma.dll offsets (Median XL specific)
@@ -380,9 +397,14 @@ pub mod set_items_txt {
 #[allow(dead_code)]
 pub mod stat_list {
     pub const UNIT_TO_STATS_LIST: usize = 0x5C;
+    pub const SL_FLAGS: usize = 0x10;
+    pub const SL_FLAG_EX: u32 = 0x8000_0000;
     pub const SL_PSTAT: usize = 0x24;
     pub const SL_STAT_COUNT: usize = 0x28;
     pub const SL_STAT_CAPACITY: usize = 0x2A;
+    pub const SL_FULL_PSTAT: usize = 0x48;
+    pub const SL_FULL_STAT_COUNT: usize = 0x4C;
+    pub const SL_FULL_STAT_CAPACITY: usize = 0x4E;
     /// For monsters, `pStat` is allocated inline at this offset.
     pub const SL_INLINE_PSTAT: usize = 0x80;
 
@@ -398,6 +420,8 @@ pub mod stat_list {
     /// (see `dps_hook/trampoline.rs`'s monster-level read and
     /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
     pub const STAT_LEVEL: u16 = 12;
+    /// Item sockets (`item_numsockets`, stat id 194 / 0xC2 from `ItemStatCost.txt`).
+    pub const STAT_SOCKETS: u16 = 0xC2;
 }
 
 /// `D2MonStatsTxt` record offsets. Record size = `0x1A8`; indexing is
