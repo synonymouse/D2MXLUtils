@@ -470,7 +470,14 @@ pub(crate) mod marker_test_io {
     struct State {
         range: Range<usize>,
         fault: Option<(usize, Operation)>,
+        action: Option<Action>,
         writes: usize,
+    }
+    struct Action {
+        address: usize,
+        operation: Operation,
+        remaining: usize,
+        run: Box<dyn FnOnce()>,
     }
     thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
     pub struct Scope(Option<State>, PhantomData<Rc<()>>);
@@ -480,18 +487,31 @@ pub(crate) mod marker_test_io {
                 STATE.replace(Some(State {
                     range,
                     fault: None,
+                    action: None,
                     writes: 0,
                 })),
                 PhantomData,
             )
         }
         pub fn fail(&self, address: usize, operation: Operation) {
-            STATE.with_borrow_mut(|state| {
-                state.as_mut().unwrap().fault = Some((address, operation))
-            });
+            fail_next(address, operation);
         }
         pub fn writes(&self) -> usize {
             STATE.with_borrow(|state| state.as_ref().unwrap().writes)
+        }
+        pub fn on_nth(&self, trigger: (usize, Operation, usize), run: impl FnOnce() + 'static) {
+            let (address, operation, remaining) = trigger;
+            assert!(remaining > 0);
+            STATE.with_borrow_mut(|state| {
+                let state = state.as_mut().unwrap();
+                assert!(state.range.contains(&address));
+                state.action = Some(Action {
+                    address,
+                    operation,
+                    remaining,
+                    run: Box::new(run),
+                });
+            });
         }
     }
     impl Drop for Scope {
@@ -500,6 +520,22 @@ pub(crate) mod marker_test_io {
         }
     }
     pub fn intercept(address: usize, operation: Operation) -> Result<(), String> {
+        let action = STATE.with_borrow_mut(|state| {
+            let state = state.as_mut()?;
+            let action = state.action.as_mut()?;
+            if action.address != address || action.operation != operation {
+                return None;
+            }
+            action.remaining -= 1;
+            if action.remaining == 0 {
+                state.action.take()
+            } else {
+                None
+            }
+        });
+        if let Some(action) = action {
+            (action.run)();
+        }
         STATE.with_borrow_mut(|state| {
             let Some(state) = state
                 .as_mut()
@@ -516,6 +552,9 @@ pub(crate) mod marker_test_io {
             }
             Ok(())
         })
+    }
+    pub fn fail_next(address: usize, operation: Operation) {
+        STATE.with_borrow_mut(|state| state.as_mut().unwrap().fault = Some((address, operation)));
     }
 }
 

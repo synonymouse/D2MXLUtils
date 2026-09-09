@@ -151,6 +151,7 @@ impl MarkerScanner {
             clear_recent_bfs_items(self.state.as_ref());
             if take_marker_clear_needed(&mut self.markers_cleared) {
                 if let Err(e) = self.map_marker.clear(&self.state.ctx) {
+                    self.map_marker.emit_quarantine_with(crate::logger::info);
                     mark_marker_path_active(&mut self.markers_cleared);
                     log_error(&format!("map_marker clear (no map rules) failed: {}", e));
                 }
@@ -224,14 +225,17 @@ impl MarkerScanner {
             Ok(i) => i,
             Err(p) => p.into_inner(),
         };
-        if let Err(e) = self.map_marker.tick(
+        let result = self.map_marker.tick(
             &self.state.ctx,
             &*injector,
             &newly_matched,
             &explicitly_unmarked,
             &bfs_unit_ids,
             player_sub,
-        ) {
+        );
+        drop(injector);
+        if let Err(e) = result {
+            self.map_marker.emit_quarantine_with(crate::logger::info);
             log_error(&format!("map_marker tick failed: {}", e));
         }
     }
@@ -250,6 +254,7 @@ impl MarkerScanner {
             Ok(()) => self.markers_cleared = true,
             Err(e) => {
                 self.markers_cleared = false;
+                self.map_marker.emit_quarantine_with(crate::logger::info);
                 log_error(&format!("map_marker clear on shutdown failed: {}", e));
             }
         }
