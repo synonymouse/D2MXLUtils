@@ -31,6 +31,8 @@ mod stat_telemetry;
 mod stats_panel;
 mod unique_stats_db;
 mod unique_stats_db_sync;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod unit_stats_reader;
 mod updater;
 mod weapon_families;
 
@@ -440,17 +442,17 @@ fn start_scanner_internal(
             let mut last_emitted_always_show: Option<bool> = None;
             // Area-change check throttle (~150 ms at 30 ms tick).
             let mut dps_area_tick_counter: u32 = 0;
-            // Full character-stats sheet is ~90 GetUnitStat calls per unit —
-            // throttle to ~300 ms at 30 ms tick instead of every tick.
+            // Stats now prefer a direct bulk read, but a rejected bulk still
+            // needs the legacy ~100-call GetUnitStat sweep per unit. Preserve
+            // the existing ~300 ms gate rather than poll on every 30 ms tick.
             let mut stats_tick_counter: u32 = 0;
             const STATS_CHECK_EVERY: u32 = 10;
-            // Breakpoints tab is 2 units x 6 GetUnitStat calls, each a
-            // CreateRemoteThread into the game process. Left unthrottled
-            // this fired every 30 ms tick — ~400 remote threads/sec into an
-            // old, single-threaded-assumption engine for as long as the tab
-            // stayed open, reported as a memory leak while it's open.
-            // Breakpoint stats only change on gear/buff swaps, so the same
-            // ~300 ms cadence as the stats sheet above is plenty responsive.
+            // Breakpoints now read direct-first. The legacy path requested
+            // 2 units x 6 injected stats per poll; persistent direct failure
+            // can retain that pressure. Historically, polling every 30 ms
+            // meant roughly 400 injected requests/sec while the tab was open.
+            // Keep the existing ~300 ms gate for fallback costs and gear/buff
+            // updates; reducing requests does not establish a crash/leak fix.
             let mut breakpoints_tick_counter: u32 = 0;
             const BREAKPOINTS_CHECK_EVERY: u32 = 10;
 
