@@ -3,16 +3,15 @@
 
 #[cfg(target_os = "windows")]
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "windows")]
-use windows::Win32::Foundation::{CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
-    VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+    VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::System::Threading::{
-    CreateRemoteThread, GetCurrentProcess, GetExitCodeThread, WaitForSingleObject, INFINITE,
+    CreateRemoteThread, GetExitCodeThread, WaitForSingleObject, INFINITE,
 };
 
 use crate::offsets::{d2client, d2common, d2lang};
@@ -26,18 +25,17 @@ pub struct RemoteAlloc {
     size: usize,
 }
 
-// Own a duplicate process handle: SharedScannerState may drop its context
-// before the injector. Scratch calls are synchronous and finished before
-// the injector is dropped. Published trampolines explicitly persist instead.
+// NOTE: We intentionally do NOT free the remote memory in Drop.
+// The OS will reclaim the memory when the game process exits. We no longer
+// reuse the same buffers across different scanner instances or game
+// processes – each `D2Injector` allocates its own buffers – but we still
+// avoid calling VirtualFreeEx manually to keep the implementation simple
+// and robust across process restarts.
 #[cfg(target_os = "windows")]
 impl Drop for RemoteAlloc {
     fn drop(&mut self) {
-        unsafe {
-            if self.address != 0 {
-                let _ = VirtualFreeEx(self.handle, self.address as *mut c_void, 0, MEM_RELEASE);
-            }
-            let _ = CloseHandle(self.handle);
-        }
+        // Intentionally no-op: remote memory is released when the
+        // Diablo II process terminates.
     }
 }
 
@@ -52,22 +50,9 @@ unsafe impl Sync for RemoteAlloc {}
 impl RemoteAlloc {
     /// Allocate memory in the remote process
     pub fn new(process: &ProcessHandle, size: usize) -> Result<Self, String> {
-        let mut handle = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                process.handle,
-                GetCurrentProcess(),
-                &mut handle,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .map_err(|e| format!("DuplicateHandle for remote allocation failed: {}", e))?;
-        }
         let address = unsafe {
             VirtualAllocEx(
-                handle,
+                process.handle,
                 None,
                 size,
                 MEM_COMMIT | MEM_RESERVE,
@@ -76,107 +61,14 @@ impl RemoteAlloc {
         };
 
         if address.is_null() {
-            unsafe {
-                let _ = CloseHandle(handle);
-            }
             return Err("VirtualAllocEx failed".to_string());
         }
 
         Ok(Self {
-            handle,
+            handle: process.handle,
             address: address as usize,
             size,
         })
-    }
-
-    /// Transfer a published hook to the game-process lifetime. Its metadata
-    /// allows later scanner instances to reattach without another allocation.
-    pub fn persist(mut self) {
-        self.address = 0;
-    }
-}
-
-/// Published memory region in the target process.
-///
-/// Unlike scratch buffers used by completed remote calls, published memory is
-/// linked into the game's internal data structures (e.g. Automap BST) and
-/// traversed asynchronously by the game engine's render thread. It must NEVER
-/// be freed via `VirtualFreeEx` while the target process is alive, as doing so
-/// unmaps the page and causes access violations (0xC0000005) if the renderer
-/// is mid-traversal or if any references survive.
-///
-/// Its lifetime is tied to the target game process (`Game.exe`); the OS kernel
-/// reclaims the allocation cleanly upon process termination. Its remote address
-/// is recorded at `d2client::inject::CELL_BUFFER_PTR` to allow scanner re-attachment
-/// across restarts without re-allocating.
-pub struct PublishedRemoteBuffer {
-    pub address: usize,
-    pub size: usize,
-}
-
-#[cfg(all(test, target_os = "windows"))]
-mod allocation_tests {
-    use super::*;
-    use windows::Win32::System::Memory::{VirtualQueryEx, MEMORY_BASIC_INFORMATION, MEM_FREE};
-
-    fn local_process() -> ProcessHandle {
-        let mut handle = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                &mut handle,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .unwrap();
-        }
-        ProcessHandle {
-            handle,
-            pid: std::process::id(),
-        }
-    }
-
-    fn memory_state(address: usize) -> windows::Win32::System::Memory::VIRTUAL_ALLOCATION_TYPE {
-        let mut info = MEMORY_BASIC_INFORMATION::default();
-        assert_ne!(
-            unsafe {
-                VirtualQueryEx(
-                    GetCurrentProcess(),
-                    Some(address as *const c_void),
-                    &mut info,
-                    std::mem::size_of::<MEMORY_BASIC_INFORMATION>(),
-                )
-            },
-            0
-        );
-        info.State
-    }
-
-    #[test]
-    fn scratch_storage_is_freed_even_after_original_process_handle_closes() {
-        let process = local_process();
-        let allocation = RemoteAlloc::new(&process, 0x1000).unwrap();
-        let address = allocation.address;
-        assert_eq!(memory_state(address), MEM_COMMIT);
-        drop(process);
-        drop(allocation);
-        assert_eq!(memory_state(address), MEM_FREE);
-    }
-
-    #[test]
-    fn published_trampoline_survives_owner_drop_for_reattachment() {
-        let process = local_process();
-        let allocation = RemoteAlloc::new(&process, 0x8000).unwrap();
-        let address = allocation.address;
-        allocation.persist();
-        assert_eq!(memory_state(address), MEM_COMMIT);
-        // This test never executes the region, so freeing it is safe.
-        unsafe {
-            VirtualFreeEx(process.handle, address as *mut c_void, 0, MEM_RELEASE).unwrap();
-        }
     }
 }
 
@@ -246,12 +138,10 @@ fn swap_endian(value: u32) -> [u8; 4] {
 /// Injector for D2 game functions
 #[cfg(target_os = "windows")]
 pub struct D2Injector {
-    /// Allocated buffer for strings/data in game memory (scratch: freed on drop)
+    /// Allocated buffer for strings/data in game memory
     pub string_buffer: RemoteAlloc,
-    /// Allocated buffer for parameters (scratch: freed on drop)
+    /// Allocated buffer for parameters
     pub params_buffer: RemoteAlloc,
-    /// Pre-allocated buffer for automap marker cells (published: game-process lifetime)
-    pub cell_buffer: PublishedRemoteBuffer,
 
     /// Addresses of injected functions
     pub inject_get_string: usize,
@@ -259,12 +149,6 @@ pub struct D2Injector {
     pub inject_get_item_stat: usize,
     pub inject_get_unit_stat: usize,
     pub inject_new_automap_cell: usize,
-
-    pub remote_calls_get_string: AtomicU64,
-    pub remote_calls_get_item_name: AtomicU64,
-    pub remote_calls_get_item_stat: AtomicU64,
-    pub remote_calls_get_unit_stat: AtomicU64,
-    pub remote_calls_new_automap_cell: AtomicU64,
 }
 
 #[cfg(target_os = "windows")]
@@ -284,26 +168,6 @@ impl D2Injector {
         let params_buffer = RemoteAlloc::new(process, 0x100)?;
 
         let inject_base = d2_client + d2client::INJECT_BASE;
-        let cell_buf_ptr_addr = inject_base + d2client::inject::CELL_BUFFER_PTR;
-
-        // Lifetime policy: published marker cells survive in the game process.
-        // Check if a published cell buffer already exists from a previous attach.
-        let existing_addr = process.read_memory::<u32>(cell_buf_ptr_addr).unwrap_or(0) as usize;
-        let cell_buffer_address =
-            if existing_addr != 0 && process.read_memory::<u32>(existing_addr).is_ok() {
-                existing_addr
-            } else {
-                let alloc = RemoteAlloc::new(process, 0x1000)?;
-                let addr = alloc.address;
-                alloc.persist(); // transfer to game process lifetime; never VirtualFreeEx while game is running
-                let _ = process.write_buffer(cell_buf_ptr_addr, &(addr as u32).to_le_bytes());
-                addr
-            };
-        let cell_buffer = PublishedRemoteBuffer {
-            address: cell_buffer_address,
-            size: 0x1000,
-        };
-
         let inject_get_string = inject_base + d2client::inject::GET_STRING;
         let inject_get_item_name = inject_base + d2client::inject::GET_ITEM_NAME;
         let inject_get_item_stat = inject_base + d2client::inject::GET_ITEM_STAT;
@@ -313,17 +177,11 @@ impl D2Injector {
         let injector = Self {
             string_buffer,
             params_buffer,
-            cell_buffer,
             inject_get_string,
             inject_get_item_name,
             inject_get_item_stat,
             inject_get_unit_stat,
             inject_new_automap_cell,
-            remote_calls_get_string: AtomicU64::new(0),
-            remote_calls_get_item_name: AtomicU64::new(0),
-            remote_calls_get_item_stat: AtomicU64::new(0),
-            remote_calls_get_unit_stat: AtomicU64::new(0),
-            remote_calls_new_automap_cell: AtomicU64::new(0),
         };
 
         // Inject the code
@@ -339,59 +197,6 @@ impl D2Injector {
 /// `ProcessHandle::write_buffer`) lives once, in the shared impl block
 /// below, rather than duplicated per OS.
 
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
-pub struct RemoteCallStats {
-    pub get_string: u64,
-    pub get_item_name: u64,
-    pub get_item_stat: u64,
-    pub get_unit_stat: u64,
-    pub new_automap_cell: u64,
-}
-
-impl RemoteCallStats {
-    pub fn total(&self) -> u64 {
-        self.get_string
-            + self.get_item_name
-            + self.get_item_stat
-            + self.get_unit_stat
-            + self.new_automap_cell
-    }
-
-    pub fn calculate_rates(
-        &self,
-        previous: &RemoteCallStats,
-        elapsed_secs: f64,
-    ) -> RemoteCallRates {
-        if elapsed_secs <= 0.0001 {
-            return RemoteCallRates::default();
-        }
-        RemoteCallRates {
-            get_string: (self.get_string.saturating_sub(previous.get_string)) as f64 / elapsed_secs,
-            get_item_name: (self.get_item_name.saturating_sub(previous.get_item_name)) as f64
-                / elapsed_secs,
-            get_item_stat: (self.get_item_stat.saturating_sub(previous.get_item_stat)) as f64
-                / elapsed_secs,
-            get_unit_stat: (self.get_unit_stat.saturating_sub(previous.get_unit_stat)) as f64
-                / elapsed_secs,
-            new_automap_cell: (self
-                .new_automap_cell
-                .saturating_sub(previous.new_automap_cell)) as f64
-                / elapsed_secs,
-            total: (self.total().saturating_sub(previous.total())) as f64 / elapsed_secs,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
-pub struct RemoteCallRates {
-    pub get_string: f64,
-    pub get_item_name: f64,
-    pub get_item_stat: f64,
-    pub get_unit_stat: f64,
-    pub new_automap_cell: f64,
-    pub total: f64,
-}
-
 /// Public call wrappers — identical on every OS, since they only go through
 /// the already OS-abstracted `remote_thread`/`ProcessHandle::read_buffer`/
 /// `write_buffer`. Shared by both the Windows and Linux `D2Injector`, which
@@ -399,21 +204,8 @@ pub struct RemoteCallRates {
 /// `inject_*: usize`) even though `RemoteAlloc`/`new`/`inject_functions`
 /// differ per OS above/below.
 impl D2Injector {
-    /// Retrieve instantaneous counts of remote-thread invocations by operation.
-    pub fn remote_call_stats(&self) -> RemoteCallStats {
-        RemoteCallStats {
-            get_string: self.remote_calls_get_string.load(Ordering::Relaxed),
-            get_item_name: self.remote_calls_get_item_name.load(Ordering::Relaxed),
-            get_item_stat: self.remote_calls_get_item_stat.load(Ordering::Relaxed),
-            get_unit_stat: self.remote_calls_get_unit_stat.load(Ordering::Relaxed),
-            new_automap_cell: self.remote_calls_new_automap_cell.load(Ordering::Relaxed),
-        }
-    }
-
     /// Get item name by calling the injected function
     pub fn get_item_name(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
-        self.remote_calls_get_item_name
-            .fetch_add(1, Ordering::Relaxed);
         // Clear buffer before use
         // Original D2Stats reads wchar[256] → 512 bytes
         let zeros = vec![0u8; 512];
@@ -437,8 +229,6 @@ impl D2Injector {
 
     /// Get item stats by calling the injected function
     pub fn get_item_stats(&self, process: &ProcessHandle, p_unit: u32) -> Result<String, String> {
-        self.remote_calls_get_item_stat
-            .fetch_add(1, Ordering::Relaxed);
         // Clear buffer before use
         // Original D2Stats reads wchar[2048] → 4096 bytes
         let zeros = vec![0u8; 4096];
@@ -470,7 +260,6 @@ impl D2Injector {
         name_id: u16,
         max_chars: usize,
     ) -> Result<String, String> {
-        self.remote_calls_get_string.fetch_add(1, Ordering::Relaxed);
         // remote_thread returns the thread's exit code which is EAX from our
         // shellcode — for GetStringById this is a pointer into the game's
         // string table (UTF-16).
@@ -493,8 +282,6 @@ impl D2Injector {
     /// Allocate a fresh `AutomapCell` from the game's pool. Caller fills
     /// the fields; the engine reclaims the cell on area change.
     pub fn new_automap_cell(&self, process: &ProcessHandle) -> Result<u32, String> {
-        self.remote_calls_new_automap_cell
-            .fetch_add(1, Ordering::Relaxed);
         let cell = remote_thread(process, self.inject_new_automap_cell, 0)?;
         Ok(cell)
     }
@@ -506,8 +293,6 @@ impl D2Injector {
         p_unit: u32,
         stat_id: u32,
     ) -> Result<u32, String> {
-        self.remote_calls_get_unit_stat
-            .fetch_add(1, Ordering::Relaxed);
         // Write params: [stat_id, p_unit]
         process.write_buffer(self.params_buffer.address, &stat_id.to_le_bytes())?;
         process.write_buffer(self.params_buffer.address + 4, &p_unit.to_le_bytes())?;
@@ -644,17 +429,11 @@ pub struct RemoteAlloc {
 pub struct D2Injector {
     pub string_buffer: RemoteAlloc,
     pub params_buffer: RemoteAlloc,
-    pub cell_buffer: PublishedRemoteBuffer,
     pub inject_get_string: usize,
     pub inject_get_item_name: usize,
     pub inject_get_item_stat: usize,
     pub inject_get_unit_stat: usize,
     pub inject_new_automap_cell: usize,
-    pub remote_calls_get_string: AtomicU64,
-    pub remote_calls_get_item_name: AtomicU64,
-    pub remote_calls_get_item_stat: AtomicU64,
-    pub remote_calls_get_unit_stat: AtomicU64,
-    pub remote_calls_new_automap_cell: AtomicU64,
 }
 
 #[cfg(target_os = "linux")]
@@ -667,20 +446,16 @@ impl D2Injector {
     ) -> Result<Self, String> {
         let inject_base = d2_client + d2client::INJECT_BASE;
 
-        // One 0x3000 (12 KiB) mapping covers all three buffers: string_buffer at
+        // One 0x2000 (8 KiB) mapping covers both buffers: string_buffer at
         // +0x0 (4096 bytes, matches the wchar[2048] stats buffer size),
-        // params_buffer at +0x1000, and cell_buffer at +0x2000. See
-        // `ProcessHandle::mmap_remote` for the mechanism.
+        // params_buffer at +0x1000. See `ProcessHandle::mmap_remote` for
+        // the mechanism (shared with `dps_hook`'s own region allocation).
         let mmap_stub_addr = inject_base + d2client::inject::LINUX_MMAP_STUB;
-        let mapped = process.mmap_remote(mmap_stub_addr, 0x3000)?;
+        let mapped = process.mmap_remote(mmap_stub_addr, 0x2000)?;
 
         let string_buffer = RemoteAlloc { address: mapped };
         let params_buffer = RemoteAlloc {
             address: mapped + 0x1000,
-        };
-        let cell_buffer = PublishedRemoteBuffer {
-            address: mapped + 0x2000,
-            size: 0x1000,
         };
 
         let inject_get_string = inject_base + d2client::inject::GET_STRING;
@@ -692,17 +467,11 @@ impl D2Injector {
         let injector = Self {
             string_buffer,
             params_buffer,
-            cell_buffer,
             inject_get_string,
             inject_get_item_name,
             inject_get_item_stat,
             inject_get_unit_stat,
             inject_new_automap_cell,
-            remote_calls_get_string: AtomicU64::new(0),
-            remote_calls_get_item_name: AtomicU64::new(0),
-            remote_calls_get_item_stat: AtomicU64::new(0),
-            remote_calls_get_unit_stat: AtomicU64::new(0),
-            remote_calls_new_automap_cell: AtomicU64::new(0),
         };
 
         injector.inject_functions(process, d2_client, d2_common, d2_lang)?;
@@ -719,12 +488,6 @@ pub struct RemoteAlloc {
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-pub struct PublishedRemoteBuffer {
-    pub address: usize,
-    pub size: usize,
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
 pub struct D2Injector;
 
 #[cfg(not(any(target_os = "windows", target_os = "linux")))]
@@ -736,9 +499,5 @@ impl D2Injector {
         _d2_lang: usize,
     ) -> Result<Self, String> {
         Err("Not supported on this OS".to_string())
-    }
-
-    pub fn remote_call_stats(&self) -> RemoteCallStats {
-        RemoteCallStats::default()
     }
 }

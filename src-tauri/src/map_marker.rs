@@ -1,14 +1,15 @@
 //! Automap markers for loot-filter matches.
 //!
-//! Writes `AutomapCell`s directly into a pre-allocated buffer in `Game.exe`
-//! (`D2Injector::cell_buffer`) and attaches our chain as a leaf of the layer's
-//! `pObjects` BST — walk `pLess` from the root until a NULL slot, attach there,
-//! exactly like the engine's own icon insertion. Earlier versions instead
-//! allocated cells dynamically via `NewAutomapCell` via `CreateRemoteThread`,
-//! which suffered from remote thread injection errors (`os error 5`), thread
-//! contention with the game engine, and Use-After-Free crashes when the engine
-//! freed its automap chunks on layer unload. Using a dedicated `RemoteAlloc`
-//! buffer avoids all remote thread calls, memory leaks, and layer-unload crashes.
+//! Allocates `AutomapCell`s via `D2Injector::new_automap_cell` and attaches
+//! our chain as a leaf of the layer's `pObjects` BST — walk `pLess` from
+//! the root until a NULL slot, attach there, exactly like the engine's own
+//! icon insertion. Earlier versions instead swapped `pObjects` itself to
+//! point at a freshly-prepended chain; that's the single most contended
+//! slot in the structure (the engine's own quest/shrine-icon placement
+//! also reads/writes it), and repeatedly rewriting it every rebuild is the
+//! prime suspect for reports of quest/shrine markers occasionally going
+//! missing. Leaf insertion never touches the root, so engine-owned icons
+//! are never at risk of being swapped out from under it.
 //!
 //! A per-area `persistent` cache keeps markers sticky when the player walks
 //! past an item and its room unloads. Entries are evicted either when BFS
@@ -80,9 +81,13 @@ pub struct MapMarkerManager {
     /// `layer + P_OBJECTS` itself, only when the tree was empty). Never
     /// rewritten to point elsewhere once picked; zero when not attached.
     chain_parent_slot: u32,
-    /// Cells placed in the layer's BST, in chain order. `placed[0]` is the head;
-    /// the last cell's `pLess` is 0 (or an engine child); empty when not attached.
+    /// Cells we've allocated, in chain order. `placed[0]` is the head; the
+    /// last cell's `pLess` is 0 — we're a genuine leaf chain, not a splice
+    /// back into the engine's tree (see `attach_chain`).
     placed: Vec<u32>,
+    /// Detached cells available for reuse across ticks and room transitions.
+    /// Never free individual cells: the game owns their backing pool.
+    spare_cells: Vec<u32>,
     last_hash: u64,
     persistent: HashMap<u32, MarkerItem>,
     /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
@@ -110,6 +115,7 @@ impl MapMarkerManager {
             last_layer: 0,
             chain_parent_slot: 0,
             placed: Vec::new(),
+            spare_cells: Vec::new(),
             last_hash: 0,
             persistent: HashMap::new(),
             last_seen: HashMap::new(),
@@ -122,12 +128,12 @@ impl MapMarkerManager {
     /// call repeatedly.
     pub fn clear(&mut self, ctx: &D2Context) -> Result<(), String> {
         let layer = read_layer(ctx).unwrap_or(0);
-        if layer != 0 && (self.chain_parent_slot != 0 || !self.placed.is_empty()) {
-            self.detach_chain(ctx)?;
-        } else if layer == 0 {
-            self.chain_parent_slot = 0;
-            self.placed.clear();
+        if layer != 0 && layer == self.last_layer {
+            let _ = self.detach_chain(ctx);
         }
+        self.chain_parent_slot = 0;
+        self.placed.clear();
+        self.spare_cells.clear();
         self.last_hash = 0;
         self.persistent.clear();
         self.last_seen.clear();
@@ -139,21 +145,11 @@ impl MapMarkerManager {
 
     /// The marker scanner can observe loading before tick() runs. Forget
     /// addresses without touching memory the game may already have freed.
-    /// If context is provided and a layer is still present, attempts to detach cleanly;
-    /// if detachment fails, ownership state is preserved to block buffer reuse.
-    pub fn invalidate_cells(&mut self, ctx: Option<&D2Context>) {
-        if let Some(ctx) = ctx {
-            let layer = read_layer(ctx).unwrap_or(0);
-            if layer != 0 && (self.chain_parent_slot != 0 || !self.placed.is_empty()) {
-                if let Err(_) = self.detach_chain(ctx) {
-                    // Detachment failed: preserve ownership state so buffer reuse is blocked
-                    return;
-                }
-            }
-        }
+    pub fn invalidate_cells(&mut self) {
         self.last_layer = 0;
         self.chain_parent_slot = 0;
         self.placed.clear();
+        self.spare_cells.clear();
         self.last_hash = 0;
     }
 
@@ -173,6 +169,7 @@ impl MapMarkerManager {
             self.last_layer = 0;
             self.chain_parent_slot = 0;
             self.placed.clear();
+            self.spare_cells.clear();
             self.last_hash = 0;
             return Ok(());
         }
@@ -188,28 +185,34 @@ impl MapMarkerManager {
                 self.persistent.clear();
                 self.last_seen.clear();
                 self.first_seen.clear();
-                self.detach_chain(ctx)?;
+                let _ = self.detach_chain(ctx);
+                self.placed.clear();
+                self.spare_cells.clear();
+                self.chain_parent_slot = 0;
                 self.last_hash = 0;
             }
             self.last_player_sub = Some((px, py));
         }
 
         // Layer switch (Room2 crossing or layer reallocation): detach from
-        // the old layer if still valid. Because our cells live in a dedicated
-        // pre-allocated buffer owned by D2Injector, they are never freed by
-        // the engine's layer tear-down (Fog_Free at D2Client+0x5F300).
+        // the old layer and keep existing cells in spare_cells for reuse.
+        // AutomapCell allocations come from a global pool (D2Client NewAutomapCell),
+        // not the individual layer, so discarding spare_cells here would permanently
+        // leak memory in Game.exe every time the player crosses rooms.
         if layer != self.last_layer {
-            if self.last_layer != 0 && (self.chain_parent_slot != 0 || !self.placed.is_empty()) {
-                self.detach_chain(ctx)?;
+            let _ = self.detach_chain(ctx);
+            if !self.placed.is_empty() {
+                self.spare_cells.append(&mut self.placed);
             }
-            self.last_layer = layer;
+            self.chain_parent_slot = 0;
             self.last_hash = 0;
+            self.last_layer = layer;
         }
 
         // Tamper check: if the slot we attached under (root or some
-        // existing leaf's pLess) no longer points at our head, check if our head
-        // is still reachable in the tree. If still in tree, update chain_parent_slot;
-        // if confirmed gone, clear ownership; if read failed, preserve ownership.
+        // existing leaf's pLess) no longer points at our head, the engine
+        // or MXL wrote through/past us and our chain is orphaned. Force
+        // rebuild.
         if self.chain_parent_slot != 0 {
             if let Some(&head) = self.placed.first() {
                 let current = ctx
@@ -217,20 +220,10 @@ impl MapMarkerManager {
                     .read_memory::<u32>(self.chain_parent_slot as usize)
                     .unwrap_or(0);
                 if current != head {
-                    let objects_slot = layer + automap_layer::P_OBJECTS as u32;
-                    match find_node_slot(ctx, objects_slot, head) {
-                        Ok(Some(actual_slot)) => {
-                            self.chain_parent_slot = actual_slot;
-                        }
-                        Ok(None) => {
-                            self.chain_parent_slot = 0;
-                            self.placed.clear();
-                            self.last_hash = 0;
-                        }
-                        Err(_) => {
-                            // Read error: preserve ownership so we don't assume detached
-                        }
-                    }
+                    self.chain_parent_slot = 0;
+                    self.placed.clear();
+                    self.spare_cells.clear();
+                    self.last_hash = 0;
                 }
             }
         }
@@ -270,90 +263,51 @@ impl MapMarkerManager {
         Ok(())
     }
 
-    /// Detach our chain from the layer's BST.
-    ///
-    /// If the engine attached a child under our tail cell's `pLess` (e.g. a
-    /// native quest/shrine icon), splice that child directly into
-    /// the parent slot so engine-owned icons are never orphaned or lost.
-    /// Propagates all read/write failures and preserves ownership state
-    /// if detachment cannot be completed and confirmed.
+    /// Recycle only a chain that is still exactly ours. If the engine added
+    /// children or replaced a link, leave that tree alone and discard all
+    /// reusable addresses instead of disconnecting or rewriting foreign nodes.
     fn detach_chain(&mut self, ctx: &D2Context) -> Result<(), String> {
-        if self.chain_parent_slot == 0 && self.placed.is_empty() {
+        if self.chain_parent_slot == 0 || self.placed.is_empty() {
             return Ok(());
         }
-
-        let layer = read_layer(ctx)?;
-        if layer == 0 {
-            // Layer is gone (unmapped or null). The engine already destroyed the tree.
-            self.chain_parent_slot = 0;
-            self.placed.clear();
-            return Ok(());
-        }
-
-        let head = match self.placed.first().copied() {
-            Some(h) => h,
-            None => {
-                self.chain_parent_slot = 0;
-                return Ok(());
-            }
-        };
-
-        let objects_slot = layer + automap_layer::P_OBJECTS as u32;
-
-        // 1. Locate the slot that points to our head.
-        let parent_slot = if self.chain_parent_slot != 0 {
-            let current = ctx
-                .process
-                .read_memory::<u32>(self.chain_parent_slot as usize)?;
-            if current == head {
-                Some(self.chain_parent_slot)
-            } else {
-                // Not at cached slot; search the pObjects tree.
-                find_node_slot(ctx, objects_slot, head)?
-            }
-        } else {
-            find_node_slot(ctx, objects_slot, head)?
-        };
-
-        // 2. If head was found in the tree, splice it out.
-        if let Some(slot) = parent_slot {
-            let tail = *self.placed.last().unwrap();
-            let tail_child = ctx
-                .process
-                .read_memory::<u32>(tail as usize + automap_cell::P_LESS)?;
-
-            let replacement = if tail_child != 0 && !self.placed.contains(&tail_child) {
-                tail_child
-            } else {
-                0
-            };
-
+        let current = ctx
+            .process
+            .read_memory::<u32>(self.chain_parent_slot as usize)?;
+        let intact = current == self.placed[0]
+            && chain_is_intact(&self.placed, |cell| {
+                let less = ctx
+                    .process
+                    .read_memory::<u32>(cell as usize + automap_cell::P_LESS)?;
+                let more = ctx
+                    .process
+                    .read_memory::<u32>(cell as usize + automap_cell::P_MORE)?;
+                Ok((less, more))
+            })?;
+        if intact {
             ctx.process
-                .write_buffer(slot as usize, &replacement.to_le_bytes())?;
-
-            // 3. Confirm detachment: verify head is no longer reachable from objects_slot.
-            if let Some(still_slot) = find_node_slot(ctx, objects_slot, head)? {
-                self.chain_parent_slot = still_slot;
-                return Err(format!(
-                    "detach_chain: head {:#x} still reachable in pObjects at slot {:#x} after detachment",
-                    head, still_slot
-                ));
-            }
+                .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())?;
+            self.spare_cells.append(&mut self.placed);
+        } else {
+            self.placed.clear();
+            self.spare_cells.clear();
         }
-
-        // 4. Detachment confirmed: safe to clear bookkeeping and allow buffer reuse.
         self.chain_parent_slot = 0;
-        self.placed.clear();
         Ok(())
     }
 
-    /// Write cell records for `wanted` into our dedicated remote buffer and
-    /// attach the chain as a leaf hanging off the existing `pObjects` tree.
-    ///
-    /// Uses the pre-allocated `cell_buffer` in `D2Injector` rather than calling
-    /// `NewAutomapCell` via `CreateRemoteThread`. This avoids thread injection
-    /// overhead, thread contention with the game engine's chunk allocator, and
-    /// eliminates memory leaks and Use-After-Free crashes across room transitions.
+    /// Allocate cells for `wanted` and attach them as a leaf hanging off
+    /// the existing `pObjects` tree, per the engine's own verified
+    /// insertion algorithm (walk `pLess` from the root until a NULL slot,
+    /// attach there — "order is irrelevant, the renderer walks the entire
+    /// tree"; see the map-marker RE notes). Earlier versions of this
+    /// instead swapped `pObjects` itself to point at our new head — the
+    /// single most contended slot in the structure, since the engine's own
+    /// quest/shrine-icon insertion also reads/writes it — which is the
+    /// prime suspect for those markers occasionally going missing. Leaf
+    /// insertion touches only one `pLess` field deep in the tree, the same
+    /// kind of write the engine's own insertion makes, so we're
+    /// indistinguishable from one more native icon rather than a
+    /// structural rewrite of the root every rebuild.
     fn attach_chain(
         &mut self,
         ctx: &D2Context,
@@ -370,87 +324,69 @@ impl MapMarkerManager {
             return Ok(());
         }
 
-        // Block buffer reuse until detachment is confirmed
-        if self.chain_parent_slot != 0 || !self.placed.is_empty() {
-            return Err(format!(
-                "attach_chain: buffer reuse blocked - previous chain is still active (slot={:#x}, placed_count={})",
-                self.chain_parent_slot,
-                self.placed.len()
-            ));
-        }
-
-        let cell_base = injector.cell_buffer.address as u32;
-        if cell_base == 0 {
-            return Err("D2Injector cell_buffer address is null".to_string());
-        }
-
         let objects_slot = layer + automap_layer::P_OBJECTS as u32;
 
-        // Block buffer reuse if cell_base is reachable anywhere in pObjects
-        if let Some(slot) = find_node_slot(ctx, objects_slot, cell_base)? {
-            return Err(format!(
-                "attach_chain: cell buffer {:#x} is still reachable in pObjects at slot {:#x}; buffer reuse blocked",
-                cell_base, slot
-            ));
+        // Retain newly allocated cells even if a later allocation/write fails.
+        // Normal rebuilds only grow to the high-water mark, rather than
+        // allocating the entire surviving marker set on every item change.
+        grow_cell_pool(&mut self.spare_cells, wanted.len(), || {
+            injector.new_automap_cell(&ctx.process)
+        })?;
+        if read_layer(ctx)? != layer {
+            self.invalidate_cells();
+            return Err("Automap layer changed during marker allocation".to_string());
+        }
+        let cells = &self.spare_cells[..wanted.len()];
+        for (item, &cell) in wanted.iter().zip(cells) {
+            write_cell_fields(ctx, cell, item.cell_x, item.cell_y)?;
+        }
+
+        // Chain our own cells together; the tail stays a real leaf
+        // (pLess = 0, already zeroed by write_cell_fields) rather than
+        // splicing back into the engine's tree.
+        for i in 0..cells.len().saturating_sub(1) {
+            let pless_slot = (cells[i] + automap_cell::P_LESS as u32) as usize;
+            ctx.process
+                .write_buffer(pless_slot, &cells[i + 1].to_le_bytes())?;
         }
 
         let attach_slot = find_leaf_slot(ctx, objects_slot)?;
-
-        // Ensure attach_slot is not inside our own cell buffer
-        let cell_buffer_end = cell_base + (MAX_MARKER_CELLS * automap_cell::SIZE) as u32;
-        if attach_slot >= cell_base && attach_slot < cell_buffer_end {
-            return Err(format!(
-                "attach_chain: attach_slot {:#x} is inside cell_buffer [{:#x}..{:#x}]; cycle prevented",
-                attach_slot, cell_base, cell_buffer_end
-            ));
-        }
-
-        if read_layer(ctx)? != layer {
-            return Err("Automap layer changed during marker attachment".to_string());
-        }
-
-        // Format all cells into a contiguous buffer and write in a single call.
-        let bytes = build_marker_cells(cell_base, wanted);
-        ctx.process.write_buffer(cell_base as usize, &bytes)?;
-
-        // Splice head into attach_slot
-        ctx.process
-            .write_buffer(attach_slot as usize, &cell_base.to_le_bytes())?;
-
+        let head = cells[0];
+        // A failed write may still have published the pointer. Do not offer
+        // those cells for reuse after an ambiguous publication failure.
+        self.placed = self.spare_cells.drain(..wanted.len()).collect();
         self.chain_parent_slot = attach_slot;
-        self.placed = (0..wanted.len())
-            .map(|i| cell_base + (i * automap_cell::SIZE) as u32)
-            .collect();
+        if let Err(e) = ctx
+            .process
+            .write_buffer(attach_slot as usize, &head.to_le_bytes())
+        {
+            self.invalidate_cells();
+            return Err(e);
+        }
         Ok(())
     }
 }
 
-/// Serialize `items` into a contiguous byte buffer of `AutomapCell` structures,
-/// chained together via `pLess`.
-///
-/// Cell `i` points to `cell_base + (i + 1) * automap_cell::SIZE`, and the last
-/// cell has `pLess = 0`.
-pub fn build_marker_cells(cell_base: u32, items: &[MarkerItem]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(items.len() * automap_cell::SIZE);
-    for (i, item) in items.iter().enumerate() {
-        let p_less = if i + 1 < items.len() {
-            cell_base + ((i + 1) * automap_cell::SIZE) as u32
-        } else {
-            0
-        };
-        let mut buf = [0u8; automap_cell::SIZE];
-        buf[automap_cell::F_SAVED..automap_cell::F_SAVED + 4].copy_from_slice(&1u32.to_le_bytes());
-        buf[automap_cell::N_CELL_NO..automap_cell::N_CELL_NO + 2]
-            .copy_from_slice(&automap_cell::CROSS_CELL_NO.to_le_bytes());
-        buf[automap_cell::X_PIXEL..automap_cell::X_PIXEL + 2]
-            .copy_from_slice(&(item.cell_x as i16 as u16).to_le_bytes());
-        buf[automap_cell::Y_PIXEL..automap_cell::Y_PIXEL + 2]
-            .copy_from_slice(&(item.cell_y as i16 as u16).to_le_bytes());
-        buf[automap_cell::P_LESS..automap_cell::P_LESS + 4].copy_from_slice(&p_less.to_le_bytes());
-        // wWeight and pMore are 0 in buf.
-        out.extend_from_slice(&buf);
+// These helpers share the production allocation/ownership decisions with
+// tests, without requiring a live game process.
+fn grow_cell_pool(
+    cells: &mut Vec<u32>,
+    needed: usize,
+    mut allocate: impl FnMut() -> Result<u32, String>,
+) -> Result<(), String> {
+    let needed = needed.min(MAX_MARKER_CELLS);
+    while cells.len() < needed {
+        let cell = allocate()?;
+        if cell == 0 {
+            return Err("NewAutomapCell returned NULL".to_string());
+        }
+        cells.push(cell);
     }
-    out
+    // Keep every chain ordered by address. A renderer can still hold the old
+    // detached head while we rewrite cells; retaining this order prevents
+    // transient back-links/cycles as old and new links overlap.
+    cells.sort_unstable();
+    Ok(())
 }
 
 fn chain_is_intact(
@@ -459,16 +395,9 @@ fn chain_is_intact(
 ) -> Result<bool, String> {
     for (i, &cell) in cells.iter().enumerate() {
         let (less, more) = read_links(cell)?;
-        if more != 0 {
+        if less != cells.get(i + 1).copied().unwrap_or(0) || more != 0 {
             return Ok(false);
         }
-        let expected_less = cells.get(i + 1).copied();
-        if let Some(next) = expected_less {
-            if less != next {
-                return Ok(false);
-            }
-        }
-        // For the tail cell, `less` may be 0 or an engine child; both are valid.
     }
     Ok(true)
 }
@@ -696,101 +625,37 @@ pub fn sub_to_cell(sub_x: i32, sub_y: i32) -> (i32, i32) {
 /// some existing cell's `pLess` field) until finding a NULL child slot,
 /// returning that slot's address — matches the engine's own documented
 /// insertion algorithm exactly, so our cells land wherever the engine's
-/// own icon insertion would have put a new leaf. Bounded with cycle detection
-/// to guard against a corrupted/cyclic tree.
+/// own icon insertion would have put a new leaf. Bounded to guard against
+/// a corrupted/cyclic tree; matches the depth bound style used by the BFS
+/// scanner elsewhere in this module.
 fn find_leaf_slot(ctx: &D2Context, root_slot: u32) -> Result<u32, String> {
-    find_leaf_slot_impl(|addr| ctx.process.read_memory::<u32>(addr), root_slot)
-}
-
-fn find_leaf_slot_impl(
-    mut read_u32: impl FnMut(usize) -> Result<u32, String>,
-    root_slot: u32,
-) -> Result<u32, String> {
     let mut slot = root_slot;
-    let mut visited: HashSet<u32> = HashSet::new();
     for _ in 0..4096 {
-        let node = read_u32(slot as usize)?;
+        let node = ctx.process.read_memory::<u32>(slot as usize).unwrap_or(0);
         if node == 0 {
             return Ok(slot);
-        }
-        if !visited.insert(node) {
-            return Err("find_leaf_slot: cycle detected in pObjects tree".to_string());
         }
         slot = node + automap_cell::P_LESS as u32;
     }
     Err("find_leaf_slot: pObjects tree exceeds depth bound (corrupted?)".to_string())
 }
 
-/// Search `pObjects` BST starting from `root_slot` to find the slot holding `target_node`.
-/// Returns `Ok(Some(slot))` if found, `Ok(None)` if not reachable, or `Err` on read error.
-fn find_node_slot(
-    ctx: &D2Context,
-    root_slot: u32,
-    target_node: u32,
-) -> Result<Option<u32>, String> {
-    find_node_slot_impl(
-        |addr| ctx.process.read_memory::<u32>(addr),
-        root_slot,
-        target_node,
-    )
-}
-
-fn find_node_slot_impl(
-    mut read_u32: impl FnMut(usize) -> Result<u32, String>,
-    root_slot: u32,
-    target_node: u32,
-) -> Result<Option<u32>, String> {
-    if target_node == 0 {
-        return Ok(None);
-    }
-    let root_node = read_u32(root_slot as usize)?;
-    if root_node == target_node {
-        return Ok(Some(root_slot));
-    }
-    if root_node == 0 {
-        return Ok(None);
-    }
-
-    let mut visited: HashSet<u32> = HashSet::new();
-    let mut queue: Vec<u32> = vec![root_node];
-    visited.insert(root_node);
-
-    let mut steps = 0;
-    while let Some(curr) = queue.pop() {
-        steps += 1;
-        if steps > 4096 {
-            return Err(
-                "find_node_slot: pObjects tree exceeds depth bound (corrupted?)".to_string(),
-            );
-        }
-
-        // Check pLess
-        let less_slot = curr + automap_cell::P_LESS as u32;
-        let less = read_u32(less_slot as usize)?;
-        if less == target_node {
-            return Ok(Some(less_slot));
-        }
-        if less != 0 && visited.insert(less) {
-            queue.push(less);
-        }
-
-        // Check pMore
-        let more_slot = curr + automap_cell::P_MORE as u32;
-        let more = read_u32(more_slot as usize)?;
-        if more == target_node {
-            return Ok(Some(more_slot));
-        }
-        if more != 0 && visited.insert(more) {
-            queue.push(more);
-        }
-    }
-
-    Ok(None)
-}
-
 fn read_layer(ctx: &D2Context) -> Result<u32, String> {
     ctx.process
         .read_memory::<u32>(ctx.d2_client + d2client::AUTOMAP_LAYER)
+}
+
+fn write_cell_fields(ctx: &D2Context, cell: u32, cell_x: i32, cell_y: i32) -> Result<(), String> {
+    let mut buf = [0u8; automap_cell::SIZE];
+    buf[automap_cell::F_SAVED..automap_cell::F_SAVED + 4].copy_from_slice(&1u32.to_le_bytes());
+    buf[automap_cell::N_CELL_NO..automap_cell::N_CELL_NO + 2]
+        .copy_from_slice(&automap_cell::CROSS_CELL_NO.to_le_bytes());
+    buf[automap_cell::X_PIXEL..automap_cell::X_PIXEL + 2]
+        .copy_from_slice(&(cell_x as i16 as u16).to_le_bytes());
+    buf[automap_cell::Y_PIXEL..automap_cell::Y_PIXEL + 2]
+        .copy_from_slice(&(cell_y as i16 as u16).to_le_bytes());
+    // wWeight / pLess / pMore already zero in buf.
+    ctx.process.write_buffer(cell as usize, &buf)
 }
 
 fn hash_markers(items: &[MarkerItem]) -> u64 {
@@ -807,51 +672,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_marker_cells_formats_contiguous_chain() {
-        let items = [mk(1, 10, 20), mk(2, 30, 40), mk(3, 50, 60)];
-        let base = 0x1000u32;
-        let bytes = build_marker_cells(base, &items);
-        assert_eq!(bytes.len(), 3 * automap_cell::SIZE);
-
-        // Check Cell 0
-        let c0 = &bytes[0..20];
-        let c0_saved = u32::from_le_bytes(c0[0..4].try_into().unwrap());
-        let c0_cell_no = u16::from_le_bytes(c0[4..6].try_into().unwrap());
-        let c0_x = i16::from_le_bytes(c0[6..8].try_into().unwrap());
-        let c0_y = i16::from_le_bytes(c0[8..10].try_into().unwrap());
-        let c0_less = u32::from_le_bytes(c0[12..16].try_into().unwrap());
-        let c0_more = u32::from_le_bytes(c0[16..20].try_into().unwrap());
-        assert_eq!(c0_saved, 1);
-        assert_eq!(c0_cell_no, 300);
-        assert_eq!(
-            (c0_x as i32, c0_y as i32),
-            (items[0].cell_x, items[0].cell_y)
-        );
-        assert_eq!(c0_less, base + 20);
-        assert_eq!(c0_more, 0);
-
-        // Check Cell 1
-        let c1 = &bytes[20..40];
-        let c1_less = u32::from_le_bytes(c1[12..16].try_into().unwrap());
-        assert_eq!(c1_less, base + 40);
-
-        // Check Cell 2 (tail)
-        let c2 = &bytes[40..60];
-        let c2_less = u32::from_le_bytes(c2[12..16].try_into().unwrap());
-        let c2_more = u32::from_le_bytes(c2[16..20].try_into().unwrap());
-        assert_eq!(c2_less, 0);
-        assert_eq!(c2_more, 0);
+    fn rebuilds_reuse_cells_at_the_high_water_mark() {
+        let mut spare = Vec::new();
+        let mut placed = Vec::new();
+        let mut allocations = 0;
+        for needed in (0..=100).chain((0..100).rev()).cycle().take(2010) {
+            spare.append(&mut placed);
+            grow_cell_pool(&mut spare, needed, || {
+                allocations += 1;
+                Ok(allocations)
+            })
+            .unwrap();
+            placed = spare.drain(..needed).collect();
+        }
+        assert_eq!(allocations, 100);
     }
 
     #[test]
-    fn chain_is_intact_validates_chain_and_allows_tail_child() {
+    fn allocation_failure_preserves_unpublished_cells_for_retry() {
+        let mut cells = Vec::new();
+        let mut calls = 0;
+        assert!(grow_cell_pool(&mut cells, 3, || {
+            calls += 1;
+            if calls == 2 {
+                Err("allocation failed".into())
+            } else {
+                Ok(calls)
+            }
+        })
+        .is_err());
+        assert_eq!(cells, vec![1]);
+        assert!(grow_cell_pool(&mut cells, 3, || Ok(0)).is_err());
+        assert_eq!(cells, vec![1]);
+        grow_cell_pool(&mut cells, 3, || {
+            calls += 1;
+            Ok(calls)
+        })
+        .unwrap();
+        assert_eq!(cells, vec![1, 3, 4]);
+    }
+
+    #[test]
+    fn reuse_keeps_links_forward_even_when_spares_precede_detached_cells() {
+        let mut cells = vec![300, 100, 200];
+        grow_cell_pool(&mut cells, 3, || panic!("must reuse existing cells")).unwrap();
+        assert_eq!(cells, vec![100, 200, 300]);
+    }
+
+    #[test]
+    fn recycling_rejects_foreign_children_and_unreadable_links() {
         assert!(chain_is_intact(&[10, 20], |p| Ok((if p == 10 { 20 } else { 0 }, 0))).unwrap());
-        // Tail having an engine child attached under it is valid:
-        assert!(chain_is_intact(&[10, 20], |p| Ok((if p == 10 { 20 } else { 999 }, 0))).unwrap());
-        // Broken intermediate link:
-        assert!(!chain_is_intact(&[10, 20], |p| Ok((if p == 10 { 999 } else { 0 }, 0))).unwrap());
-        // Non-zero pMore:
-        assert!(!chain_is_intact(&[10, 20], |_| Ok((20, 1))).unwrap());
+        assert!(!chain_is_intact(&[10, 20], |_| Ok((20, 99))).unwrap());
+        assert!(!chain_is_intact(&[10, 20], |_| Ok((99, 0))).unwrap());
         assert!(chain_is_intact(&[10], |_| Err("unreadable".into())).is_err());
     }
 
@@ -861,85 +733,13 @@ mod tests {
         manager.last_layer = 123;
         manager.chain_parent_slot = 456;
         manager.placed.push(10);
+        manager.spare_cells.push(20);
         manager.persistent.insert(1, mk(1, 50, 50));
-        manager.invalidate_cells(None);
-        assert!(manager.placed.is_empty());
+        manager.invalidate_cells();
+        assert!(manager.placed.is_empty() && manager.spare_cells.is_empty());
         assert_eq!(manager.last_layer, 0);
         assert_eq!(manager.chain_parent_slot, 0);
         assert_eq!(manager.persistent.len(), 1);
-    }
-
-    #[test]
-    fn find_leaf_slot_finds_null_slot() {
-        let mut mem: HashMap<usize, u32> = HashMap::new();
-        mem.insert(0x100, 0x200);
-        mem.insert(0x20C, 0x300);
-        mem.insert(0x30C, 0);
-
-        let res = find_leaf_slot_impl(|addr| Ok(*mem.get(&addr).unwrap_or(&0)), 0x100).unwrap();
-        assert_eq!(res, 0x30C);
-    }
-
-    #[test]
-    fn find_leaf_slot_detects_cycle() {
-        let mut mem: HashMap<usize, u32> = HashMap::new();
-        mem.insert(0x100, 0x200);
-        mem.insert(0x20C, 0x300);
-        mem.insert(0x30C, 0x200);
-
-        let res = find_leaf_slot_impl(|addr| Ok(*mem.get(&addr).unwrap_or(&0)), 0x100);
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("cycle detected"));
-    }
-
-    #[test]
-    fn find_node_slot_finds_root_and_children() {
-        let mut mem: HashMap<usize, u32> = HashMap::new();
-        mem.insert(0x100, 0x200);
-        mem.insert(0x20C, 0x300);
-        mem.insert(0x210, 0x400);
-        mem.insert(0x30C, 0);
-        mem.insert(0x310, 0);
-        mem.insert(0x40C, 0x500);
-        mem.insert(0x410, 0);
-        mem.insert(0x50C, 0);
-        mem.insert(0x510, 0);
-
-        let read = |addr| Ok(*mem.get(&addr).unwrap_or(&0));
-
-        // Root
-        assert_eq!(
-            find_node_slot_impl(read, 0x100, 0x200).unwrap(),
-            Some(0x100)
-        );
-        // Left child of 0x200
-        assert_eq!(
-            find_node_slot_impl(read, 0x100, 0x300).unwrap(),
-            Some(0x20C)
-        );
-        // Right child of 0x200
-        assert_eq!(
-            find_node_slot_impl(read, 0x100, 0x400).unwrap(),
-            Some(0x210)
-        );
-        // Left child of 0x400
-        assert_eq!(
-            find_node_slot_impl(read, 0x100, 0x500).unwrap(),
-            Some(0x40C)
-        );
-        // Absent node
-        assert_eq!(find_node_slot_impl(read, 0x100, 0x999).unwrap(), None);
-    }
-
-    #[test]
-    fn find_node_slot_handles_cycle_safely() {
-        let mut mem: HashMap<usize, u32> = HashMap::new();
-        mem.insert(0x100, 0x200);
-        mem.insert(0x20C, 0x300);
-        mem.insert(0x30C, 0x200);
-
-        let read = |addr| Ok(*mem.get(&addr).unwrap_or(&0));
-        assert_eq!(find_node_slot_impl(read, 0x100, 0x888).unwrap(), None);
     }
 
     fn mk(uid: u32, sx: i32, sy: i32) -> MarkerItem {
@@ -1232,137 +1032,5 @@ mod tests {
         assert!(out.is_empty());
         assert!(persistent.is_empty());
         assert!(last_seen.is_empty());
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn buffer_reuse_blocked_when_attached_or_placed() {
-        use crate::injection::PublishedRemoteBuffer;
-        use crate::process::ProcessHandle;
-        use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
-        use windows::Win32::System::Threading::GetCurrentProcess;
-
-        let mut handle = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                &mut handle,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .unwrap();
-        }
-        let process = ProcessHandle {
-            handle,
-            pid: std::process::id(),
-        };
-        let ctx = D2Context {
-            process,
-            d2_client: 0,
-            d2_common: 0,
-            d2_win: 0,
-            d2_lang: 0,
-            d2_sigma: 0,
-            d2_sigma_size: 0,
-            always_show_items_ptr_rva: None,
-        };
-
-        let injector = D2Injector {
-            string_buffer: crate::injection::RemoteAlloc::new(&ctx.process, 0x100).unwrap(),
-            params_buffer: crate::injection::RemoteAlloc::new(&ctx.process, 0x100).unwrap(),
-            cell_buffer: PublishedRemoteBuffer {
-                address: 0x12340000,
-                size: 0x1000,
-            },
-            inject_get_string: 0,
-            inject_get_item_name: 0,
-            inject_get_item_stat: 0,
-            inject_get_unit_stat: 0,
-            inject_new_automap_cell: 0,
-            remote_calls_get_string: std::sync::atomic::AtomicU64::new(0),
-            remote_calls_get_item_name: std::sync::atomic::AtomicU64::new(0),
-            remote_calls_get_item_stat: std::sync::atomic::AtomicU64::new(0),
-            remote_calls_get_unit_stat: std::sync::atomic::AtomicU64::new(0),
-            remote_calls_new_automap_cell: std::sync::atomic::AtomicU64::new(0),
-        };
-
-        let mut manager = MapMarkerManager::new();
-        manager.chain_parent_slot = 0x500;
-        manager.placed.push(0x12340000);
-
-        let wanted = [mk(1, 10, 20)];
-        let res = manager.attach_chain(&ctx, &injector, 0x1000, &wanted);
-        assert!(res.is_err());
-        assert!(res.unwrap_err().contains("buffer reuse blocked"));
-        // Ownership state preserved
-        assert_eq!(manager.chain_parent_slot, 0x500);
-        assert_eq!(manager.placed.len(), 1);
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn detach_failure_preserves_ownership_state() {
-        use crate::process::ProcessHandle;
-        use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
-        use windows::Win32::System::Threading::GetCurrentProcess;
-
-        let mut handle = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                &mut handle,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .unwrap();
-        }
-        let process = ProcessHandle {
-            handle,
-            pid: std::process::id(),
-        };
-
-        let alloc = crate::injection::RemoteAlloc::new(&process, 0x200000).unwrap();
-        let mock_layer_addr = alloc.address + 0x100;
-        let p_automap_layer = alloc.address + d2client::AUTOMAP_LAYER;
-        process
-            .write_buffer(p_automap_layer, &(mock_layer_addr as u32).to_le_bytes())
-            .unwrap();
-
-        let ctx = D2Context {
-            process,
-            d2_client: alloc.address,
-            d2_common: 0,
-            d2_win: 0,
-            d2_lang: 0,
-            d2_sigma: 0,
-            d2_sigma_size: 0,
-            always_show_items_ptr_rva: None,
-        };
-
-        let mut manager = MapMarkerManager::new();
-        // Point chain_parent_slot to an unmapped address where read_memory will fail
-        manager.chain_parent_slot = 0xFFFFFFFF;
-        manager.placed.push(0x12340000);
-
-        let res = manager.detach_chain(&ctx);
-        assert!(
-            res.is_err(),
-            "detachment should fail when reading unmapped memory"
-        );
-        // Crucial requirement: ownership state must NOT be cleared on failure!
-        assert_eq!(manager.chain_parent_slot, 0xFFFFFFFF);
-        assert_eq!(manager.placed, vec![0x12340000]);
-
-        // clear() must also fail and preserve ownership
-        let clear_res = manager.clear(&ctx);
-        assert!(clear_res.is_err());
-        assert_eq!(manager.chain_parent_slot, 0xFFFFFFFF);
-        assert_eq!(manager.placed, vec![0x12340000]);
     }
 }

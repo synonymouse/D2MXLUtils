@@ -111,7 +111,6 @@ impl MarkerScanner {
             .read_memory::<u32>(self.state.ctx.d2_client + d2client::PLAYER_UNIT)
             .unwrap_or(0);
         if p_player == 0 {
-            self.map_marker.invalidate_cells(Some(&self.state.ctx));
             clear_recent_bfs_items(self.state.as_ref());
             return;
         }
