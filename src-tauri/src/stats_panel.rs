@@ -126,15 +126,34 @@ pub fn read_unit_character_stats(
         .unwrap_or(0);
 
     let mut stats = BTreeMap::new();
-    for &id in STAT_IDS {
-        let value = match injector.get_unit_stat(&ctx.process, p_unit, id) {
-            Ok(raw) => scale_life_mana(id, raw as i32),
-            Err(_) => previous
-                .and_then(|p| p.stats.get(&id))
-                .copied()
-                .unwrap_or(0),
-        };
-        stats.insert(id, value);
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    let bulk_stats = crate::unit_stats_reader::read_unit_stats_bulk(
+        &ctx.process,
+        ctx.d2_common,
+        p_unit,
+        STAT_IDS,
+        0,
+    )
+    .ok();
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    let bulk_stats: Option<std::collections::HashMap<u32, i32>> = None;
+
+    if let Some(bulk) = bulk_stats {
+        for &id in STAT_IDS {
+            let raw = bulk.get(&id).copied().unwrap_or(0);
+            stats.insert(id, scale_life_mana(id, raw));
+        }
+    } else {
+        for &id in STAT_IDS {
+            let value = match injector.get_unit_stat(&ctx.process, p_unit, id) {
+                Ok(raw) => scale_life_mana(id, raw as i32),
+                Err(_) => previous
+                    .and_then(|p| p.stats.get(&id))
+                    .copied()
+                    .unwrap_or(0),
+            };
+            stats.insert(id, value);
+        }
     }
 
     // Override the engine's own GetUnitStat(356) "Charms" value with a count
