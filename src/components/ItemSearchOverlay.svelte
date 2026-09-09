@@ -41,10 +41,60 @@
 
   const active = $derived(open || tooltip !== null);
   let pos = $derived(widgetPosition('item-search'));
+  let viewportOffset = $state({ x: 0, y: 0 });
 
   $effect(() => {
     onActiveChange(active);
   });
+
+  // The drag handle clamps the search panel alone into the viewport at
+  // drag-start time (see `drag-window.ts`), before the tooltip panel
+  // exists. The tooltip renders as a flex sibling to the right, so once it
+  // opens (or the results list grows tall) the *rendered* layout can
+  // extend past the viewport edge even though the drag clamp was
+  // satisfied. Re-clamp the actual rendered box on every content change so
+  // a tooltip never silently renders off-screen.
+  $effect(() => {
+    // Track dependencies that change the rendered size/position.
+    void open;
+    void tooltip;
+    void entries.length;
+    void message;
+    void pos.x;
+    void pos.y;
+    void clampViewportOffset();
+  });
+
+  async function clampViewportOffset() {
+    await tick();
+    if (!layoutEl) return;
+    const margin = 8;
+    // `getBoundingClientRect` already reflects any offset applied by a
+    // previous call (via the CSS transform below), so back it out first —
+    // otherwise repeated calls would compound the correction instead of
+    // recomputing it fresh against the panel's natural drag position.
+    const rect = layoutEl.getBoundingClientRect();
+    const naturalLeft = rect.left - viewportOffset.x;
+    const naturalRight = rect.right - viewportOffset.x;
+    const naturalTop = rect.top - viewportOffset.y;
+    const naturalBottom = rect.bottom - viewportOffset.y;
+
+    let dx = 0;
+    let dy = 0;
+    if (naturalRight > window.innerWidth - margin) {
+      dx = window.innerWidth - margin - naturalRight;
+    }
+    if (naturalLeft + dx < margin) {
+      dx = margin - naturalLeft;
+    }
+    if (naturalBottom > window.innerHeight - margin) {
+      dy = window.innerHeight - margin - naturalBottom;
+    }
+    if (naturalTop + dy < margin) {
+      dy = margin - naturalTop;
+    }
+    viewportOffset = { x: dx, y: dy };
+  }
 
   $effect(() => {
     const value = inputValue;
@@ -141,6 +191,7 @@
     autoOpenSingleDetailedResult = false;
     message = '';
     skipTypeaheadValue = null;
+    viewportOffset = { x: 0, y: 0 };
   }
 
   function moveWindow(position: WindowPosition) {
@@ -338,6 +389,7 @@
     use:clickOutside={closeAll}
     style:top="{pos.y}%"
     style:left="{pos.x}%"
+    style:transform="translate({viewportOffset.x}px, {viewportOffset.y}px)"
   >
     {#if open}
       <section class="item-search" role="dialog" aria-label="MXL item search">

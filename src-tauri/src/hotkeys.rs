@@ -1176,6 +1176,7 @@ pub fn update_loot_history_hotkey(
 pub struct ItemSearchHotkeyState {
     is_running: Arc<AtomicBool>,
     current_hotkey: Arc<std::sync::Mutex<HotkeyConfig>>,
+    verbose_logging: Arc<AtomicBool>,
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     scanner_state: Arc<std::sync::RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>>,
 }
@@ -1186,19 +1187,22 @@ impl ItemSearchHotkeyState {
         scanner_state: Arc<
             std::sync::RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>,
         >,
+        verbose_logging: Arc<AtomicBool>,
     ) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             current_hotkey: Arc::new(std::sync::Mutex::new(default_item_search_hotkey())),
+            verbose_logging,
             scanner_state,
         }
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    pub fn new() -> Self {
+    pub fn new(verbose_logging: Arc<AtomicBool>) -> Self {
         Self {
             is_running: Arc::new(AtomicBool::new(false)),
             current_hotkey: Arc::new(std::sync::Mutex::new(default_item_search_hotkey())),
+            verbose_logging,
         }
     }
 
@@ -1216,6 +1220,7 @@ impl ItemSearchHotkeyState {
         self.is_running.store(true, Ordering::SeqCst);
         let is_running = self.is_running.clone();
         let current_hotkey = self.current_hotkey.clone();
+        let verbose_logging = self.verbose_logging.clone();
 
         #[cfg(target_os = "windows")]
         {
@@ -1225,6 +1230,7 @@ impl ItemSearchHotkeyState {
                     is_running,
                     current_hotkey,
                     scanner_state,
+                    verbose_logging,
                     app_handle,
                 );
             });
@@ -1238,6 +1244,7 @@ impl ItemSearchHotkeyState {
                     is_running,
                     current_hotkey,
                     scanner_state,
+                    verbose_logging,
                     app_handle,
                 );
             });
@@ -1246,7 +1253,7 @@ impl ItemSearchHotkeyState {
         #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             log_info("Item-search watcher is only supported on Windows and Linux");
-            let _ = (app_handle, current_hotkey);
+            let _ = (app_handle, current_hotkey, verbose_logging);
         }
     }
 
@@ -1268,6 +1275,7 @@ fn item_search_hotkey_thread_windows(
     is_running: Arc<AtomicBool>,
     current_hotkey: Arc<std::sync::Mutex<HotkeyConfig>>,
     scanner_state: Arc<std::sync::RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>>,
+    verbose_logging: Arc<AtomicBool>,
     app_handle: AppHandle,
 ) {
     log_info("Item-search hotkey watcher thread starting");
@@ -1291,23 +1299,43 @@ fn item_search_hotkey_thread_windows(
             last_modifiers = hk.modifiers;
         }
 
+        let verbose = verbose_logging.load(Ordering::SeqCst);
         let active = chord_is_pressed_d2_only(&hk);
         if active && !prev_down {
+            if verbose {
+                log_info(&format!("[ItemSearch] hotkey {} pressed", hk.display));
+            }
+            let has_scanner = scanner_state
+                .read()
+                .ok()
+                .map(|g| g.is_some())
+                .unwrap_or(false);
             let query = scanner_state
                 .read()
                 .ok()
                 .and_then(|guard| guard.as_ref().cloned())
-                .and_then(
-                    |shared| match crate::hovered_item::read_hovered_item_name(&shared) {
+                .and_then(|shared| {
+                    match crate::hovered_item::read_hovered_item_name_verbose(&shared, verbose) {
                         Ok(name) => name,
                         Err(e) => {
                             log_error(&format!("Hovered item lookup failed: {}", e));
                             None
                         }
-                    },
-                );
-            if let Err(e) = app_handle.emit("open-item-search", OpenItemSearchPayload { query }) {
-                log_error(&format!("Failed to emit open-item-search: {}", e));
+                    }
+                });
+            if verbose {
+                log_info(&format!(
+                    "[ItemSearch] scanner_attached={} hovered_item={:?}",
+                    has_scanner, query
+                ));
+            }
+            match app_handle.emit("open-item-search", OpenItemSearchPayload { query }) {
+                Ok(()) => {
+                    if verbose {
+                        log_info("[ItemSearch] emitted open-item-search");
+                    }
+                }
+                Err(e) => log_error(&format!("Failed to emit open-item-search: {}", e)),
             }
         }
         prev_down = active;
@@ -1323,6 +1351,7 @@ fn item_search_hotkey_thread_linux(
     is_running: Arc<AtomicBool>,
     current_hotkey: Arc<std::sync::Mutex<HotkeyConfig>>,
     scanner_state: Arc<std::sync::RwLock<Option<Arc<crate::scanner_state::SharedScannerState>>>>,
+    verbose_logging: Arc<AtomicBool>,
     app_handle: AppHandle,
 ) {
     log_info("Item-search hotkey watcher thread starting");
@@ -1346,23 +1375,43 @@ fn item_search_hotkey_thread_linux(
             last_modifiers = hk.modifiers;
         }
 
+        let verbose = verbose_logging.load(Ordering::SeqCst);
         let active = chord_is_pressed_d2_only_linux(&hk);
         if active && !prev_down {
+            if verbose {
+                log_info(&format!("[ItemSearch] hotkey {} pressed", hk.display));
+            }
+            let has_scanner = scanner_state
+                .read()
+                .ok()
+                .map(|g| g.is_some())
+                .unwrap_or(false);
             let query = scanner_state
                 .read()
                 .ok()
                 .and_then(|guard| guard.as_ref().cloned())
-                .and_then(
-                    |shared| match crate::hovered_item::read_hovered_item_name(&shared) {
+                .and_then(|shared| {
+                    match crate::hovered_item::read_hovered_item_name_verbose(&shared, verbose) {
                         Ok(name) => name,
                         Err(e) => {
                             log_error(&format!("Hovered item lookup failed: {}", e));
                             None
                         }
-                    },
-                );
-            if let Err(e) = app_handle.emit("open-item-search", OpenItemSearchPayload { query }) {
-                log_error(&format!("Failed to emit open-item-search: {}", e));
+                    }
+                });
+            if verbose {
+                log_info(&format!(
+                    "[ItemSearch] scanner_attached={} hovered_item={:?}",
+                    has_scanner, query
+                ));
+            }
+            match app_handle.emit("open-item-search", OpenItemSearchPayload { query }) {
+                Ok(()) => {
+                    if verbose {
+                        log_info("[ItemSearch] emitted open-item-search");
+                    }
+                }
+                Err(e) => log_error(&format!("Failed to emit open-item-search: {}", e)),
             }
         }
         prev_down = active;

@@ -634,9 +634,28 @@ fn valid_hovered_item_location(
 pub(crate) fn read_hovered_item_name(
     shared: &crate::scanner_state::SharedScannerState,
 ) -> Result<Option<String>, String> {
+    read_hovered_item_name_verbose(shared, false)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub(crate) fn read_hovered_item_name_verbose(
+    shared: &crate::scanner_state::SharedScannerState,
+    verbose: bool,
+) -> Result<Option<String>, String> {
+    macro_rules! vlog {
+        ($($arg:tt)*) => {
+            if verbose {
+                crate::logger::info(&format!($($arg)*));
+            }
+        };
+    }
+
     let snapshot = match shared.hovered_item_hook.snapshot()? {
         Some(snapshot) => snapshot,
-        None => return Ok(None),
+        None => {
+            vlog!("[ItemSearch] hovered-item hook has no snapshot (not installed or never fired)");
+            return Ok(None);
+        }
     };
 
     // Same time base the trampoline embeds (`GetTickCount`, remote on
@@ -644,13 +663,26 @@ pub(crate) fn read_hovered_item_name(
     // comment for why this needs no ptrace round-trip on Linux.
     let now_ms = crate::dps_meter::now_ms();
     if !is_fresh(now_ms, snapshot.last_seen_ms, HOVERED_ITEM_FRESH_MS) {
+        vlog!(
+            "[ItemSearch] hovered-item snapshot stale: now_ms={} last_seen_ms={} age_ms={} max_age_ms={}",
+            now_ms,
+            snapshot.last_seen_ms,
+            now_ms.wrapping_sub(snapshot.last_seen_ms),
+            HOVERED_ITEM_FRESH_MS
+        );
         return Ok(None);
     }
 
     let candidates = hovered_item_candidates(snapshot);
     if candidates.is_empty() {
+        vlog!("[ItemSearch] hovered-item snapshot fresh but all candidate registers/args are zero");
         return Ok(None);
     }
+    vlog!(
+        "[ItemSearch] hovered-item snapshot fresh, {} candidate(s): {:?}",
+        candidates.len(),
+        candidates
+    );
 
     let Some(player_unit) = shared
         .ctx
@@ -659,6 +691,7 @@ pub(crate) fn read_hovered_item_name(
         .ok()
         .filter(|p| *p != 0)
     else {
+        vlog!("[ItemSearch] failed to read player unit pointer");
         return Ok(None);
     };
     let Some(player_inventory) = shared
@@ -668,25 +701,50 @@ pub(crate) fn read_hovered_item_name(
         .ok()
         .filter(|p| *p != 0)
     else {
+        vlog!("[ItemSearch] failed to read player inventory pointer");
         return Ok(None);
     };
 
-    for (_, candidate) in candidates {
+    for (label, candidate) in candidates {
         let p_unit = candidate as usize;
         let read_u32 = |offset: usize| shared.ctx.process.read_memory::<u32>(p_unit + offset).ok();
         let Some(unit_type) = read_u32(crate::offsets::unit::UNIT_TYPE) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read unit_type",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(class_id) = read_u32(crate::offsets::unit::CLASS) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read class_id",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(mode) = read_u32(crate::offsets::unit::MODE) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read mode",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(p_unit_data) = read_u32(crate::offsets::unit::UNIT_DATA) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read unit_data pointer",
+                label,
+                candidate
+            );
             continue;
         };
         if !valid_hovered_item_unit(unit_type, class_id, mode, p_unit_data) {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): rejected as unit (unit_type={} class_id=0x{:X} mode={} unit_data=0x{:08X})",
+                label, candidate, unit_type, class_id, mode, p_unit_data
+            );
             continue;
         }
 
@@ -707,12 +765,27 @@ pub(crate) fn read_hovered_item_name(
         };
         let Some(owner_inventory) = read_item_u32(crate::offsets::item_data::OWNER_INVENTORY)
         else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read owner_inventory",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(game_location) = read_item_u8(crate::offsets::item_data::GAME_LOCATION) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read game_location",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(body_location) = read_item_u8(crate::offsets::item_data::BODY_LOCATION) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read body_location",
+                label,
+                candidate
+            );
             continue;
         };
         if !valid_hovered_item_location(
@@ -721,9 +794,18 @@ pub(crate) fn read_hovered_item_name(
             game_location,
             body_location,
         ) {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): rejected as location (owner_inventory=0x{:08X} player_inventory=0x{:08X} game_location={} body_location={})",
+                label, candidate, owner_inventory, player_inventory, game_location, body_location
+            );
             continue;
         }
 
+        vlog!(
+            "[ItemSearch] candidate {} (0x{:08X}) accepted, resolving item name",
+            label,
+            candidate
+        );
         let injector = shared
             .injector
             .lock()
@@ -736,9 +818,16 @@ pub(crate) fn read_hovered_item_name(
                     candidate, p_unit_data, e
                 )
             })?;
-        return Ok(display_name_from_raw_item_name(&raw));
+        let resolved = display_name_from_raw_item_name(&raw);
+        vlog!(
+            "[ItemSearch] resolved hovered item raw='{}' display={:?}",
+            raw.replace('\n', "\\n"),
+            resolved
+        );
+        return Ok(resolved);
     }
 
+    vlog!("[ItemSearch] no candidate matched a valid hovered item unit/location");
     Ok(None)
 }
 

@@ -2568,7 +2568,9 @@ fn main() {
             let weapon_base_catalog = state.weapon_base_catalog.clone();
             let dps_reset_pending = state.dps_reset_pending.clone();
             app.manage(state);
-            app.manage(mxl_item_api::MxlItemApiState::default());
+            app.manage(mxl_item_api::MxlItemApiState::new(
+                verbose_filter_logging.clone(),
+            ));
 
             if let Some(dir) = app.handle().path().app_data_dir().ok() {
                 if let Some(table) = speedcalc_data::load_from_cache(&dir) {
@@ -2584,9 +2586,13 @@ fn main() {
             let reveal_hidden_state = RevealHiddenState::new(reveal_hidden_active.clone());
             let loot_history_hotkey_state = LootHistoryHotkeyState::new();
             #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let item_search_hotkey_state = ItemSearchHotkeyState::new(scanner_shared_state.clone());
+            let item_search_hotkey_state = ItemSearchHotkeyState::new(
+                scanner_shared_state.clone(),
+                verbose_filter_logging.clone(),
+            );
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-            let item_search_hotkey_state = ItemSearchHotkeyState::new();
+            let item_search_hotkey_state =
+                ItemSearchHotkeyState::new(verbose_filter_logging.clone());
             let dps_meter_reset_state = DpsMeterResetHotkeyState::new();
             let game_create_autofill_state =
                 hotkeys::GameCreateAutofillHotkeyState::new(game_status.clone());
