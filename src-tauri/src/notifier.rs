@@ -907,6 +907,32 @@ impl DropScanner {
 
         // Sampled once per tick (not per item) — clvl/class don't change
         // between items in the same scan pass.
+        #[cfg(any(target_os = "windows", target_os = "linux"))]
+        match crate::unit_stats_reader::read_unit_stat(
+            &self.state.ctx.process,
+            self.state.ctx.d2_common,
+            ptr1 as u32,
+            stat_list::STAT_LEVEL as u32,
+            0,
+        ) {
+            Ok(crate::unit_stats_reader::StatReadResult::Found(n)) => {
+                self.char_level = n as u32;
+            }
+            Ok(crate::unit_stats_reader::StatReadResult::Missing) => {
+                self.char_level = 0;
+            }
+            Err(_) => {
+                let injector = self.state.injector.lock().unwrap();
+                if let Ok(n) = injector.get_unit_stat(
+                    &self.state.ctx.process,
+                    ptr1 as u32,
+                    stat_list::STAT_LEVEL as u32,
+                ) {
+                    self.char_level = n;
+                }
+            }
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux")))]
         {
             let injector = self.state.injector.lock().unwrap();
             if let Ok(n) = injector.get_unit_stat(
@@ -1220,6 +1246,51 @@ impl DropScanner {
         events
     }
 
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
+    fn read_unit_stat_direct(ctx: &D2Context, p_unit: u32, target_stat: u16) -> Option<i32> {
+        let p_stat_list = ctx
+            .process
+            .read_memory::<u32>(p_unit as usize + stat_list::UNIT_TO_STATS_LIST)
+            .ok()?;
+        if p_stat_list == 0 {
+            return None;
+        }
+        let p_stat = ctx
+            .process
+            .read_memory::<u32>(p_stat_list as usize + stat_list::SL_PSTAT)
+            .ok()?;
+        if p_stat == 0 {
+            return None;
+        }
+        const MAX_PLAUSIBLE_STATS: usize = 512;
+        let count = (ctx
+            .process
+            .read_memory::<u16>(p_stat_list as usize + stat_list::SL_STAT_COUNT)
+            .unwrap_or(0) as usize)
+            .min(MAX_PLAUSIBLE_STATS);
+
+        for i in 0..count {
+            let record = match (p_stat as usize)
+                .checked_add(i.saturating_mul(stat_list::STAT_RECORD_SIZE))
+            {
+                Some(addr) => addr,
+                None => break,
+            };
+            let nstat = ctx
+                .process
+                .read_memory::<u16>(record + stat_list::STAT_NSTAT)
+                .unwrap_or(u16::MAX);
+            if nstat == target_stat {
+                let value = ctx
+                    .process
+                    .read_memory::<i32>(record + stat_list::STAT_VALUE)
+                    .unwrap_or(0);
+                return Some(value);
+            }
+        }
+        None
+    }
+
     /// Process a single unit, returning a fully scanned item if it's a new item.
     fn scan_unit(&mut self, p_unit: u32, unit: &UnitAny) -> Option<ScannedItem> {
         // Only process items (unit_type == 4)
@@ -1247,10 +1318,32 @@ impl DropScanner {
         // Create scanned item and keep the existing socket-count enrichment only.
         let mut scanned = ScannedItem::from_unit(unit, &item_data, p_unit);
 
-        {
-            let injector = self.state.injector.lock().unwrap();
-            if item_data.is_socketed() {
-                if let Ok(n) = injector.get_unit_stat(&self.state.ctx.process, p_unit, 0xC2) {
+        if item_data.is_socketed() {
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            let n = match crate::unit_stats_reader::read_unit_stat(
+                &self.state.ctx.process,
+                self.state.ctx.d2_common,
+                p_unit,
+                stat_list::STAT_SOCKETS as u32,
+                0,
+            ) {
+                Ok(res) => Some(res.value_or_zero()),
+                Err(_) => {
+                    Self::read_unit_stat_direct(&self.state.ctx, p_unit, stat_list::STAT_SOCKETS)
+                }
+            };
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            let n: Option<i32> = None;
+
+            if let Some(n) = n {
+                scanned.sockets = (n.max(0) as u32).min(6) as u8;
+            } else {
+                let injector = self.state.injector.lock().unwrap();
+                if let Ok(n) = injector.get_unit_stat(
+                    &self.state.ctx.process,
+                    p_unit,
+                    stat_list::STAT_SOCKETS as u32,
+                ) {
                     scanned.sockets = n.min(6) as u8;
                 }
             }
@@ -1285,7 +1378,6 @@ impl DropScanner {
                         );
                     }
                     event.stats = stats;
-                    event.runtime_stats_loaded = true;
                 }
             }
             Err(e) => {
@@ -1295,12 +1387,14 @@ impl DropScanner {
             }
         }
 
-        if !event.runtime_stats_loaded {
+        if event.stats.is_empty() {
             if let Some(text) = self.read_item_desc_from_txt(&injector, event.class) {
                 event.stats = Self::format_event_stats(event.sockets, text);
-                event.runtime_stats_loaded = true;
             }
         }
+
+        // Always mark runtime_stats_loaded = true so this unit is not repeatedly probed
+        event.runtime_stats_loaded = true;
     }
 
     /// Convert a scanned item into an event payload for the frontend.
