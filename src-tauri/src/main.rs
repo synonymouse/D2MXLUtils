@@ -21,8 +21,6 @@ mod mxl_item_api;
 mod notifier;
 mod offsets;
 mod process;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-mod process_memory_telemetry;
 mod profiles;
 mod rules;
 mod scanner_state;
@@ -32,8 +30,6 @@ mod speedcalc_data;
 mod stats_panel;
 mod unique_stats_db;
 mod unique_stats_db_sync;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-mod unit_stats_reader;
 mod updater;
 mod weapon_families;
 
@@ -456,12 +452,6 @@ fn start_scanner_internal(
             // ~300 ms cadence as the stats sheet above is plenty responsive.
             let mut breakpoints_tick_counter: u32 = 0;
             const BREAKPOINTS_CHECK_EVERY: u32 = 10;
-            let mut telemetry_tick_counter: u32 = 0;
-            const TELEMETRY_CHECK_EVERY: u32 = 1000; // ~30s at 30 ms tick
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let mut last_telemetry_time = std::time::Instant::now();
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let mut last_telemetry_stats = shared_state.injector.lock().unwrap().remote_call_stats();
 
             // Main scanning loop
             while is_scanning.load(Ordering::SeqCst) {
@@ -978,45 +968,6 @@ fn start_scanner_internal(
                                 log_error(&format!("Failed to emit dps-update: {}", e));
                             }
                         }
-                    }
-                }
-
-                #[cfg(any(target_os = "windows", target_os = "linux"))]
-                {
-                    telemetry_tick_counter = telemetry_tick_counter.wrapping_add(1);
-                    if telemetry_tick_counter % TELEMETRY_CHECK_EVERY == 0 {
-                        let now = std::time::Instant::now();
-                        let elapsed_secs = now.duration_since(last_telemetry_time).as_secs_f64();
-                        let stats = {
-                            let injector = shared_state.injector.lock().unwrap();
-                            injector.remote_call_stats()
-                        };
-                        let rates = stats.calculate_rates(&last_telemetry_stats, elapsed_secs);
-                        last_telemetry_time = now;
-                        last_telemetry_stats = stats;
-
-                        let mem = process_memory_telemetry::sample_process_memory(&shared_state.ctx.process);
-                        let mem_str = match mem {
-                            Ok(m) => m.summary_string(),
-                            Err(e) => format!("mem_err: {}", e),
-                        };
-
-                        log_info(&format!(
-                            "Telemetry: remote_threads [unit_stat={:.1}/s (cum={}), item_stat={:.1}/s (cum={}), item_name={:.1}/s (cum={}), get_string={:.1}/s (cum={}), cell={:.1}/s (cum={}), total={:.1}/s (cum={})], process_mem [{}]",
-                            rates.get_unit_stat,
-                            stats.get_unit_stat,
-                            rates.get_item_stat,
-                            stats.get_item_stat,
-                            rates.get_item_name,
-                            stats.get_item_name,
-                            rates.get_string,
-                            stats.get_string,
-                            rates.new_automap_cell,
-                            stats.new_automap_cell,
-                            rates.total,
-                            stats.total(),
-                            mem_str,
-                        ));
                     }
                 }
 

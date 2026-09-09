@@ -2,8 +2,11 @@
 //! Injects code into D2Sigma.dll to control item visibility based on iEarLevel field
 
 #[cfg(target_os = "windows")]
+use windows::Win32::Foundation::HANDLE;
+#[cfg(target_os = "windows")]
 use windows::Win32::System::Memory::{
-    VirtualProtectEx, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
+    VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
+    PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -33,14 +36,12 @@ const FUNCTION_SIGNATURE: [u8; 9] = [0x83, 0xEC, 0x08, 0x53, 0x55, 0x8B, 0xD9, 0
 //   g_last_unit_id, g_show_mask, g_hide_mask, g_inspected_mask,
 //   g_force_show_all  (9 × u32 LE)
 const MAGIC: u32 = 0xD2FE11E7;
-const METADATA_VERSION: u32 = 6;
-// This value bypasses our decisions and calls the original game filter.
-const PASSTHROUGH: u8 = 2;
+const METADATA_VERSION: u32 = 5;
 const METADATA_OFFSET: usize = 216;
 const METADATA_SIZE: usize = 36;
 // Trampoline offset of the replayed original 9 bytes; verified by debug_assert
 // in generate_trampoline_code.
-const DO_ORIGINAL_OFFSET: usize = 77;
+const DO_ORIGINAL_OFFSET: usize = 68;
 // Trampoline starts with `inc dword [counter]` = `FF 05 ...`.
 const TRAMPOLINE_FIRST_BYTE: u8 = 0xFF;
 
@@ -155,21 +156,18 @@ impl LootFilterHook {
         self.hook_address = found_addr;
         let offset = found_addr - ctx.d2_sigma;
 
-        // All Windows hook storage is one allocation. Until the JMP can
-        // reference it, RAII rolls back any failed initialization.
-        #[cfg(target_os = "windows")]
-        let mut allocation = Some(crate::injection::RemoteAlloc::new(&ctx.process, 0x8000)?);
         #[cfg(target_os = "windows")]
         {
-            let region = allocation.as_ref().unwrap().address;
-            self.trampoline_address = region;
-            self.g_show_all_loot = region + 256;
-            self.g_force_show_all = region + 257;
-            self.g_call_counter = region + 260;
-            self.g_last_unit_id = region + 264;
-            self.g_hide_mask = region + 512;
-            self.g_show_mask = self.g_hide_mask + MASK_BYTES;
-            self.g_inspected_mask = self.g_show_mask + MASK_BYTES;
+            self.trampoline_address = self.alloc_remote(&ctx.process, 256)?;
+
+            self.g_show_all_loot = self.alloc_remote(&ctx.process, 1)?;
+            self.g_force_show_all = self.alloc_remote(&ctx.process, 1)?;
+            self.g_call_counter = self.alloc_remote(&ctx.process, 4)?;
+            self.g_last_unit_id = self.alloc_remote(&ctx.process, 4)?;
+
+            self.g_hide_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+            self.g_show_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
+            self.g_inspected_mask = self.alloc_remote(&ctx.process, MASK_BYTES)?;
         }
 
         // One `mmap_remote` call instead of 8 separate `VirtualAllocEx`-style
@@ -202,8 +200,7 @@ impl LootFilterHook {
             self.g_hide_mask, self.g_show_mask, self.g_inspected_mask
         ));
 
-        ctx.process
-            .write_buffer(self.g_show_all_loot, &[PASSTHROUGH])?;
+        ctx.process.write_buffer(self.g_show_all_loot, &[1u8])?;
         ctx.process.write_buffer(self.g_force_show_all, &[0u8])?;
         ctx.process
             .write_buffer(self.g_call_counter, &[0u8, 0u8, 0u8, 0u8])?;
@@ -241,9 +238,6 @@ impl LootFilterHook {
                 .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
             }
 
-            // A failed/partial patch write may already expose the region.
-            // Never free executable storage once publication has begun.
-            allocation.take().unwrap().persist();
             let jmp_patch = self.generate_jmp_patch();
             let write_result = ctx.process.write_buffer(self.hook_address, &jmp_patch);
 
@@ -272,7 +266,6 @@ impl LootFilterHook {
 
         self.is_injected = true;
         self.is_reattached = false;
-        self.set_show_all(ctx, true)?;
 
         log_info("LootFilterHook: injected");
 
@@ -381,14 +374,6 @@ impl LootFilterHook {
             self.is_injected = true;
             self.is_reattached = true;
 
-            ctx.process
-                .write_buffer(self.g_show_all_loot, &[PASSTHROUGH])?;
-            self.set_force_show_all(ctx, false)?;
-            self.clear_hidden_items(ctx)?;
-            self.clear_shown_items(ctx)?;
-            self.clear_inspected_mask(ctx)?;
-            self.set_show_all(ctx, true)?;
-
             log_info(&format!(
                 "LootFilterHook: reattached at 0x{:08X} trampoline=0x{:08X} (magic=0x{:08X} v{})",
                 hit, tramp, MAGIC, METADATA_VERSION
@@ -416,19 +401,61 @@ impl LootFilterHook {
         process.write_buffer(self.trampoline_address + METADATA_OFFSET, &buf)
     }
 
-    /// Leave the reusable trampoline installed in passthrough mode. Restoring
-    /// the JMP lost the only discoverable reference to the retained allocation;
-    /// freeing it instead could race a game thread still executing its code.
-    /// Passthrough delegates to the game's original filter even when stale
-    /// force-show/visibility bits remain, and survives utility restarts.
+    /// Remove the hook and restore original bytes
     pub fn eject(&mut self, ctx: &D2Context) -> Result<(), String> {
         if !self.is_injected {
             return Err("Hook not injected".to_string());
         }
-        ctx.process
-            .write_buffer(self.g_show_all_loot, &[PASSTHROUGH])?;
+
+        // 1. Change memory protection to allow writing (Windows only —
+        // `write_buffer` already handles this via PTRACE_POKEDATA on Linux).
+        #[cfg(target_os = "windows")]
+        let write_result = {
+            let mut old_protect = PAGE_PROTECTION_FLAGS(0);
+            unsafe {
+                VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    PAGE_EXECUTE_READWRITE,
+                    &mut old_protect,
+                )
+                .map_err(|e| format!("VirtualProtectEx failed: {}", e))?;
+            }
+
+            // 2. Restore original bytes
+            let write_result = ctx
+                .process
+                .write_buffer(self.hook_address, &self.original_bytes);
+
+            // 3. Restore original memory protection
+            unsafe {
+                let _ = VirtualProtectEx(
+                    ctx.process.handle,
+                    self.hook_address as *const std::ffi::c_void,
+                    PATCH_SIZE,
+                    old_protect,
+                    &mut old_protect,
+                );
+            }
+            write_result
+        };
+
+        #[cfg(target_os = "linux")]
+        let write_result = ctx
+            .process
+            .write_buffer(self.hook_address, &self.original_bytes);
+
+        write_result?;
+
+        // 4. Free allocated memory (optional, OS will clean up on process exit)
+        // We intentionally don't free trampoline to avoid race conditions
+        // (a thread might still be executing the trampoline code)
+
         self.is_injected = false;
-        log_info("LootFilterHook: disabled (reusable passthrough)");
+
+        log_info("LootFilterHook: ejected");
+
         Ok(())
     }
 
@@ -555,6 +582,27 @@ impl LootFilterHook {
         Ok(())
     }
 
+    /// Allocate memory in remote process (Windows only — Linux does one
+    /// `mmap_remote` call and sub-allocates manually, see `fresh_inject`).
+    #[cfg(target_os = "windows")]
+    fn alloc_remote(&self, process: &ProcessHandle, size: usize) -> Result<usize, String> {
+        let address = unsafe {
+            VirtualAllocEx(
+                process.handle,
+                None,
+                size,
+                MEM_COMMIT | MEM_RESERVE,
+                PAGE_EXECUTE_READWRITE,
+            )
+        };
+
+        if address.is_null() {
+            return Err("VirtualAllocEx failed".to_string());
+        }
+
+        Ok(address as usize)
+    }
+
     /// Generate trampoline code (x86 assembly)
     ///
     /// On entry: ECX = pUnit (thiscall convention)
@@ -585,15 +633,6 @@ impl LootFilterHook {
         code.push(0xFF);
         code.push(0x05);
         code.extend_from_slice(&addr_counter.to_le_bytes());
-
-        // cmp byte ptr [g_show_all_loot], PASSTHROUGH; je do_original
-        // This precedes force-show so shutdown always restores game behavior.
-        code.extend_from_slice(&[0x80, 0x3D]);
-        code.extend_from_slice(&addr_show_all.to_le_bytes());
-        code.push(PASSTHROUGH);
-        code.push(0x74);
-        let patch_je_passthrough = code.len();
-        code.push(0);
 
         // cmp byte ptr [g_force_show_all], 0    ; 80 3D <addr> 00
         code.push(0x80);
@@ -731,7 +770,6 @@ impl LootFilterHook {
         patch_rel8(&mut code, patch_jne_force_show, return_show_offset);
         patch_rel8(&mut code, patch_je_show_all, return_hide_offset);
         patch_rel8(&mut code, patch_je_null, do_original_offset);
-        patch_rel8(&mut code, patch_je_passthrough, do_original_offset);
         patch_rel8(&mut code, patch_jc_show, return_show_offset);
         patch_rel8(&mut code, patch_jc_hide, return_hide_offset);
         patch_rel8(&mut code, patch_jnc_inspected, return_hide_offset);
@@ -784,109 +822,6 @@ impl Default for LootFilterHook {
 mod tests {
     use super::*;
     use crate::rules::Visibility;
-
-    // Uses only this test process, never a running Diablo II instance.
-    #[cfg(all(target_os = "windows", target_pointer_width = "32"))]
-    #[test]
-    fn restarts_reuse_one_region_and_passthrough_executes_original_code() {
-        use std::ffi::c_void;
-        use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
-        use windows::Win32::System::Memory::{VirtualFreeEx, MEM_RELEASE};
-        use windows::Win32::System::Threading::GetCurrentProcess;
-
-        let mut handle = HANDLE::default();
-        unsafe {
-            DuplicateHandle(
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                GetCurrentProcess(),
-                &mut handle,
-                0,
-                false,
-                DUPLICATE_SAME_ACCESS,
-            )
-            .unwrap();
-        }
-        let process = ProcessHandle {
-            handle,
-            pid: std::process::id(),
-        };
-        let module = crate::injection::RemoteAlloc::new(&process, 4096).unwrap();
-        let mut original = FUNCTION_SIGNATURE.to_vec();
-        // Return 127 after unwinding the copied prologue's stack frame.
-        original.extend_from_slice(&[0xB0, 0x7F, 0x5F, 0x5E, 0x5D, 0x5B, 0x83, 0xC4, 8, 0xC3]);
-        process.write_buffer(module.address, &original).unwrap();
-        let ctx = D2Context {
-            process,
-            d2_client: 0,
-            d2_common: 0,
-            d2_win: 0,
-            d2_lang: 0,
-            d2_sigma: module.address,
-            d2_sigma_size: 4096,
-            always_show_items_ptr_rva: None,
-        };
-        let call: unsafe extern "thiscall" fn(*const c_void) -> u8 =
-            unsafe { std::mem::transmute(module.address) };
-        let mut region = 0;
-        for attempt in 0..25 {
-            let mut hook = LootFilterHook::new();
-            hook.inject(&ctx).unwrap();
-            if attempt == 0 {
-                region = hook.trampoline_address;
-            }
-            assert_eq!(hook.trampoline_address, region);
-            assert_eq!(hook.is_reattached(), attempt != 0);
-            assert_eq!(
-                ctx.process
-                    .read_memory::<u8>(hook.g_force_show_all)
-                    .unwrap(),
-                0
-            );
-            assert_eq!(ctx.process.read_memory::<u8>(hook.g_hide_mask).unwrap(), 0);
-            hook.set_show_all(&ctx, false).unwrap();
-            assert_eq!(unsafe { call(std::ptr::null()) }, 0);
-            hook.set_force_show_all(&ctx, true).unwrap();
-            hook.add_hidden_unit_id(&ctx, 1).unwrap();
-            assert_eq!(unsafe { call(std::ptr::null()) }, 1);
-            hook.eject(&ctx).unwrap();
-            assert_eq!(unsafe { call(std::ptr::null()) }, 127);
-        }
-        // No thread is executing this synthetic module; retire it before
-        // explicitly releasing the persistent hook region used by the test.
-        drop(module);
-        unsafe {
-            VirtualFreeEx(ctx.process.handle, region as *mut c_void, 0, MEM_RELEASE).unwrap();
-        }
-    }
-
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    #[test]
-    fn passthrough_branches_to_original_before_force_show() {
-        let mut hook = LootFilterHook::new();
-        hook.hook_address = 0x1000;
-        hook.trampoline_address = 0x2000;
-        hook.g_show_all_loot = 0x3000;
-        let code = hook.generate_trampoline_code();
-        assert_eq!(&code[6..8], &[0x80, 0x3D]);
-        assert_eq!(&code[8..12], &0x3000u32.to_le_bytes());
-        assert_eq!(code[12], PASSTHROUGH);
-        assert_eq!(code[13], 0x74);
-        assert_eq!(15 + code[14] as usize, DO_ORIGINAL_OFFSET);
-        assert_eq!(
-            &code[DO_ORIGINAL_OFFSET..DO_ORIGINAL_OFFSET + PATCH_SIZE],
-            &FUNCTION_SIGNATURE
-        );
-        let jump = DO_ORIGINAL_OFFSET + PATCH_SIZE;
-        assert_eq!(code[jump], 0xE9);
-        let rel = i32::from_le_bytes(code[jump + 1..jump + 5].try_into().unwrap());
-        assert_eq!(
-            (hook.trampoline_address as i64 + jump as i64 + 5 + rel as i64) as usize,
-            hook.hook_address + PATCH_SIZE
-        );
-        assert!(code.len() <= METADATA_OFFSET);
-        assert!(METADATA_OFFSET + METADATA_SIZE <= 256);
-    }
 
     #[test]
     fn visibility_mask_ops_clear_stale_opposing_bits() {

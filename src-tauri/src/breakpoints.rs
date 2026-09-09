@@ -118,13 +118,6 @@ pub fn read_unit_breakpoint_data(
 }
 
 fn read_stat(ctx: &D2Context, injector: &D2Injector, p_unit: u32, stat_id: u32) -> Result<i32, ()> {
-    #[cfg(any(target_os = "windows", target_os = "linux"))]
-    match crate::unit_stats_reader::read_unit_stat(&ctx.process, ctx.d2_common, p_unit, stat_id, 0)
-    {
-        Ok(crate::unit_stats_reader::StatReadResult::Found(v)) => return Ok(v),
-        Ok(crate::unit_stats_reader::StatReadResult::Missing) => return Ok(0),
-        Err(_) => {}
-    }
     injector
         .get_unit_stat(&ctx.process, p_unit, stat_id)
         .map(|v| v as i32)

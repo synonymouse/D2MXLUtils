@@ -106,12 +106,6 @@ pub fn read_unit_damage_stats(
     let (str_bonus, dex_bonus, is_1h, is_2h) = read_weapon_damage_fields(ctx, file_index as usize);
 
     let stat = |id: u32| -> Result<i32, ()> {
-        #[cfg(any(target_os = "windows", target_os = "linux"))]
-        match crate::unit_stats_reader::read_unit_stat(&ctx.process, ctx.d2_common, p_unit, id, 0) {
-            Ok(crate::unit_stats_reader::StatReadResult::Found(v)) => return Ok(v),
-            Ok(crate::unit_stats_reader::StatReadResult::Missing) => return Ok(0),
-            Err(_) => {}
-        }
         injector
             .get_unit_stat(&ctx.process, p_unit, id)
             .map(|v| v as i32)
