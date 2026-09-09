@@ -1,14 +1,30 @@
 # Changelog
 
-## v1.27.3 — 2026-09-09
+## v1.27.4 — 2026-09-09
+
+### Bug Fixes
+
+- Fix(map-marker): stabilize capped markers and quarantine uncertain cells (792f59a)
 
 ### CI
 
 - Ci: upload Windows build artifact on manual workflow_dispatch runs (426fe8f)
 
+### Documentation
+
+- Docs(map-marker): distinguish partial correction from historical investigation (7ca163d)
+
 ### Features
 
 - Feat: direct memory stat reads, safer loot-filter eject, self-owned marker cells (072fa31)
+
+### Miscellaneous
+
+- Chore(gitignore): ignore local OMO continuation artifacts (680c99d)
+
+### Other
+
+- Revert: back out direct memory stat reads, loot-filter eject rework, marker cell rewrite (PR #13) (9e7a36f)
 
 ## v1.27.2 — 2026-09-08
 
