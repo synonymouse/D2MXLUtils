@@ -5,6 +5,10 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+#[cfg(all(test, target_os = "windows"))]
+#[path = "notifier/stat_acquisition_tests.rs"]
+mod stat_acquisition_tests;
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use std::sync::atomic::Ordering;
 
@@ -32,6 +36,10 @@ use crate::rules::{FilterConfig, MatchContext, PartialFilterDecision, Visibility
 use crate::rules::{ItemTier, Notification};
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use crate::scanner_state::{BfsItemCandidate, CachedFilterDecision, SharedScannerState};
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::stat_telemetry::StatConsumer;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::unit_stats_reader::fallback::StatReadContext;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use tauri::{AppHandle, Manager};
 
@@ -909,12 +917,10 @@ impl DropScanner {
         // between items in the same scan pass.
         {
             let injector = self.state.injector.lock().unwrap();
-            if let Ok(n) = injector.get_unit_stat(
-                &self.state.ctx.process,
-                ptr1 as u32,
-                stat_list::STAT_LEVEL as u32,
-            ) {
-                self.char_level = n;
+            if let Ok(value) = StatReadContext::new(&self.state.ctx, &injector, StatConsumer::Level)
+                .read_stat(ptr1 as u32, u32::from(stat_list::STAT_LEVEL))
+            {
+                self.char_level = u32::from_ne_bytes(value.to_ne_bytes());
             }
         }
         if let Ok(class) = self
@@ -1250,8 +1256,11 @@ impl DropScanner {
         {
             let injector = self.state.injector.lock().unwrap();
             if item_data.is_socketed() {
-                if let Ok(n) = injector.get_unit_stat(&self.state.ctx.process, p_unit, 0xC2) {
-                    scanned.sockets = n.min(6) as u8;
+                if let Ok(value) =
+                    StatReadContext::new(&self.state.ctx, &injector, StatConsumer::Sockets)
+                        .read_stat(p_unit, u32::from(stat_list::STAT_SOCKETS))
+                {
+                    scanned.sockets = u32::from_ne_bytes(value.to_ne_bytes()).min(6) as u8;
                 }
             }
         }
