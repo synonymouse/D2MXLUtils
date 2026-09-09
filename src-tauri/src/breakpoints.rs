@@ -8,6 +8,10 @@ use crate::offsets::{
     body_loc, d2common, data_tables, inventory, inventory_grid, item_types_txt, items_txt, unit,
 };
 use crate::process::D2Context;
+use crate::stat_telemetry::StatConsumer;
+use crate::unit_stats_reader::fallback::StatReadContext;
+#[cfg(all(test, target_os = "windows"))]
+mod stat_acquisition_tests;
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct BreakpointData {
@@ -50,15 +54,14 @@ const STAT_SKILL_IAS: u32 = 68;
 const STAT_SKILL_FHR: u32 = 69;
 
 /// `Ok(None)`: no unit at this offset (not in game / no mercenary hired) —
-/// a legitimate, stable absence. `Err(())`: a unit is present but one of
-/// its stat reads failed. On Linux, stat reads go through `get_unit_stat`'s
-/// ptrace-hijacked remote call (`call_remote`), which occasionally can't
-/// find a thread to safely hijack within its retry budget under
-/// concurrent load from other remote-call users (the drop scanner's own
-/// `get_item_stats`, etc.) — treating that the same as "stat is 0" made
-/// the breakpoints tab visibly flash every displayed stat to 0 every few
-/// seconds. Callers should hold onto the last `Ok(Some(_))` value and
-/// reuse it across an `Err(())` tick instead of clobbering the display.
+/// a legitimate absence (an unreadable unit pointer also returns `Ok(None)`).
+/// Stats use validated direct reads first; missing optional stats become zero.
+/// `Err(())` means a direct read and its one legacy fallback both failed.
+/// On Linux, only that fallback uses `get_unit_stat`'s ptrace-hijacked remote
+/// call (`call_remote`), which can fail to find a thread within its retry
+/// budget under concurrent load. Historically, treating these injected-read
+/// failures as zero made the displayed stats flash. Callers retain the last
+/// `Ok(Some(_))` across an `Err(())` tick to preserve that last-good behavior.
 pub fn read_unit_breakpoint_data(
     ctx: &D2Context,
     injector: &D2Injector,
@@ -118,10 +121,7 @@ pub fn read_unit_breakpoint_data(
 }
 
 fn read_stat(ctx: &D2Context, injector: &D2Injector, p_unit: u32, stat_id: u32) -> Result<i32, ()> {
-    injector
-        .get_unit_stat(&ctx.process, p_unit, stat_id)
-        .map(|v| v as i32)
-        .map_err(|_| ())
+    StatReadContext::new(ctx, injector, StatConsumer::Breakpoints).read_stat(p_unit, stat_id)
 }
 
 /// Reads the currently equipped right-hand weapon via the D2MOO inventory
