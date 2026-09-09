@@ -51,6 +51,8 @@ unsafe impl Sync for ProcessHandle {}
 #[cfg(target_os = "windows")]
 impl ProcessHandle {
     pub fn read_memory<T: Copy>(&self, address: usize) -> Result<T, String> {
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Read)?;
         let mut buffer: T = unsafe { mem::zeroed() };
         let mut bytes_read: usize = 0;
 
@@ -117,6 +119,8 @@ impl ProcessHandle {
     }
 
     pub fn write_buffer(&self, address: usize, buffer: &[u8]) -> Result<(), String> {
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Write)?;
         let mut bytes_written: usize = 0;
         unsafe {
             WriteProcessMemory(
@@ -133,6 +137,8 @@ impl ProcessHandle {
             return Err("Incomplete write".to_string());
         }
 
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Written)?;
         Ok(())
     }
 
@@ -447,6 +453,68 @@ impl D2Context {
             d2_sigma,
             d2_sigma_size,
             always_show_items_ptr_rva,
+        })
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+pub(crate) mod marker_test_io {
+    use std::{cell::RefCell, marker::PhantomData, ops::Range, rc::Rc};
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub enum Operation {
+        Read,
+        Write,
+        Written,
+    }
+    struct State {
+        range: Range<usize>,
+        fault: Option<(usize, Operation)>,
+        writes: usize,
+    }
+    thread_local! { static STATE: RefCell<Option<State>> = const { RefCell::new(None) }; }
+    pub struct Scope(Option<State>, PhantomData<Rc<()>>);
+    impl Scope {
+        pub fn new(range: Range<usize>) -> Self {
+            Self(
+                STATE.replace(Some(State {
+                    range,
+                    fault: None,
+                    writes: 0,
+                })),
+                PhantomData,
+            )
+        }
+        pub fn fail(&self, address: usize, operation: Operation) {
+            STATE.with_borrow_mut(|state| {
+                state.as_mut().unwrap().fault = Some((address, operation))
+            });
+        }
+        pub fn writes(&self) -> usize {
+            STATE.with_borrow(|state| state.as_ref().unwrap().writes)
+        }
+    }
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            STATE.set(self.0.take());
+        }
+    }
+    pub fn intercept(address: usize, operation: Operation) -> Result<(), String> {
+        STATE.with_borrow_mut(|state| {
+            let Some(state) = state
+                .as_mut()
+                .filter(|state| state.range.contains(&address))
+            else {
+                return Ok(());
+            };
+            if operation == Operation::Write {
+                state.writes += 1;
+            }
+            if state.fault == Some((address, operation)) {
+                state.fault = None;
+                return Err(format!("injected {operation:?} failure at {address:#x}"));
+            }
+            Ok(())
         })
     }
 }

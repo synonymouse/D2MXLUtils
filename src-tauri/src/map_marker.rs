@@ -88,6 +88,7 @@ pub struct MapMarkerManager {
     /// Detached cells available for reuse across ticks and room transitions.
     /// Never free individual cells: the game owns their backing pool.
     spare_cells: Vec<u32>,
+    cells_trusted: bool,
     last_hash: u64,
     persistent: HashMap<u32, MarkerItem>,
     /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
@@ -99,8 +100,9 @@ pub struct MapMarkerManager {
     /// are still on the ground). Used only to pick which markers to keep
     /// when `persistent` exceeds `MAX_MARKER_CELLS`: evict the oldest
     /// first-seen entries so new drops always get a slot instead of the
-    /// same low-unit_id batch camping there forever. Kept in lockstep with
-    /// `persistent` (orphans are GC'd at the end of `reconcile_persistent`).
+    /// same low-unit_id batch camping there forever. Evicted IDs keep their
+    /// stamp only while BFS-visible; storage is bounded by the current BFS
+    /// snapshot plus the capped persistent set, not session history.
     first_seen: HashMap<u32, Instant>,
     /// Last known player subtile position, tracked across ticks. Not
     /// reset by a `None` reading (e.g. mid-loading-screen) — we want to
@@ -116,6 +118,7 @@ impl MapMarkerManager {
             chain_parent_slot: 0,
             placed: Vec::new(),
             spare_cells: Vec::new(),
+            cells_trusted: true,
             last_hash: 0,
             persistent: HashMap::new(),
             last_seen: HashMap::new(),
@@ -124,22 +127,21 @@ impl MapMarkerManager {
         }
     }
 
-    /// Detach our chain and wipe all state (cache + bookkeeping). Safe to
-    /// call repeatedly.
+    /// Logical map-off: detach and retain the live pool's high-water cells.
     pub fn clear(&mut self, ctx: &D2Context) -> Result<(), String> {
-        let layer = read_layer(ctx).unwrap_or(0);
-        if layer != 0 && layer == self.last_layer {
-            let _ = self.detach_chain(ctx);
-        }
-        self.chain_parent_slot = 0;
-        self.placed.clear();
-        self.spare_cells.clear();
-        self.last_hash = 0;
         self.persistent.clear();
         self.last_seen.clear();
         self.first_seen.clear();
-        self.last_layer = 0;
         self.last_player_sub = None;
+        let layer = read_layer(ctx)?;
+        if layer == 0 {
+            self.invalidate_cells();
+        } else {
+            self.require_trusted_cells()?;
+            self.detach_chain(ctx)?;
+        }
+        self.last_hash = 0;
+        self.last_layer = 0;
         Ok(())
     }
 
@@ -151,6 +153,23 @@ impl MapMarkerManager {
         self.placed.clear();
         self.spare_cells.clear();
         self.last_hash = 0;
+        self.cells_trusted = true;
+    }
+
+    pub fn reset_session(&mut self) {
+        self.invalidate_cells();
+        self.persistent.clear();
+        self.last_seen.clear();
+        self.first_seen.clear();
+        self.last_player_sub = None;
+    }
+
+    fn require_trusted_cells(&self) -> Result<(), String> {
+        if self.cells_trusted {
+            Ok(())
+        } else {
+            Err("Automap cell ownership uncertain; waiting for lifecycle invalidation".to_string())
+        }
     }
 
     pub fn tick(
@@ -166,13 +185,10 @@ impl MapMarkerManager {
         if layer == 0 {
             // Out of game / loading screen — forget the chain but keep the
             // cache: we're likely just between screens.
-            self.last_layer = 0;
-            self.chain_parent_slot = 0;
-            self.placed.clear();
-            self.spare_cells.clear();
-            self.last_hash = 0;
+            self.invalidate_cells();
             return Ok(());
         }
+        self.require_trusted_cells()?;
 
         // True area/act change: wipe the persistent cache itself, not just
         // the chain bookkeeping the layer-switch check below handles —
@@ -185,11 +201,7 @@ impl MapMarkerManager {
                 self.persistent.clear();
                 self.last_seen.clear();
                 self.first_seen.clear();
-                let _ = self.detach_chain(ctx);
-                self.placed.clear();
-                self.spare_cells.clear();
-                self.chain_parent_slot = 0;
-                self.last_hash = 0;
+                self.invalidate_cells();
             }
             self.last_player_sub = Some((px, py));
         }
@@ -200,10 +212,7 @@ impl MapMarkerManager {
         // not the individual layer, so discarding spare_cells here would permanently
         // leak memory in Game.exe every time the player crosses rooms.
         if layer != self.last_layer {
-            let _ = self.detach_chain(ctx);
-            if !self.placed.is_empty() {
-                self.spare_cells.append(&mut self.placed);
-            }
+            self.detach_chain(ctx)?;
             self.chain_parent_slot = 0;
             self.last_hash = 0;
             self.last_layer = layer;
@@ -217,13 +226,10 @@ impl MapMarkerManager {
             if let Some(&head) = self.placed.first() {
                 let current = ctx
                     .process
-                    .read_memory::<u32>(self.chain_parent_slot as usize)
-                    .unwrap_or(0);
+                    .read_memory::<u32>(self.chain_parent_slot as usize)?;
                 if current != head {
-                    self.chain_parent_slot = 0;
-                    self.placed.clear();
-                    self.spare_cells.clear();
-                    self.last_hash = 0;
+                    self.cells_trusted = false;
+                    return self.require_trusted_cells();
                 }
             }
         }
@@ -264,8 +270,8 @@ impl MapMarkerManager {
     }
 
     /// Recycle only a chain that is still exactly ours. If the engine added
-    /// children or replaced a link, leave that tree alone and discard all
-    /// reusable addresses instead of disconnecting or rewriting foreign nodes.
+    /// children or replaced a link, leave that tree alone and quarantine all
+    /// addresses instead of disconnecting or rewriting foreign nodes.
     fn detach_chain(&mut self, ctx: &D2Context) -> Result<(), String> {
         if self.chain_parent_slot == 0 || self.placed.is_empty() {
             return Ok(());
@@ -284,12 +290,14 @@ impl MapMarkerManager {
                 Ok((less, more))
             })?;
         if intact {
+            self.cells_trusted = false;
             ctx.process
                 .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())?;
+            self.cells_trusted = true;
             self.spare_cells.append(&mut self.placed);
         } else {
-            self.placed.clear();
-            self.spare_cells.clear();
+            self.cells_trusted = false;
+            return self.require_trusted_cells();
         }
         self.chain_parent_slot = 0;
         Ok(())
@@ -330,10 +338,12 @@ impl MapMarkerManager {
         // Normal rebuilds only grow to the high-water mark, rather than
         // allocating the entire surviving marker set on every item change.
         grow_cell_pool(&mut self.spare_cells, wanted.len(), || {
-            injector.new_automap_cell(&ctx.process)
+            injector.new_automap_cell(&ctx.process).inspect_err(|_| {
+                self.cells_trusted = false;
+            })
         })?;
+        self.cells_trusted = false;
         if read_layer(ctx)? != layer {
-            self.invalidate_cells();
             return Err("Automap layer changed during marker allocation".to_string());
         }
         let cells = &self.spare_cells[..wanted.len()];
@@ -352,17 +362,19 @@ impl MapMarkerManager {
 
         let attach_slot = find_leaf_slot(ctx, objects_slot)?;
         let head = cells[0];
+        if read_layer(ctx)? != layer {
+            return Err("Automap layer changed before marker publication".to_string());
+        }
+        if ctx.process.read_memory::<u32>(attach_slot as usize)? != 0 {
+            return Err("Automap attach slot changed before marker publication".to_string());
+        }
         // A failed write may still have published the pointer. Do not offer
         // those cells for reuse after an ambiguous publication failure.
         self.placed = self.spare_cells.drain(..wanted.len()).collect();
         self.chain_parent_slot = attach_slot;
-        if let Err(e) = ctx
-            .process
-            .write_buffer(attach_slot as usize, &head.to_le_bytes())
-        {
-            self.invalidate_cells();
-            return Err(e);
-        }
+        ctx.process
+            .write_buffer(attach_slot as usize, &head.to_le_bytes())?;
+        self.cells_trusted = true;
         Ok(())
     }
 }
@@ -458,7 +470,10 @@ fn reconcile_persistent(
         None => false,
     });
     last_seen.retain(|uid, _| persistent.contains_key(uid));
-    first_seen.retain(|uid, _| persistent.contains_key(uid));
+    first_seen.retain(|uid, _| {
+        persistent.contains_key(uid)
+            || (bfs_unit_ids.contains(uid) && !explicitly_unmarked.contains(uid))
+    });
 
     // Over the marker-cell cap: keep the most recently dropped `max_markers`
     // entries, evicting the rest. Without this, a persistent set that grows
@@ -466,12 +481,15 @@ fn reconcile_persistent(
     // the same oldest-unit_id batch to `attach_chain`'s own truncation,
     // permanently blocking every later drop from ever getting a marker.
     if persistent.len() > max_markers {
-        let mut by_age: Vec<(u32, Instant)> = first_seen.iter().map(|(&u, &t)| (u, t)).collect();
+        let mut by_age: Vec<(u32, Instant)> = first_seen
+            .iter()
+            .filter(|(uid, _)| persistent.contains_key(uid))
+            .map(|(&uid, &stamp)| (uid, stamp))
+            .collect();
         by_age.sort_unstable_by_key(|&(uid, t)| (t, uid));
         for &(uid, _) in by_age.iter().take(by_age.len() - max_markers) {
             persistent.remove(&uid);
             last_seen.remove(&uid);
-            first_seen.remove(&uid);
         }
     }
 
@@ -631,7 +649,7 @@ pub fn sub_to_cell(sub_x: i32, sub_y: i32) -> (i32, i32) {
 fn find_leaf_slot(ctx: &D2Context, root_slot: u32) -> Result<u32, String> {
     let mut slot = root_slot;
     for _ in 0..4096 {
-        let node = ctx.process.read_memory::<u32>(slot as usize).unwrap_or(0);
+        let node = ctx.process.read_memory::<u32>(slot as usize)?;
         if node == 0 {
             return Ok(slot);
         }
@@ -668,8 +686,359 @@ fn hash_markers(items: &[MarkerItem]) -> u64 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn full_snapshots_keep_stable_markers_and_bounded_identity_stamps() {
+        let mut persistent = HashMap::new();
+        let mut last_seen = HashMap::new();
+        let mut first_seen = HashMap::new();
+        let start = Instant::now();
+        for batch in 0..100u32 {
+            let matched: Vec<_> = (batch * 101..(batch + 1) * 101)
+                .map(|uid| mk(uid, 100, 100))
+                .collect();
+            let bfs = matched.iter().map(|item| item.unit_id).collect();
+            let mut previous = None;
+            for repeat in 0..3 {
+                let wanted = reconcile_persistent(
+                    &mut persistent,
+                    &mut last_seen,
+                    &mut first_seen,
+                    &matched,
+                    &HashSet::new(),
+                    &bfs,
+                    None,
+                    32,
+                    MARKER_TTL,
+                    MAX_MARKER_CELLS,
+                    start + Duration::from_secs(u64::from(batch * 3 + repeat)),
+                );
+                if let Some(previous) = previous {
+                    assert_eq!(wanted, previous);
+                }
+                assert_eq!(wanted.len(), MAX_MARKER_CELLS);
+                assert!(first_seen.len() <= bfs.len() + MAX_MARKER_CELLS);
+                previous = Some(wanted);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub(crate) mod native {
+        use super::*;
+        use crate::process::{
+            marker_test_io::{Operation, Scope},
+            ProcessHandle,
+        };
+        use windows::Win32::System::{
+            Memory::{
+                VirtualAllocEx, VirtualFreeEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE,
+            },
+            Threading::{
+                GetCurrentProcessId, OpenProcess, PROCESS_VM_OPERATION, PROCESS_VM_READ,
+                PROCESS_VM_WRITE,
+            },
+        };
+
+        pub(crate) struct Fixture {
+            pub ctx: D2Context,
+            region: std::ptr::NonNull<std::ffi::c_void>,
+            pub io: Scope,
+        }
+        impl Fixture {
+            pub fn new() -> Self {
+                // SAFETY: GetCurrentProcessId takes no pointers and has no preconditions.
+                let pid = unsafe { GetCurrentProcessId() };
+                // SAFETY: the PID is current and these rights are used only on fixture-owned pages.
+                let handle = unsafe {
+                    OpenProcess(
+                        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION,
+                        false,
+                        pid,
+                    )
+                }
+                .unwrap();
+                let process = ProcessHandle { handle, pid };
+                let region = (0x10000000usize..0x70000000)
+                    .step_by(0x200000)
+                    .find_map(|base| {
+                        // SAFETY: reservation hints do not overwrite existing mappings; NULL means try another low address.
+                        std::ptr::NonNull::new(unsafe {
+                            VirtualAllocEx(
+                                handle,
+                                Some(std::ptr::with_exposed_provenance(base)),
+                                0x200000,
+                                MEM_COMMIT | MEM_RESERVE,
+                                PAGE_READWRITE,
+                            )
+                        })
+                    })
+                    .expect("low-address fixture allocation");
+                let base = region.as_ptr().expose_provenance();
+                let fixture = Self {
+                    ctx: D2Context {
+                        process,
+                        d2_client: base,
+                        d2_common: 0,
+                        d2_win: 0,
+                        d2_lang: 0,
+                        d2_sigma: 0,
+                        d2_sigma_size: 0,
+                        always_show_items_ptr_rva: None,
+                    },
+                    region,
+                    io: Scope::new(base..base + 0x200000),
+                };
+                fixture.seed(d2client::AUTOMAP_LAYER, fixture.address(0x1000));
+                fixture.seed(d2client::PLAYER_UNIT, fixture.address(0x2000));
+                fixture.seed(0x2000 + paths::TO_PATHS_PTR[1], fixture.address(0x3000));
+                fixture.seed(0x3000 + paths::TO_PATHS_PTR[2], fixture.address(0x4000));
+                fixture
+            }
+            pub fn address(&self, offset: usize) -> u32 {
+                u32::try_from(self.ctx.d2_client + offset).unwrap()
+            }
+            pub fn seed(&self, offset: usize, value: u32) {
+                self.ctx
+                    .process
+                    .write_buffer(self.ctx.d2_client + offset, &value.to_le_bytes())
+                    .unwrap();
+            }
+            pub fn word(&self, offset: usize) -> u32 {
+                self.ctx
+                    .process
+                    .read_memory(self.ctx.d2_client + offset)
+                    .unwrap()
+            }
+            pub fn items(&self, count: u32) {
+                self.seed(
+                    0x4000 + room1::UNIT_FIRST,
+                    if count == 0 { 0 } else { self.address(0x5000) },
+                );
+                for index in 0..count {
+                    let offset = 0x5000 + usize::try_from(index).unwrap() * 0x100;
+                    self.seed(offset + unit::UNIT_TYPE, unit_type::ITEM);
+                    self.seed(offset + unit::UNIT_ID, index + 1);
+                    self.seed(offset + unit::PATH, self.address(offset + 0x80));
+                    self.seed(offset + 0x80 + item_path::SUB_X, 100 + index);
+                    self.seed(offset + 0x80 + item_path::SUB_Y, 100);
+                    self.seed(
+                        offset + unit::ROOM_NEXT,
+                        if index + 1 == count {
+                            0
+                        } else {
+                            self.address(offset + 0x100)
+                        },
+                    );
+                }
+            }
+            pub fn injector(&self) -> D2Injector {
+                D2Injector::for_marker_test(
+                    (0..200).map(|index| self.address(0x20000 + index * 0x40)),
+                )
+            }
+            pub fn context(&self) -> D2Context {
+                // SAFETY: duplicate ownership via a fresh handle to this process, not a borrowed HANDLE.
+                let handle = unsafe {
+                    OpenProcess(
+                        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_VM_OPERATION,
+                        false,
+                        self.ctx.process.pid,
+                    )
+                }
+                .unwrap();
+                D2Context {
+                    process: ProcessHandle {
+                        handle,
+                        pid: self.ctx.process.pid,
+                    },
+                    d2_client: self.ctx.d2_client,
+                    d2_common: 0,
+                    d2_win: 0,
+                    d2_lang: 0,
+                    d2_sigma: 0,
+                    d2_sigma_size: 0,
+                    always_show_items_ptr_rva: None,
+                }
+            }
+            pub fn tick(
+                &self,
+                manager: &mut MapMarkerManager,
+                injector: &D2Injector,
+            ) -> Result<(), String> {
+                let matched: Vec<_> = bfs_item_positions(&self.ctx, 10)?
+                    .into_iter()
+                    .map(|(ptr, sx, sy)| {
+                        mk(
+                            self.ctx
+                                .process
+                                .read_memory::<u32>(usize::try_from(ptr).unwrap() + unit::UNIT_ID)
+                                .unwrap(),
+                            sx,
+                            sy,
+                        )
+                    })
+                    .collect();
+                let bfs = matched.iter().map(|item| item.unit_id).collect();
+                manager.tick(&self.ctx, injector, &matched, &HashSet::new(), &bfs, None)
+            }
+            pub fn cells(&self) -> Vec<(u32, u16)> {
+                let mut node = self.word(0x1000 + automap_layer::P_OBJECTS);
+                let mut cells = Vec::new();
+                while node != 0 {
+                    assert!(
+                        cells.len() < MAX_MARKER_CELLS,
+                        "chain exceeds cap or cycles"
+                    );
+                    let address = usize::try_from(node).unwrap();
+                    cells.push((
+                        node,
+                        self.ctx
+                            .process
+                            .read_memory(address + automap_cell::X_PIXEL)
+                            .unwrap(),
+                    ));
+                    node = self
+                        .ctx
+                        .process
+                        .read_memory(address + automap_cell::P_LESS)
+                        .unwrap();
+                }
+                cells
+            }
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                // SAFETY: this is the original reservation, owned once, and the process handle is still live.
+                let result = unsafe {
+                    VirtualFreeEx(
+                        self.ctx.process.handle,
+                        self.region.as_ptr(),
+                        0,
+                        MEM_RELEASE,
+                    )
+                };
+                assert!(result.is_ok(), "fixture pages must be released");
+            }
+        }
+        pub fn calls(injector: &D2Injector) -> usize {
+            injector
+                .marker_allocator
+                .as_ref()
+                .unwrap()
+                .lock()
+                .unwrap()
+                .calls
+        }
+
+        #[test]
+        fn unchanged_full_bfs_snapshot_performs_no_rebuild() {
+            let fixture = Fixture::new();
+            let injector = fixture.injector();
+            let mut manager = MapMarkerManager::new();
+            fixture.items(100);
+            fixture.tick(&mut manager, &injector).unwrap();
+            fixture.items(101);
+            fixture.tick(&mut manager, &injector).unwrap();
+            let cells = fixture.cells();
+            let writes = fixture.io.writes();
+            for _ in 0..20 {
+                fixture.tick(&mut manager, &injector).unwrap();
+            }
+            assert_eq!(fixture.cells(), cells);
+            assert_eq!(fixture.io.writes(), writes);
+            assert_eq!(calls(&injector), 100);
+        }
+
+        #[test]
+        fn unconfirmed_detach_never_authorizes_reuse() {
+            for operation in [Operation::Read, Operation::Write, Operation::Written] {
+                let fixture = Fixture::new();
+                let injector = fixture.injector();
+                let mut manager = MapMarkerManager::new();
+                fixture.items(1);
+                fixture.tick(&mut manager, &injector).unwrap();
+                fixture.seed(d2client::AUTOMAP_LAYER, fixture.address(0x1800));
+                fixture.io.fail(
+                    fixture.ctx.d2_client + 0x1000 + automap_layer::P_OBJECTS,
+                    operation,
+                );
+                assert!(fixture.tick(&mut manager, &injector).is_err());
+                assert_eq!(manager.placed.len(), 1);
+                assert!(manager.spare_cells.is_empty());
+                let writes = fixture.io.writes();
+                match operation {
+                    Operation::Read => {
+                        fixture.tick(&mut manager, &injector).unwrap();
+                        assert_eq!(fixture.word(0x1000 + automap_layer::P_OBJECTS), 0);
+                    }
+                    Operation::Write | Operation::Written => {
+                        for _ in 0..3 {
+                            assert!(fixture.tick(&mut manager, &injector).is_err());
+                        }
+                        assert_eq!(fixture.io.writes(), writes);
+                    }
+                }
+                assert_eq!(calls(&injector), 1);
+            }
+        }
+
+        #[test]
+        fn preparation_and_publication_errors_quarantine_cells() {
+            for offset in [
+                0x20000,
+                0x20000 + automap_cell::P_LESS,
+                0x1000 + automap_layer::P_OBJECTS,
+            ] {
+                let fixture = Fixture::new();
+                let injector = fixture.injector();
+                let mut manager = MapMarkerManager::new();
+                fixture.items(2);
+                fixture
+                    .io
+                    .fail(fixture.ctx.d2_client + offset, Operation::Written);
+                assert!(fixture.tick(&mut manager, &injector).is_err());
+                let writes = fixture.io.writes();
+                for _ in 0..3 {
+                    assert!(fixture.tick(&mut manager, &injector).is_err());
+                }
+                assert_eq!(fixture.io.writes(), writes);
+                assert_eq!(calls(&injector), 2);
+            }
+        }
+
+        #[test]
+        fn partial_allocation_distinguishes_null_from_unknown_outcome() {
+            for outcome in [Ok(0), Err("unknown allocation outcome".to_string())] {
+                let fixture = Fixture::new();
+                let injector = fixture.injector();
+                let mut manager = MapMarkerManager::new();
+                fixture.items(2);
+                injector
+                    .marker_allocator
+                    .as_ref()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .cells[1] = outcome.clone();
+                assert!(fixture.tick(&mut manager, &injector).is_err());
+                assert_eq!(manager.spare_cells, vec![fixture.address(0x20000)]);
+                match outcome {
+                    Ok(_) => {
+                        fixture.tick(&mut manager, &injector).unwrap();
+                        assert_eq!(manager.placed[0], fixture.address(0x20000));
+                        assert_eq!(calls(&injector), 3);
+                    }
+                    Err(_) => {
+                        assert!(fixture.tick(&mut manager, &injector).is_err());
+                        assert_eq!(calls(&injector), 2);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn rebuilds_reuse_cells_at_the_high_water_mark() {
