@@ -1243,7 +1243,12 @@ mod linux_impl {
             ];
             self.write_buffer(stub_addr, &mmap_stub)?;
             let mapped = super::linux_ptrace::call_remote(self.pid, stub_addr, size)?;
-            if (mapped as i32) < 0 {
+            // `mmap2` returns the address, not a signed status. A 32-bit
+            // process on an x86-64 kernel owns nearly the full 4 GiB, and the
+            // kernel's top-down region sits high in it (Wine's Game.exe hands
+            // back ~0xf369_0000), so testing the sign bit rejects perfectly
+            // good allocations. Failures are the small negative range only.
+            if mapped >= 0xffff_f000 {
                 return Err(format!(
                     "mmap2 in remote process failed (errno {})",
                     -(mapped as i32)
