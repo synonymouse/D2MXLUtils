@@ -189,8 +189,9 @@ window shadow.
 
 ## Relevant Files
 
-- `src-tauri/src/main.rs`: overlay window sync, style toggling,
+- `src-tauri/src/app/windows.rs`: overlay window sync, style toggling,
   `set_overlay_interactive`, `set_overlay_edit_mode`.
+- `src-tauri/src/app/overlay_window_tests.rs`: existing style/focus policy checks.
 - `src/views/OverlayWindow.svelte`: main visual overlay, loot-history
   interactivity, and edit-grid rendering.
 - `src/components/OverlayEditGrid.svelte`: grid and ghost host.

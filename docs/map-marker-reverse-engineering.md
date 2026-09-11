@@ -1,5 +1,7 @@
 # Map Marker — Implementation Notes
 
+Current source navigation (2026-09-11): `src-tauri/src/map_markers/mod.rs` is the feature entry; `manager/mod.rs` retains `MapMarkerManager`, `find_leaf_slot` and `attach_chain`, and `scanner.rs` retains the coordinator. Historical implementation/offset evidence below keeps its original source names.
+
 > Restored from git history (deleted in a later "remove obsolete docs"
 > cleanup that miscategorized it — it's the calibration/offset reference
 > for `src-tauri/src/map_marker.rs`, not legacy AutoIt material). Its

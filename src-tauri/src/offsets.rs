@@ -33,16 +33,13 @@ pub mod d2client {
         /// 6-byte stub: `call NewAutomapCell; ret`. EAX on return = AutomapCell*.
         /// Placed well past INJECT_GET_UNIT_STAT (`0x54` + ~17 bytes) with pad.
         pub const NEW_AUTOMAP_CELL: usize = 0x70;
-        /// Published automap marker cell buffer pointer (dword in injection padding).
-        /// Persists across scanner re-attachments for the lifetime of Game.exe.
-        pub const CELL_BUFFER_PTR: usize = 0x80;
 
         /// Linux only: staging address for a small hand-written `mmap2`
         /// syscall stub (~40 bytes), used once per `D2Injector::new` to
         /// allocate real `string_buffer`/`params_buffer` scratch pages —
         /// the Linux analog of `VirtualAllocEx`. Empirically confirmed free
         /// (all-zero for the surrounding 512 bytes on a live process) —
-        /// see `process.rs`'s `live_probe::find_free_padding_runs` test.
+        /// see `process/live_probe.rs`'s `find_free_padding_runs` test.
         /// Placed comfortably past `NEW_AUTOMAP_CELL`'s 6-byte stub (ends
         /// `+0x76`).
         pub const LINUX_MMAP_STUB: usize = 0x90;
@@ -75,6 +72,7 @@ pub mod d2common {
     /// Dereference once to get the base of the struct that holds pointers
     /// to all .txt tables. Same as `$g_pD2sgpt` in D2Stats.au3:259.
     pub const SGPT_DATA_TABLES: usize = 0x99E1C;
+    pub const GLOBAL_STAT_FLAGS_PTR: usize = 0x890B0;
 
     /// GetUnitStat function
     pub const GET_UNIT_STAT: usize = 0x38B70;
@@ -90,9 +88,6 @@ pub mod d2common {
     /// `STATLIST_SetStat` (D2Common ordinal 10261). Leaf called by
     /// `STATLIST_SetUnitStat`. Kept as a reference; not currently hooked.
     pub const STATLIST_SET_STAT: usize = 0x3A280;
-
-    /// Global pointer used by GetUnitStat for item stat cost flag checks (0x6fdd90b0 - 0x6fd50000)
-    pub const GLOBAL_STAT_FLAGS_PTR: usize = 0x890B0;
 }
 
 /// Field offsets inside `D2DataTablesStrc` (the struct pointed to by
@@ -118,24 +113,22 @@ pub mod data_tables {
     pub const SET_ITEMS_TXT_COUNT: usize = 0xC1C;
     pub const UNIQUE_ITEMS_TXT_PTR: usize = 0xC24;
     pub const UNIQUE_ITEMS_TXT_COUNT: usize = 0xC28;
-    /// `ItemStatCost.txt` table pointer and count in `sgptDataTables`
     pub const ITEM_STAT_COST_TXT_PTR: usize = 0xBCC;
     pub const ITEM_STAT_COST_TXT_COUNT: usize = 0xBD4;
 }
 
-/// ItemStatCost record field offsets
 pub mod item_stat_cost {
     pub const RECORD_SIZE: usize = 0x144;
-    pub const FIELD_OP_FLAG: usize = 0x05; // u8 (op flag byte checked against global mask)
-    pub const FIELD_OP_PARAM: usize = 0x18; // u8 (shift parameter)
-    pub const FIELD_OP_BASE: usize = 0x2C; // i32 (floor/threshold)
+    pub const FIELD_OP_FLAG: usize = 0x05;
+    pub const FIELD_OP_PARAM: usize = 0x18;
+    pub const FIELD_OP_BASE: usize = 0x2C;
 }
 
 /// D2Sigma.dll offsets (Median XL specific)
 pub mod d2sigma {
     /// Bool offset inside the always-show-items host struct. The struct
     /// pointer itself drifts between MXL patches and is resolved at runtime
-    /// by `process::resolve_always_show_items_ptr_rva`.
+    /// by `process/context.rs::resolve_always_show_items_ptr_rva`.
     pub const ALWAYS_SHOW_ITEMS_FLAG: usize = 0x24;
 
     /// Native tooltip-builder hook. On function entry `[ESP+04]` is the
@@ -164,68 +157,9 @@ pub mod d2sigma {
     /// argument is readable at `[ESP+28]` until registers/flags are restored.
     pub const TOOLTIP_ITEM_ARG_AFTER_PUSHFD_PUSHAD: usize = 0x28;
 
-    /// Diagnostic-only AOB signature for the same function `TOOLTIP_ITEM_HOOK`
-    /// patches. It has relocated twice now (`0xAE020` -> `0xB4F80` ->
-    /// `0xB4E70`) while staying byte-for-byte identical apart from one
-    /// embedded data-pointer immediate (wildcarded below, `None` at indices
-    /// 11-14) — every relocation observed so far only shifted that pointer.
-    /// Used solely to log where the function actually lives when
-    /// `TOOLTIP_ITEM_HOOK`'s prologue check fails, so the next fix doesn't
-    /// need a fresh manual diff of two `D2Sigma.dll` builds. Not used to
-    /// install the hook automatically — see `hovered_item::install`.
-    pub const TOOLTIP_ITEM_HOOK_SIGNATURE: &[Option<u8>] = &[
-        Some(0x55),
-        Some(0x8D),
-        Some(0x6C),
-        Some(0x24),
-        Some(0xD8),
-        Some(0x83),
-        Some(0xEC),
-        Some(0x28),
-        Some(0x6A),
-        Some(0xFF),
-        Some(0x68),
-        None,
-        None,
-        None,
-        None,
-        Some(0x64),
-        Some(0xA1),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x50),
-        Some(0x64),
-        Some(0x89),
-        Some(0x25),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x81),
-        Some(0xEC),
-        Some(0x98),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x53),
-        Some(0x56),
-        Some(0x57),
-        Some(0x8B),
-        Some(0xD9),
-        Some(0xC7),
-        Some(0x45),
-        Some(0x24),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-        Some(0x00),
-    ];
-
     /// Absolute low-memory range where RE found the native UTF-16 tooltip text
     /// buffer. It can remain stale on empty hover, so do not use it as the
-    /// primary hovered-item identity source; use the D2Sigma+AE020 pUnit hook.
+    /// primary hovered-item identity source; use the native tooltip pUnit hook.
     pub const TOOLTIP_TEXT_BUFFER_START: usize = 0x00194080;
     pub const TOOLTIP_TEXT_BUFFER_END: usize = 0x00194280;
 }
@@ -464,12 +398,12 @@ pub mod stat_list {
     pub const UNIT_TO_STATS_LIST: usize = 0x5C;
     pub const SL_FLAGS: usize = 0x10;
     pub const SL_FLAG_EX: u32 = 0x8000_0000;
+    pub const SL_OWNER_UNIT: usize = 0x44;
+    pub const SL_FULL_PSTAT: usize = 0x48;
+    pub const SL_FULL_STAT_COUNT: usize = 0x4C;
     pub const SL_PSTAT: usize = 0x24;
     pub const SL_STAT_COUNT: usize = 0x28;
     pub const SL_STAT_CAPACITY: usize = 0x2A;
-    pub const SL_FULL_PSTAT: usize = 0x48;
-    pub const SL_FULL_STAT_COUNT: usize = 0x4C;
-    pub const SL_FULL_STAT_CAPACITY: usize = 0x4E;
     /// For monsters, `pStat` is allocated inline at this offset.
     pub const SL_INLINE_PSTAT: usize = 0x80;
 
@@ -482,10 +416,9 @@ pub mod stat_list {
     pub const STAT_HITPOINTS: u16 = 6;
     pub const STAT_MAXHP: u16 = 7;
     /// "level" — character/monster level. Already verified live for both
-    /// (see `dps_hook/trampoline.rs`'s monster-level read and
+    /// (see `dps/hook/trampoline.rs`'s monster-level read and
     /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
     pub const STAT_LEVEL: u16 = 12;
-    /// Item sockets (`item_numsockets`, stat id 194 / 0xC2 from `ItemStatCost.txt`).
     pub const STAT_SOCKETS: u16 = 0xC2;
 }
 

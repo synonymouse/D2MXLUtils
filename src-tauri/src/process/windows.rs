@@ -1,0 +1,334 @@
+use std::ffi::{c_void, OsStr};
+use std::mem;
+use std::os::windows::ffi::OsStrExt;
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE};
+use windows::Win32::System::Diagnostics::Debug::{ReadProcessMemory, WriteProcessMemory};
+use windows::Win32::System::ProcessStatus::{
+    EnumProcessModules, GetModuleBaseNameW, GetModuleInformation, MODULEINFO,
+};
+use windows::Win32::System::Threading::{
+    OpenProcess, PROCESS_CREATE_THREAD, PROCESS_QUERY_INFORMATION, PROCESS_VM_OPERATION,
+    PROCESS_VM_READ, PROCESS_VM_WRITE,
+};
+use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId};
+
+#[cfg(test)]
+use super::marker_test_io;
+
+pub struct ProcessHandle {
+    pub handle: HANDLE,
+    pub pid: u32,
+}
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_invalid() {
+            unsafe {
+                let _ = CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+// SAFETY: HANDLE is a kernel-object reference; the Win32 calls we make on
+// it are thread-safe. CloseHandle runs once via Drop on the last Arc.
+unsafe impl Send for ProcessHandle {}
+unsafe impl Sync for ProcessHandle {}
+
+impl ProcessHandle {
+    pub fn read_memory<T: Copy>(&self, address: usize) -> Result<T, String> {
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Read)?;
+        let mut buffer: T = unsafe { mem::zeroed() };
+        let mut bytes_read: usize = 0;
+
+        unsafe {
+            ReadProcessMemory(
+                self.handle,
+                address as *const c_void,
+                &mut buffer as *mut T as *mut c_void,
+                mem::size_of::<T>(),
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+        }
+
+        if bytes_read != mem::size_of::<T>() {
+            return Err("Incomplete read".to_string());
+        }
+
+        Ok(buffer)
+    }
+
+    pub fn read_buffer(&self, address: usize, size: usize) -> Result<Vec<u8>, String> {
+        let mut buffer = vec![0u8; size];
+        let mut bytes_read: usize = 0;
+
+        unsafe {
+            ReadProcessMemory(
+                self.handle,
+                address as *const c_void,
+                buffer.as_mut_ptr() as *mut c_void,
+                size,
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+        }
+
+        if bytes_read != size {
+            return Err("Incomplete read".to_string());
+        }
+
+        Ok(buffer)
+    }
+
+    /// Read into an existing buffer slice
+    pub fn read_buffer_into(&self, address: usize, buffer: &mut [u8]) -> Result<(), String> {
+        let mut bytes_read: usize = 0;
+
+        unsafe {
+            ReadProcessMemory(
+                self.handle,
+                address as *const c_void,
+                buffer.as_mut_ptr() as *mut c_void,
+                buffer.len(),
+                Some(&mut bytes_read),
+            )
+            .map_err(|e| format!("ReadProcessMemory failed: {}", e))?;
+        }
+
+        if bytes_read != buffer.len() {
+            return Err("Incomplete read".to_string());
+        }
+
+        Ok(())
+    }
+
+    pub fn write_buffer(&self, address: usize, buffer: &[u8]) -> Result<(), String> {
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Write)?;
+        let mut bytes_written: usize = 0;
+        unsafe {
+            WriteProcessMemory(
+                self.handle,
+                address as *const c_void,
+                buffer.as_ptr() as *const c_void,
+                buffer.len(),
+                Some(&mut bytes_written),
+            )
+            .map_err(|e| format!("WriteProcessMemory failed: {}", e))?;
+        }
+
+        if bytes_written != buffer.len() {
+            return Err("Incomplete write".to_string());
+        }
+
+        #[cfg(test)]
+        marker_test_io::intercept(address, marker_test_io::Operation::Written)?;
+        Ok(())
+    }
+
+    pub fn get_module_base(&self, module_name: &str) -> Result<usize, String> {
+        self.get_module_info(module_name).map(|(base, _)| base)
+    }
+
+    /// Resolve a module by name into `(base, SizeOfImage)`.
+    pub fn get_module_info(&self, module_name: &str) -> Result<(usize, usize), String> {
+        let mut modules = [Default::default(); 1024];
+        let mut cb_needed = 0;
+
+        unsafe {
+            EnumProcessModules(
+                self.handle,
+                modules.as_mut_ptr(),
+                (modules.len() * mem::size_of::<HINSTANCE>()) as u32,
+                &mut cb_needed,
+            )
+            .map_err(|e| format!("EnumProcessModules failed: {}", e))?;
+        }
+
+        let module_count = cb_needed as usize / mem::size_of::<HINSTANCE>();
+        for i in 0..module_count {
+            let module = modules[i];
+            let mut buffer = [0u16; 256];
+            let len = unsafe { GetModuleBaseNameW(self.handle, module, &mut buffer) };
+
+            if len > 0 {
+                let name = String::from_utf16_lossy(&buffer[..len as usize]);
+                if name.eq_ignore_ascii_case(module_name) {
+                    let mut info = MODULEINFO::default();
+                    unsafe {
+                        GetModuleInformation(
+                            self.handle,
+                            module,
+                            &mut info,
+                            mem::size_of::<MODULEINFO>() as u32,
+                        )
+                        .map_err(|e| format!("GetModuleInformation failed: {}", e))?;
+                    }
+                    return Ok((info.lpBaseOfDll as usize, info.SizeOfImage as usize));
+                }
+            }
+        }
+
+        Err(format!("Module '{}' not found", module_name))
+    }
+
+    /// Scan memory for a byte pattern within a given range.
+    /// Returns the address where the pattern was found, or None.
+    pub fn scan_pattern(&self, start: usize, size: usize, pattern: &[u8]) -> Option<usize> {
+        if pattern.is_empty() || size < pattern.len() {
+            return None;
+        }
+
+        // Read memory in chunks to avoid huge allocations
+        const CHUNK_SIZE: usize = 0x10000; // 64KB chunks
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut offset = 0;
+
+        while offset < size {
+            let read_size = std::cmp::min(CHUNK_SIZE, size - offset);
+            let addr = start + offset;
+
+            // Try to read this chunk
+            let mut bytes_read: usize = 0;
+            let result = unsafe {
+                ReadProcessMemory(
+                    self.handle,
+                    addr as *const c_void,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    read_size,
+                    Some(&mut bytes_read),
+                )
+            };
+
+            if result.is_err() || bytes_read == 0 {
+                // Skip unreadable regions
+                offset += CHUNK_SIZE;
+                continue;
+            }
+
+            // Search for pattern in this chunk
+            let search_len = if bytes_read >= pattern.len() {
+                bytes_read - pattern.len() + 1
+            } else {
+                0
+            };
+
+            for i in 0..search_len {
+                if &buffer[i..i + pattern.len()] == pattern {
+                    return Some(addr + i);
+                }
+            }
+
+            // Overlap by pattern length at chunk boundaries; .max(1) guarantees
+            // forward progress at the tail where read_size < pattern.len() would
+            // otherwise yield 0 and loop forever.
+            offset += read_size.saturating_sub(pattern.len()).max(1);
+        }
+
+        None
+    }
+
+    /// Scan memory for a byte pattern where `None` matches any byte.
+    /// `start_from` skips matches before that absolute address — pass `start`
+    /// for a full scan or `last_hit + 1` to resume.
+    pub fn scan_pattern_wildcard(
+        &self,
+        start: usize,
+        size: usize,
+        pattern: &[Option<u8>],
+        start_from: usize,
+    ) -> Option<usize> {
+        if pattern.is_empty() || size < pattern.len() {
+            return None;
+        }
+
+        const CHUNK_SIZE: usize = 0x10000;
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let mut offset = 0;
+
+        while offset < size {
+            let read_size = std::cmp::min(CHUNK_SIZE, size - offset);
+            let addr = start + offset;
+
+            let mut bytes_read: usize = 0;
+            let result = unsafe {
+                ReadProcessMemory(
+                    self.handle,
+                    addr as *const c_void,
+                    buffer.as_mut_ptr() as *mut c_void,
+                    read_size,
+                    Some(&mut bytes_read),
+                )
+            };
+
+            if result.is_err() || bytes_read == 0 {
+                offset += CHUNK_SIZE;
+                continue;
+            }
+
+            let search_len = if bytes_read >= pattern.len() {
+                bytes_read - pattern.len() + 1
+            } else {
+                0
+            };
+
+            for i in 0..search_len {
+                let candidate = addr + i;
+                if candidate < start_from {
+                    continue;
+                }
+                let window = &buffer[i..i + pattern.len()];
+                if pattern
+                    .iter()
+                    .zip(window.iter())
+                    .all(|(p, b)| p.map_or(true, |x| x == *b))
+                {
+                    return Some(candidate);
+                }
+            }
+
+            // `.max(1)`: at the module tail `read_size < pattern.len()`
+            // would otherwise yield 0 and loop forever (matches `scan_pattern`).
+            offset += read_size.saturating_sub(pattern.len()).max(1);
+        }
+
+        None
+    }
+}
+
+pub fn open_process_by_window_class(class_name: &str) -> Result<ProcessHandle, String> {
+    unsafe {
+        let wide_class_name: Vec<u16> = OsStr::new(class_name)
+            .encode_wide()
+            .chain(Some(0))
+            .collect();
+        let hwnd = FindWindowW(PCWSTR(wide_class_name.as_ptr()), PCWSTR::null())
+            .map_err(|_| format!("Window class '{}' not found", class_name))?;
+
+        if hwnd.0.is_null() {
+            return Err(format!("Window class '{}' not found", class_name));
+        }
+
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+
+        if pid == 0 {
+            return Err("Failed to get process ID".to_string());
+        }
+
+        // Request only necessary permissions for memory reading/writing and thread creation
+        let access_flags = PROCESS_VM_READ
+            | PROCESS_VM_WRITE
+            | PROCESS_VM_OPERATION
+            | PROCESS_QUERY_INFORMATION
+            | PROCESS_CREATE_THREAD;
+
+        let handle = OpenProcess(access_flags, false, pid)
+            .map_err(|e| format!("Failed to open process: {}", e))?;
+
+        Ok(ProcessHandle { handle, pid })
+    }
+}

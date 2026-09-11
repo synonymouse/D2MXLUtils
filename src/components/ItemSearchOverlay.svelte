@@ -359,6 +359,7 @@
   onMount(() => {
     const unlisteners: Array<() => void> = [];
     let disposed = false;
+    const handleResize = () => void clampViewportOffset();
 
     listen<OpenItemSearchPayload>('open-item-search', (event) => {
       void openSearch(event.payload?.query ?? null);
@@ -373,11 +374,13 @@
       .catch((err) => console.error('[ItemSearch] failed to listen for open-item-search:', err));
 
     window.addEventListener('keydown', handleKeydown);
+    window.addEventListener('resize', handleResize);
 
     return () => {
       disposed = true;
       unlisteners.forEach((u) => u());
       window.removeEventListener('keydown', handleKeydown);
+      window.removeEventListener('resize', handleResize);
     };
   });
 </script>
@@ -716,5 +719,39 @@
 
   .socket-line {
     color: #b8b8b8;
+  }
+
+  @media (max-width: 880px) {
+    .item-search-layout {
+      width: calc(100vw - 16px);
+      max-height: calc(100vh - 16px);
+      flex-direction: column;
+      align-items: stretch;
+      overflow: hidden;
+    }
+
+    .item-search {
+      width: 100%;
+      min-height: 0;
+      display: flex;
+      flex: 1 1 50%;
+      flex-direction: column;
+    }
+
+    .results {
+      min-height: 0;
+      max-height: none;
+      flex: 1 1 auto;
+    }
+
+    .item-tooltip {
+      width: 100%;
+      min-width: 0;
+      min-height: 0;
+      max-width: none;
+      max-height: none;
+      box-sizing: border-box;
+      flex: 1 1 50%;
+    }
   }
 </style>

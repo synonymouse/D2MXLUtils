@@ -1,6 +1,6 @@
 /**
  * Sync state for the unique/set roll-range template DB (see
- * `unique_stats_db_sync.rs`). Much simpler than `updaterStore` — this is a
+ * `unique_stats_db/sync.rs`). Much simpler than `updaterStore` — this is a
  * single small JSON file, not an executable, so no byte-progress streaming
  * or restart/self-replace dance, just check -> download -> done.
  *

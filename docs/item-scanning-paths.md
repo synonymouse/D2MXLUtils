@@ -3,7 +3,7 @@
 Этот документ объясняет две разные системы, которые сейчас находят предметы на земле:
 
 - `DropScanner::tick_items()` - основной item scanner, который создает notifications, loot history entries, hook-mask decisions и cache решений фильтра.
-- `MarkerScanner::tick()` / `map_marker::bfs_item_positions()` - marker scanner, который ищет позиции предметов через BFS по графу комнат, публикует raw BFS candidates для `DropScanner` и ставит automap markers только для уже известных filter decisions.
+- `MarkerScanner::tick()` / `manager::bfs_item_positions()` внутри `map_markers` - marker scanner, который ищет позиции предметов через BFS по графу комнат, публикует raw BFS candidates для `DropScanner` и ставит automap markers только для уже известных filter decisions.
 
 Цель документа - зафиксировать, чем эти системы похожи, где они расходятся, и почему возможен класс багов, где off-screen item виден одному пути, но не другому.
 
@@ -62,7 +62,7 @@ p_path   = *(p_player + 0x2C)
 p_room1  = *(p_path + 0x1C)
 ```
 
-См. `src-tauri/src/notifier.rs:514-561`, `src-tauri/src/map_marker.rs:289-306`, `src-tauri/src/offsets.rs:127-134`.
+См. `src-tauri/src/notifier/discovery.rs` (`DropScanner::tick_items`), `src-tauri/src/map_markers/manager/mod.rs` (`bfs_item_positions`), `src-tauri/src/offsets.rs:127-134`.
 
 ### `Room1`
 
@@ -91,13 +91,27 @@ BFS = breadth-first search, обход графа в ширину.
 5. Перейти к соседям соседей.
 6. Остановиться на depth limit или когда новых комнат нет.
 
-Текущий marker BFS вызывает `map_marker::bfs_item_positions(&ctx, 10)`, то есть лимит глубины равен 10 переходам по graph links, а не 10 экранным клеткам.
+Текущий marker BFS вызывает `manager::bfs_item_positions(&ctx, 10)` внутри feature `map_markers`, то есть лимит глубины равен 10 переходам по graph links, а не 10 экранным клеткам.
 
 ## `DropScanner::tick_items()` подробно
 
 `DropScanner::tick_items()` - основной scanner loot-пайплайна. Он отвечает за то, что пользователь воспринимает как drop notification.
 
-Файл: `src-tauri/src/notifier.rs`.
+Файл: `src-tauri/src/notifier/discovery.rs`.
+
+Подготовка payload (`to_event`) и on-demand stats (`enrich_event_stats`) —
+`src-tauri/src/notifier/event.rs`; live matching caches, их disk persistence и
+`items_dictionary_snapshot` — `src-tauri/src/notifier/catalog.rs`. Все методы
+остаются на `DropScanner`; его state/lifecycle, DTOs и stable exports — в `mod.rs`.
+`discovery.rs` сохраняет полный порядок tick: два nearby-room прохода,
+проверенные BFS candidates, cleanup/pruning и pickup resolution.
+`processing.rs` содержит `scan_unit` и `process_scanned_item`, `pickup.rs` —
+inventory walk, `visibility/controls.rs` — no-pickup/always-show controls и mask retries;
+`visibility/hotkey.rs` — полный reveal-hidden watcher с состоянием и командой настройки.
+`visibility/hook/mod.rs` сохраняет native hook, trampoline/layout, reattach и mask operations;
+`visibility/tracker/mod.rs` — bit accounting и retries. Их tests находятся рядом;
+visibility container остаётся ungated, native gates и unsupported hook stubs сохранены.
+Marker BFS по-прежнему публикует только raw candidates и читает cached decisions.
 
 ### Что он делает
 
@@ -118,7 +132,7 @@ BFS = breadth-first search, обход графа в ширину.
 13. Если filter decision содержит notification, возвращает event в `Vec<ItemDropEvent>`.
 14. В конце prunes локальные и shared caches по `current_item_ids`.
 
-Снаружи `main.rs` берет возвращенные events и делает `app_handle.emit("item-drop", &item)`.
+Снаружи `app/scanner_runtime/worker.rs` берет возвращенные events и делает `app_handle.emit("item-drop", &item)`. Здесь же остаются attach/bootstrap, item/marker coordination и ordered shutdown; `mod.rs` содержит discovery/auto-start, а `readouts.rs` — readout/DPS sampling с заимствованными worker-owned counters/last-good values. Root `main.rs` собирает приложение и регистрирует close/join watchdog.
 
 ### Как он находит units
 
@@ -138,10 +152,10 @@ D2Client + PLAYER_UNIT
 
 Relevant code:
 
-- `src-tauri/src/notifier.rs:514-561` - получает `pPaths` и `iPaths`.
-- `src-tauri/src/notifier.rs:566-602` - первый проход собирает `current_item_ids`.
-- `src-tauri/src/notifier.rs:604-789` - второй проход обрабатывает items.
-- `src-tauri/src/notifier.rs:860-930` - `scan_unit()` обогащает новый item.
+- `src-tauri/src/notifier/discovery.rs` (`DropScanner::tick_items`) - получает `pPaths` и `iPaths`.
+- `src-tauri/src/notifier/discovery.rs` (`DropScanner::tick_items`) - первый проход собирает `current_item_ids`.
+- `src-tauri/src/notifier/discovery.rs` (`DropScanner::tick_items`) - второй проход обрабатывает items.
+- `src-tauri/src/notifier/processing.rs` (`DropScanner::scan_unit`) - обогащает новый item.
 
 ### Что важно про `pPaths`
 
@@ -183,8 +197,9 @@ Marker scanner сейчас вынесен в отдельный thread.
 
 Files:
 
-- `src-tauri/src/marker_scanner.rs`
-- `src-tauri/src/map_marker.rs`
+- `src-tauri/src/map_markers/mod.rs` — единая feature entry, экспортирует `MarkerScanner`.
+- `src-tauri/src/map_markers/scanner.rs` — private coordinator; `scanner_tests.rs` объявлен под scanner.
+- `src-tauri/src/map_markers/manager/mod.rs` — private `MapMarkerManager`, существующие методы и соседние children/tests. Shared Windows fixtures доступны через `map_markers::test_support::{Fixture,calls}`.
 
 ### Что он делает
 
@@ -194,7 +209,7 @@ Files:
 2. Проверяет, есть ли loaded filter config.
 3. Проверяет, есть ли в filter config `map` rules.
 4. Если map rules нет, очищает app markers один раз и выходит.
-5. Запускает `map_marker::bfs_item_positions(&ctx, 10)`.
+5. Запускает `manager::bfs_item_positions(&ctx, 10)`.
 6. Для каждого найденного `p_unit` читает `unit_id`.
 7. Делает snapshot `recent_filter_decisions`.
 8. Для каждого BFS item проверяет, есть ли current-generation cached decision.
@@ -204,10 +219,8 @@ Files:
 
 Relevant code:
 
-- `src-tauri/src/marker_scanner.rs:59-93` - setup и early returns.
-- `src-tauri/src/marker_scanner.rs:95-117` - BFS и чтение `unit_id`.
-- `src-tauri/src/marker_scanner.rs:119-143` - snapshot filter decisions и сбор `MarkerItem`.
-- `src-tauri/src/map_marker.rs:284-386` - сам BFS по `Room1` graph.
+- `src-tauri/src/map_markers/scanner.rs` (`MarkerScanner::tick`) - setup, early returns, BFS, чтение `unit_id`, snapshot filter decisions и сбор `MarkerItem`.
+- `src-tauri/src/map_markers/manager/mod.rs` (`bfs_item_positions`) - сам BFS по `Room1` graph.
 
 ### Как BFS находит units
 
@@ -297,7 +310,7 @@ DropScanner thread
 | Как идет по units?               | От `nearby_room + PATH_TO_UNIT`/`UNIT_FIRST`, затем `UnitAny.p_next_unit` | От `Room1.UNIT_FIRST`, затем `UnitAny.ROOM_NEXT` |
 | Получает имя/stats?              | Да                                                                        | Нет                                              |
 | Прогоняет loot filter?           | Да                                                                        | Нет                                              |
-| Эмитит notification?             | Да, через `main.rs`                                                       | Нет                                              |
+| Эмитит notification?             | Да, через `app/scanner_runtime/worker.rs`                                 | Нет                                              |
 | Пишет `recent_filter_decisions`? | Да                                                                        | Нет                                              |
 | Ставит automap marker?           | Нет напрямую                                                              | Да, но только по cached decision от DropScanner  |
 | Публикует BFS candidates?        | Нет                                                                       | Да, через `recent_bfs_items`                     |
@@ -392,7 +405,7 @@ Marker BFS found candidates
     -> DropScanner enriches unknown candidates
       -> recent_filter_decisions
         -> MarkerScanner places markers
-        -> main.rs emits notifications
+        -> app/scanner_runtime/worker.rs emits notifications
 ```
 
 Такой подход сохраняет разделение ответственности и использует BFS как дополнительный источник кандидатов, а не как второй независимый loot scanner. Ограничение остается намеренным: если фильтр не содержит `map` rules, marker BFS не запускается, чтобы не возвращать прежнюю цену BFS для notification-only конфигураций.

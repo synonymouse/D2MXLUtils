@@ -2,7 +2,7 @@
  * Updater store for D2MXLUtils
  *
  * Reactive state machine for the auto-updater flow. Mirrors the Rust backend
- * in `src-tauri/src/updater.rs`.
+ * in `src-tauri/src/updater/mod.rs`.
  *
  * States:
  *   idle           — no check performed yet, or background check failed silently
