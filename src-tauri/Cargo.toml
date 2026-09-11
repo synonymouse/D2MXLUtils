@@ -1,6 +1,6 @@
 [package]
 name = "d2mxlutils"
-version = "1.27.5"
+version = "1.27.6"
 description = "D2MXLUtils Drop Notifier backend"
 authors = ["D2MXLUtils"]
 edition = "2021"
