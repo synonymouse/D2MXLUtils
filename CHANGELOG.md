@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.27.7 — 2026-09-11
+
+### Bug Fixes
+
+- Fix(hovered-item): relocate tooltip hook offset for latest MXL patch (1342a37)
+
+### Features
+
+- Feat(hovered-item): diagnose tooltip hook relocation via AOB signature scan (2986aff)
+- Feat(item-search): add verbose logging and clamp tooltip into viewport (7015fd9)
+
 ## v1.27.6 — 2026-09-11
 
 ### Refactor
