@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.27.6 — 2026-09-11
+
+### Refactor
+
+- Refactor: organize backend by business feature (a19d9c4)
+
 ## v1.27.5 — 2026-09-09
 
 ### Bug Fixes
