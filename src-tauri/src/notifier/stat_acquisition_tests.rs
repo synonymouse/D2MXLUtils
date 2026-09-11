@@ -1,5 +1,5 @@
 use super::*;
-use crate::map_marker::tests::native::Fixture;
+use crate::map_markers::test_support::Fixture;
 use crate::offsets::item_flags;
 use crate::stat_telemetry::{InjectorCall, StatConsumer, TelemetrySnapshot};
 

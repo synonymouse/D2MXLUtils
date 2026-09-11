@@ -3,9 +3,9 @@
 //! `recent_events` locks must never be held simultaneously.
 //!
 //! `hovered_item_hook` and `dps_hook` are inline-code-hooking subsystems,
-//! both ported to Linux (see `dps_hook/mod.rs`'s and `hovered_item.rs`'s
+//! both ported to Linux (see `dps/hook/linux.rs` and `item_search/capture/`
 //! `ProcessRef`-based splits). Everything else here is OS-agnostic once
-//! `process.rs`/`injection.rs` provide a `D2Context`/`D2Injector` for the
+//! `process/`/`injection/` provide a `D2Context`/`D2Injector` for the
 //! current OS.
 
 use std::collections::HashMap;
@@ -13,11 +13,11 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-use crate::dps_hook::DpsHook;
-use crate::dps_meter::DpsMeter;
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-use crate::hovered_item::HoveredItemHook;
+use crate::dps::DpsHook;
+use crate::dps::DpsMeter;
 use crate::injection::D2Injector;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use crate::item_search::HoveredItemHook;
 use crate::notifier::ItemDropEvent;
 use crate::offsets::d2client;
 use crate::process::D2Context;
@@ -80,7 +80,7 @@ pub struct SharedScannerState {
     /// (first read records, doesn't reset). `i64` so any 32-bit pointer
     /// value (incl. 0) round-trips losslessly.
     pub last_area_token: AtomicI64,
-    /// Local unique/set roll-range template DB — see `unique_stats_db.rs`.
+    /// Local unique/set roll-range template DB — see `unique_stats_db/mod.rs`.
     /// Empty (not an `Option`) when no local DB file was found, so lookups
     /// are just always-miss rather than needing an extra `is_some` check
     /// at every call site.

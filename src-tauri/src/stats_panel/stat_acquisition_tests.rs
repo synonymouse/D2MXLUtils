@@ -1,4 +1,5 @@
 use super::*;
+use crate::offsets::stat_list;
 use crate::unit_stats_reader::stat_acquisition_fixtures::{fixture, PLAYER};
 
 #[test]

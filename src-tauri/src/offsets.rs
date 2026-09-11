@@ -39,7 +39,7 @@ pub mod d2client {
         /// allocate real `string_buffer`/`params_buffer` scratch pages —
         /// the Linux analog of `VirtualAllocEx`. Empirically confirmed free
         /// (all-zero for the surrounding 512 bytes on a live process) —
-        /// see `process.rs`'s `live_probe::find_free_padding_runs` test.
+        /// see `process/live_probe.rs`'s `find_free_padding_runs` test.
         /// Placed comfortably past `NEW_AUTOMAP_CELL`'s 6-byte stub (ends
         /// `+0x76`).
         pub const LINUX_MMAP_STUB: usize = 0x90;
@@ -128,7 +128,7 @@ pub mod item_stat_cost {
 pub mod d2sigma {
     /// Bool offset inside the always-show-items host struct. The struct
     /// pointer itself drifts between MXL patches and is resolved at runtime
-    /// by `process::resolve_always_show_items_ptr_rva`.
+    /// by `process/context.rs::resolve_always_show_items_ptr_rva`.
     pub const ALWAYS_SHOW_ITEMS_FLAG: usize = 0x24;
 
     /// Native tooltip-builder hook. On function entry `[ESP+04]` is the
@@ -410,7 +410,7 @@ pub mod stat_list {
     pub const STAT_HITPOINTS: u16 = 6;
     pub const STAT_MAXHP: u16 = 7;
     /// "level" — character/monster level. Already verified live for both
-    /// (see `dps_hook/trampoline.rs`'s monster-level read and
+    /// (see `dps/hook/trampoline.rs`'s monster-level read and
     /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
     pub const STAT_LEVEL: u16 = 12;
     pub const STAT_SOCKETS: u16 = 0xC2;
