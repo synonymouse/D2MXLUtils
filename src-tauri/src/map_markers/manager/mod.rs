@@ -1,0 +1,919 @@
+//! Automap markers for loot-filter matches.
+//!
+//! Allocates `AutomapCell`s via `D2Injector::new_automap_cell` and attaches
+//! our chain as a leaf of the layer's `pObjects` BST — walk `pLess` from
+//! the root until a NULL slot, attach there, exactly like the engine's own
+//! icon insertion. Earlier versions instead swapped `pObjects` itself to
+//! point at a freshly-prepended chain; that's the single most contended
+//! slot in the structure (the engine's own quest/shrine-icon placement
+//! also reads/writes it), and repeatedly rewriting it every rebuild is the
+//! prime suspect for reports of quest/shrine markers occasionally going
+//! missing. Leaf insertion never touches the root, so engine-owned icons
+//! are never at risk of being swapped out from under it.
+//!
+//! A per-area `persistent` cache keeps markers sticky when the player walks
+//! past an item and its room unloads. Entries are evicted either when BFS
+//! misses them AND the player is within `PICKUP_THRESHOLD_SUBTILES` (assumed
+//! pickup), after `MARKER_TTL` without a BFS sighting (walked away and
+//! never came back), or on a real area/act change (a player-subtile jump
+//! past `AREA_CHANGE_JUMP_SUBTILES` — see its doc comment for why the
+//! layer pointer alone can't be used to detect this). Cross-game
+//! transitions are handled separately by the explicit `clear_markers`
+//! signal from `app/scanner_runtime/worker.rs`.
+//!
+//! Never mutate `pFloors` or `pWalls` — that corrupts revealed terrain.
+//! See `docs/map-marker-reverse-engineering.md` for offset calibration.
+
+#![cfg(any(target_os = "windows", target_os = "linux"))]
+
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
+
+use crate::injection::D2Injector;
+use crate::offsets::{
+    automap_cell, automap_layer, d2client, item_path, paths, player_path, room1, unit, unit_type,
+};
+use crate::process::D2Context;
+
+mod child_detach;
+mod diagnostics;
+use diagnostics::{Diagnostics, Failure, Reason, Stage};
+
+#[cfg(all(test, target_os = "windows"))]
+mod diagnostic_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod observation_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod child_detach_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod child_rejection_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod child_fault_tests;
+
+#[cfg(all(test, target_os = "windows"))]
+mod child_root_tests;
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
+pub struct MarkerItem {
+    pub unit_id: u32,
+    pub cell_x: i32,
+    pub cell_y: i32,
+    pub sub_x: i32,
+    pub sub_y: i32,
+}
+
+/// Missing-from-BFS markers within this Manhattan subtile distance of the
+/// player count as "picked up" (room is loaded so BFS would have seen it).
+/// One D2 screen ≈ 32 subtiles.
+pub const PICKUP_THRESHOLD_SUBTILES: i32 = 32;
+
+/// Drop persistent entries unseen by BFS for this long. Caps the cache
+/// in long sessions; cross-game wipe is handled by `clear_markers`.
+pub const MARKER_TTL: Duration = Duration::from_secs(20 * 60);
+
+/// Player-subtile jump above which a tick is treated as a true area/act
+/// change (waypoint, portal, Act transition) rather than ordinary
+/// movement — walking covers 2-3 subtiles per tick, even Teleport caps
+/// around 16. `layer` (the automap layer pointer `tick` already tracks)
+/// can't be used for this: it also flips on ordinary Room2 crossings
+/// within the SAME area, which is exactly why the persistent cache isn't
+/// wiped there. Without a real area-change signal, `persistent` was only
+/// ever cleared by a brand-new game session (`clear_markers`, set once on
+/// `ingame && !was_ingame`) — confirmed live: a marker placed in one
+/// act's town kept reappearing (at stale, now-meaningless cell
+/// coordinates) in the next act's town after a waypoint trip, since
+/// nothing else cleared it in between.
+pub const AREA_CHANGE_JUMP_SUBTILES: i32 = 60;
+
+/// Maximum number of automap marker cells to allocate and place simultaneously.
+/// Prevents runaway cell allocation when there are hundreds of filtered drops,
+/// avoiding memory exhaustion in Diablo II's 32-bit address space.
+pub const MAX_MARKER_CELLS: usize = 100;
+
+pub struct MapMarkerManager {
+    last_layer: u32,
+    /// Remote address of the slot whose value = our chain head — the
+    /// `pLess` field of whatever existing leaf we attached under (or
+    /// `layer + P_OBJECTS` itself, only when the tree was empty). Never
+    /// rewritten to point elsewhere once picked; zero when not attached.
+    chain_parent_slot: u32,
+    /// Cells we've allocated, in chain order. `placed[0]` is the head; the
+    /// last cell's `pLess` is 0 — we're a genuine leaf chain, not a splice
+    /// back into the engine's tree (see `attach_chain`).
+    placed: Vec<u32>,
+    /// Detached cells available for reuse across ticks and room transitions.
+    /// Never free individual cells: the game owns their backing pool.
+    spare_cells: Vec<u32>,
+    cells_trusted: bool,
+    diagnostics: Diagnostics,
+    last_hash: u64,
+    persistent: HashMap<u32, MarkerItem>,
+    /// Last-stamp per unit_id for TTL. Kept in lockstep with `persistent`
+    /// (orphans are GC'd at the end of `reconcile_persistent`).
+    last_seen: HashMap<u32, Instant>,
+    /// First-stamp per unit_id, set once and never refreshed — unlike
+    /// `last_seen` (which every BFS-confirmed sighting bumps to `now`,
+    /// making it useless for telling old drops from new ones while both
+    /// are still on the ground). Used only to pick which markers to keep
+    /// when `persistent` exceeds `MAX_MARKER_CELLS`: evict the oldest
+    /// first-seen entries so new drops always get a slot instead of the
+    /// same low-unit_id batch camping there forever. Evicted IDs keep their
+    /// stamp only while BFS-visible; storage is bounded by the current BFS
+    /// snapshot plus the capped persistent set, not session history.
+    first_seen: HashMap<u32, Instant>,
+    /// Last known player subtile position, tracked across ticks. Not
+    /// reset by a `None` reading (e.g. mid-loading-screen) — we want to
+    /// compare against the last *real* position once the player reappears,
+    /// not treat "no reading yet" as a jump. See `AREA_CHANGE_JUMP_SUBTILES`.
+    last_player_sub: Option<(i32, i32)>,
+}
+
+impl MapMarkerManager {
+    pub fn new() -> Self {
+        Self {
+            last_layer: 0,
+            chain_parent_slot: 0,
+            placed: Vec::new(),
+            spare_cells: Vec::new(),
+            cells_trusted: true,
+            diagnostics: Diagnostics::default(),
+            last_hash: 0,
+            persistent: HashMap::new(),
+            last_seen: HashMap::new(),
+            first_seen: HashMap::new(),
+            last_player_sub: None,
+        }
+    }
+
+    /// Logical map-off: detach and retain the live pool's high-water cells.
+    pub fn clear(&mut self, ctx: &D2Context) -> Result<(), String> {
+        self.persistent.clear();
+        self.last_seen.clear();
+        self.first_seen.clear();
+        self.last_player_sub = None;
+        let layer = read_layer(ctx)?;
+        if layer == 0 {
+            self.invalidate_cells();
+        } else {
+            self.require_trusted_cells()?;
+            self.detach_chain(ctx)?;
+        }
+        self.last_hash = 0;
+        self.last_layer = 0;
+        Ok(())
+    }
+
+    /// The marker scanner can observe loading before tick() runs. Forget
+    /// addresses without touching memory the game may already have freed.
+    pub fn invalidate_cells(&mut self) {
+        self.last_layer = 0;
+        self.chain_parent_slot = 0;
+        self.placed.clear();
+        self.spare_cells.clear();
+        self.last_hash = 0;
+        self.cells_trusted = true;
+        self.diagnostics = Diagnostics::default();
+    }
+
+    pub fn reset_session(&mut self) {
+        self.invalidate_cells();
+        self.persistent.clear();
+        self.last_seen.clear();
+        self.first_seen.clear();
+        self.last_player_sub = None;
+    }
+
+    fn require_trusted_cells(&self) -> Result<(), String> {
+        if self.cells_trusted {
+            Ok(())
+        } else {
+            Err("Automap cell ownership uncertain; waiting for lifecycle invalidation".to_string())
+        }
+    }
+
+    pub fn tick(
+        &mut self,
+        ctx: &D2Context,
+        injector: &D2Injector,
+        newly_matched: &[MarkerItem],
+        explicitly_unmarked: &HashSet<u32>,
+        bfs_unit_ids: &HashSet<u32>,
+        player_sub: Option<(i32, i32)>,
+    ) -> Result<(), String> {
+        let layer = read_layer(ctx)?;
+        if layer == 0 {
+            // Out of game / loading screen — forget the chain but keep the
+            // cache: we're likely just between screens.
+            self.invalidate_cells();
+            return Ok(());
+        }
+        self.require_trusted_cells()?;
+
+        // True area/act change: wipe the persistent cache itself, not just
+        // the chain bookkeeping the layer-switch check below handles —
+        // see AREA_CHANGE_JUMP_SUBTILES for why the layer pointer alone
+        // can't be used for this. Compares against the last real position
+        // regardless of how many `None` (out-of-world) ticks came between
+        // — a loading screen doesn't itself reset `last_player_sub`.
+        if let Some((px, py)) = player_sub {
+            if is_area_change(self.last_player_sub, (px, py)) {
+                self.persistent.clear();
+                self.last_seen.clear();
+                self.first_seen.clear();
+                self.invalidate_cells();
+            }
+            self.last_player_sub = Some((px, py));
+        }
+
+        // Layer switch (Room2 crossing or layer reallocation): detach from
+        // the old layer and keep existing cells in spare_cells for reuse.
+        // AutomapCell allocations come from a global pool (D2Client NewAutomapCell),
+        // not the individual layer, so discarding spare_cells here would permanently
+        // leak memory in Game.exe every time the player crosses rooms.
+        if layer != self.last_layer {
+            self.detach_chain(ctx)?;
+            self.chain_parent_slot = 0;
+            self.last_hash = 0;
+            self.last_layer = layer;
+        }
+
+        // Tamper check: if the slot we attached under (root or some
+        // existing leaf's pLess) no longer points at our head, the engine
+        // or MXL wrote through/past us and our chain is orphaned. Force
+        // rebuild.
+        if self.chain_parent_slot != 0 {
+            if let Some(&head) = self.placed.first() {
+                let current = ctx
+                    .process
+                    .read_memory::<u32>(self.chain_parent_slot as usize)?;
+                if current != head {
+                    self.cells_trusted = false;
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::TickParent,
+                            reason: Reason::ParentMismatch {
+                                expected_parent: head,
+                                actual_parent: current,
+                            },
+                        },
+                    );
+                    return self.require_trusted_cells();
+                }
+            }
+        }
+
+        let wanted = reconcile_persistent(
+            &mut self.persistent,
+            &mut self.last_seen,
+            &mut self.first_seen,
+            newly_matched,
+            explicitly_unmarked,
+            bfs_unit_ids,
+            player_sub,
+            PICKUP_THRESHOLD_SUBTILES,
+            MARKER_TTL,
+            MAX_MARKER_CELLS,
+            Instant::now(),
+        );
+
+        let hash = hash_markers(&wanted);
+        if hash == self.last_hash && self.chain_parent_slot != 0 {
+            return Ok(());
+        }
+        if wanted.is_empty() && self.chain_parent_slot == 0 {
+            self.last_hash = hash;
+            return Ok(());
+        }
+
+        self.detach_chain(ctx)?;
+
+        if wanted.is_empty() {
+            self.last_hash = hash;
+            return Ok(());
+        }
+
+        self.attach_chain(ctx, injector, layer, &wanted)?;
+        self.last_hash = hash;
+        Ok(())
+    }
+
+    /// Recycle an intact chain, or a narrowly verified same-layer tail-child
+    /// splice. All other topology changes quarantine the addresses.
+    fn detach_chain(&mut self, ctx: &D2Context) -> Result<(), String> {
+        if self.chain_parent_slot == 0 || self.placed.is_empty() {
+            return Ok(());
+        }
+        let current = ctx
+            .process
+            .read_memory::<u32>(self.chain_parent_slot as usize)?;
+        let mut mismatch = None;
+        let mut index = 0;
+        let intact = current == self.placed[0]
+            && chain_is_intact(&self.placed, |cell| {
+                let less = ctx
+                    .process
+                    .read_memory::<u32>(cell as usize + automap_cell::P_LESS)?;
+                let more = ctx
+                    .process
+                    .read_memory::<u32>(cell as usize + automap_cell::P_MORE)?;
+                let expected_less = self.placed.get(index + 1).copied().unwrap_or(0);
+                if less != expected_less || more != 0 {
+                    mismatch = Some(if index + 1 == self.placed.len() {
+                        Reason::TailChild {
+                            index,
+                            cell,
+                            expected_less,
+                            actual_less: less,
+                            expected_more: 0,
+                            actual_more: more,
+                        }
+                    } else {
+                        Reason::InternalLinks {
+                            index,
+                            cell,
+                            expected_less,
+                            actual_less: less,
+                            expected_more: 0,
+                            actual_more: more,
+                        }
+                    });
+                }
+                index += 1;
+                Ok((less, more))
+            })?;
+        if intact {
+            self.cells_trusted = false;
+            ctx.process
+                .write_buffer(self.chain_parent_slot as usize, &0u32.to_le_bytes())
+                .inspect_err(|_| {
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::DetachWrite,
+                            reason: Reason::WriteAmbiguous {
+                                index: None,
+                                cell: None,
+                                slot: self.chain_parent_slot,
+                                expected_value: Some(0),
+                            },
+                        },
+                    )
+                })?;
+            self.cells_trusted = true;
+            self.spare_cells.append(&mut self.placed);
+        } else {
+            self.cells_trusted = false;
+            if let Some(
+                reason @ Reason::TailChild {
+                    actual_less: child,
+                    actual_more: 0,
+                    ..
+                },
+            ) = mismatch
+            {
+                if child != 0 {
+                    return self.detach_child(ctx, (child, reason));
+                }
+            }
+            let failure = match mismatch {
+                Some(reason) => Failure {
+                    stage: Stage::DetachLinks,
+                    reason,
+                },
+                None => Failure {
+                    stage: Stage::DetachParent,
+                    reason: Reason::ParentMismatch {
+                        expected_parent: self.placed[0],
+                        actual_parent: current,
+                    },
+                },
+            };
+            self.record_quarantine(ctx, failure);
+            return self.require_trusted_cells();
+        }
+        self.chain_parent_slot = 0;
+        Ok(())
+    }
+
+    /// Allocate cells for `wanted` and attach them as a leaf hanging off
+    /// the existing `pObjects` tree, per the engine's own verified
+    /// insertion algorithm (walk `pLess` from the root until a NULL slot,
+    /// attach there — "order is irrelevant, the renderer walks the entire
+    /// tree"; see the map-marker RE notes). Earlier versions of this
+    /// instead swapped `pObjects` itself to point at our new head — the
+    /// single most contended slot in the structure, since the engine's own
+    /// quest/shrine-icon insertion also reads/writes it — which is the
+    /// prime suspect for those markers occasionally going missing. Leaf
+    /// insertion touches only one `pLess` field deep in the tree, the same
+    /// kind of write the engine's own insertion makes, so we're
+    /// indistinguishable from one more native icon rather than a
+    /// structural rewrite of the root every rebuild.
+    fn attach_chain(
+        &mut self,
+        ctx: &D2Context,
+        injector: &D2Injector,
+        layer: u32,
+        wanted: &[MarkerItem],
+    ) -> Result<(), String> {
+        let wanted = if wanted.len() > MAX_MARKER_CELLS {
+            &wanted[..MAX_MARKER_CELLS]
+        } else {
+            wanted
+        };
+        if wanted.is_empty() {
+            return Ok(());
+        }
+
+        let objects_slot = layer + automap_layer::P_OBJECTS as u32;
+
+        // Retain newly allocated cells even if a later allocation/write fails.
+        // Normal rebuilds only grow to the high-water mark, rather than
+        // allocating the entire surviving marker set on every item change.
+        grow_cell_pool(&mut self.spare_cells, wanted.len(), || {
+            injector.new_automap_cell(&ctx.process).inspect_err(|_| {
+                self.cells_trusted = false;
+            })
+        })
+        .inspect_err(|_| {
+            if !self.cells_trusted {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::Allocation,
+                        reason: Reason::AllocationUnknown {
+                            index: self.spare_cells.len(),
+                        },
+                    },
+                );
+            }
+        })?;
+        self.cells_trusted = false;
+        let observed = read_layer(ctx).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::AllocationLayer,
+                    reason: Reason::ReadFailed { slot: None },
+                },
+            )
+        })?;
+        if observed != layer {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::AllocationLayer,
+                    reason: Reason::LayerMismatch {
+                        expected_layer: layer,
+                        actual_layer: observed,
+                    },
+                },
+            );
+            return Err("Automap layer changed during marker allocation".to_string());
+        }
+        for (index, item) in wanted.iter().enumerate() {
+            let cell = self.spare_cells[index];
+            write_cell_fields(ctx, cell, item.cell_x, item.cell_y).inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::PrepareCell,
+                        reason: Reason::PreparationWriteAmbiguous {
+                            index,
+                            cell,
+                            expected_less: 0,
+                            expected_more: 0,
+                        },
+                    },
+                )
+            })?;
+        }
+
+        // Chain our own cells together; the tail stays a real leaf
+        // (pLess = 0, already zeroed by write_cell_fields) rather than
+        // splicing back into the engine's tree.
+        for i in 0..wanted.len().saturating_sub(1) {
+            let cell = self.spare_cells[i];
+            let next = self.spare_cells[i + 1];
+            let pless_slot = cell + automap_cell::P_LESS as u32;
+            ctx.process
+                .write_buffer(pless_slot as usize, &next.to_le_bytes())
+                .inspect_err(|_| {
+                    self.record_quarantine(
+                        ctx,
+                        Failure {
+                            stage: Stage::LinkCell,
+                            reason: Reason::WriteAmbiguous {
+                                index: Some(i),
+                                cell: Some(cell),
+                                slot: pless_slot,
+                                expected_value: Some(next),
+                            },
+                        },
+                    )
+                })?;
+        }
+
+        let attach_slot = find_leaf_slot(ctx, objects_slot).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::FindSlot,
+                    reason: Reason::LeafSearchFailed,
+                },
+            )
+        })?;
+        let head = self.spare_cells[0];
+        let observed = read_layer(ctx).inspect_err(|_| {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationLayer,
+                    reason: Reason::ReadFailed { slot: None },
+                },
+            )
+        })?;
+        if observed != layer {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationLayer,
+                    reason: Reason::LayerMismatch {
+                        expected_layer: layer,
+                        actual_layer: observed,
+                    },
+                },
+            );
+            return Err("Automap layer changed before marker publication".to_string());
+        }
+        let current = ctx
+            .process
+            .read_memory::<u32>(attach_slot as usize)
+            .inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::PublicationSlot,
+                        reason: Reason::ReadFailed {
+                            slot: Some(attach_slot),
+                        },
+                    },
+                )
+            })?;
+        if current != 0 {
+            self.record_quarantine(
+                ctx,
+                Failure {
+                    stage: Stage::PublicationSlot,
+                    reason: Reason::AttachSlotChanged {
+                        slot: attach_slot,
+                        expected_parent: 0,
+                        actual_parent: current,
+                    },
+                },
+            );
+            return Err("Automap attach slot changed before marker publication".to_string());
+        }
+        // A failed write may still have published the pointer. Do not offer
+        // those cells for reuse after an ambiguous publication failure.
+        self.placed = self.spare_cells.drain(..wanted.len()).collect();
+        self.chain_parent_slot = attach_slot;
+        ctx.process
+            .write_buffer(attach_slot as usize, &head.to_le_bytes())
+            .inspect_err(|_| {
+                self.record_quarantine(
+                    ctx,
+                    Failure {
+                        stage: Stage::Publish,
+                        reason: Reason::WriteAmbiguous {
+                            index: None,
+                            cell: Some(head),
+                            slot: attach_slot,
+                            expected_value: Some(head),
+                        },
+                    },
+                )
+            })?;
+        self.cells_trusted = true;
+        self.diagnostics.published_layer = Some(layer);
+        Ok(())
+    }
+}
+
+// These helpers share the production allocation/ownership decisions with
+// tests, without requiring a live game process.
+fn grow_cell_pool(
+    cells: &mut Vec<u32>,
+    needed: usize,
+    mut allocate: impl FnMut() -> Result<u32, String>,
+) -> Result<(), String> {
+    let needed = needed.min(MAX_MARKER_CELLS);
+    while cells.len() < needed {
+        let cell = allocate()?;
+        if cell == 0 {
+            return Err("NewAutomapCell returned NULL".to_string());
+        }
+        cells.push(cell);
+    }
+    // Keep every chain ordered by address. A renderer can still hold the old
+    // detached head while we rewrite cells; retaining this order prevents
+    // transient back-links/cycles as old and new links overlap.
+    cells.sort_unstable();
+    Ok(())
+}
+
+fn chain_is_intact(
+    cells: &[u32],
+    mut read_links: impl FnMut(u32) -> Result<(u32, u32), String>,
+) -> Result<bool, String> {
+    for (i, &cell) in cells.iter().enumerate() {
+        let (less, more) = read_links(cell)?;
+        if less != cells.get(i + 1).copied().unwrap_or(0) || more != 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Whether `current` is far enough from `last` (Manhattan distance in
+/// subtiles) to only be explained by a waypoint/portal/Act transition —
+/// see `AREA_CHANGE_JUMP_SUBTILES`. `last` being `None` (no prior reading
+/// yet, e.g. right after `clear()`) is never treated as a jump. Pure so
+/// it can be unit-tested without a live process.
+fn is_area_change(last: Option<(i32, i32)>, current: (i32, i32)) -> bool {
+    let Some((lx, ly)) = last else {
+        return false;
+    };
+    let (px, py) = current;
+    let jump = (px - lx).abs() + (py - ly).abs();
+    jump >= AREA_CHANGE_JUMP_SUBTILES
+}
+
+/// Reconcile `persistent` against this tick's BFS results. Pure so it can
+/// be unit-tested without a live process. Returns the sorted list of
+/// markers to render (deterministic for stable hashing), capped at
+/// `max_markers` by evicting the oldest-dropped entries first — see
+/// `first_seen`'s doc comment for why `last_seen` can't be used for this.
+fn reconcile_persistent(
+    persistent: &mut HashMap<u32, MarkerItem>,
+    last_seen: &mut HashMap<u32, Instant>,
+    first_seen: &mut HashMap<u32, Instant>,
+    newly_matched: &[MarkerItem],
+    explicitly_unmarked: &HashSet<u32>,
+    bfs_unit_ids: &HashSet<u32>,
+    player_sub: Option<(i32, i32)>,
+    pickup_threshold: i32,
+    ttl: Duration,
+    max_markers: usize,
+    now: Instant,
+) -> Vec<MarkerItem> {
+    persistent.retain(|uid, _| !explicitly_unmarked.contains(uid));
+
+    for m in newly_matched {
+        persistent.insert(m.unit_id, *m);
+        last_seen.insert(m.unit_id, now);
+        first_seen.entry(m.unit_id).or_insert(now);
+    }
+
+    // Close + invisible = picked up.
+    if let Some((px, py)) = player_sub {
+        persistent.retain(|uid, cached| {
+            if bfs_unit_ids.contains(uid) {
+                return true;
+            }
+            let dist = (cached.sub_x - px).abs() + (cached.sub_y - py).abs();
+            dist >= pickup_threshold
+        });
+    }
+
+    persistent.retain(|uid, _| match last_seen.get(uid) {
+        Some(t) => now.duration_since(*t) < ttl,
+        None => false,
+    });
+    last_seen.retain(|uid, _| persistent.contains_key(uid));
+    first_seen.retain(|uid, _| {
+        persistent.contains_key(uid)
+            || (bfs_unit_ids.contains(uid) && !explicitly_unmarked.contains(uid))
+    });
+
+    // Over the marker-cell cap: keep the most recently dropped `max_markers`
+    // entries, evicting the rest. Without this, a persistent set that grows
+    // past the cap (nothing here evicts by count on its own) always loses
+    // the same oldest-unit_id batch to `attach_chain`'s own truncation,
+    // permanently blocking every later drop from ever getting a marker.
+    if persistent.len() > max_markers {
+        let mut by_age: Vec<(u32, Instant)> = first_seen
+            .iter()
+            .filter(|(uid, _)| persistent.contains_key(uid))
+            .map(|(&uid, &stamp)| (uid, stamp))
+            .collect();
+        by_age.sort_unstable_by_key(|&(uid, t)| (t, uid));
+        for &(uid, _) in by_age.iter().take(by_age.len() - max_markers) {
+            persistent.remove(&uid);
+            last_seen.remove(&uid);
+        }
+    }
+
+    let mut out: Vec<MarkerItem> = persistent.values().copied().collect();
+    out.sort_by_key(|m| (m.unit_id, m.cell_x, m.cell_y));
+    out
+}
+
+/// BFS the Room1 graph up to `max_depth` hops collecting every item unit,
+/// returning `(p_unit, sub_x, sub_y)` triples.
+pub fn bfs_item_positions(ctx: &D2Context, max_depth: u32) -> Result<Vec<(u32, i32, i32)>, String> {
+    let mut out = Vec::new();
+
+    let p_player = ctx
+        .process
+        .read_memory::<u32>(ctx.d2_client + d2client::PLAYER_UNIT)?;
+    if p_player == 0 {
+        return Ok(out);
+    }
+    let p_path = ctx
+        .process
+        .read_memory::<u32>(p_player as usize + paths::TO_PATHS_PTR[1])?;
+    if p_path == 0 {
+        return Ok(out);
+    }
+    let p_room1 = ctx
+        .process
+        .read_memory::<u32>(p_path as usize + paths::TO_PATHS_PTR[2])?;
+    if p_room1 == 0 {
+        return Ok(out);
+    }
+
+    let mut visited: HashSet<u32> = HashSet::new();
+    visited.insert(p_room1);
+    let mut frontier: Vec<u32> = vec![p_room1];
+
+    for depth in 0..max_depth {
+        let mut next_frontier: Vec<u32> = Vec::new();
+
+        for &room in &frontier {
+            let mut p_unit = ctx
+                .process
+                .read_memory::<u32>(room as usize + room1::UNIT_FIRST)
+                .unwrap_or(0);
+            // Bound in case of corrupted list.
+            for _ in 0..4096 {
+                if p_unit == 0 {
+                    break;
+                }
+                let utype = ctx
+                    .process
+                    .read_memory::<u32>(p_unit as usize + unit::UNIT_TYPE)
+                    .unwrap_or(u32::MAX);
+                if utype == unit_type::ITEM {
+                    let pp = ctx
+                        .process
+                        .read_memory::<u32>(p_unit as usize + unit::PATH)
+                        .unwrap_or(0);
+                    if pp != 0 {
+                        let sx = ctx
+                            .process
+                            .read_memory::<u32>(pp as usize + item_path::SUB_X)
+                            .unwrap_or(0) as i32;
+                        let sy = ctx
+                            .process
+                            .read_memory::<u32>(pp as usize + item_path::SUB_Y)
+                            .unwrap_or(0) as i32;
+                        if sx > 0 && sy > 0 {
+                            out.push((p_unit, sx, sy));
+                        }
+                    }
+                }
+                // pRoomNext, NOT pListNext — the latter leaves the room.
+                p_unit = ctx
+                    .process
+                    .read_memory::<u32>(p_unit as usize + unit::ROOM_NEXT)
+                    .unwrap_or(0);
+            }
+
+            if depth + 1 < max_depth {
+                let pp_near = ctx
+                    .process
+                    .read_memory::<u32>(room as usize + room1::PP_ROOMS_NEAR)
+                    .unwrap_or(0);
+                let n_near = ctx
+                    .process
+                    .read_memory::<u32>(room as usize + room1::DW_ROOMS_NEAR)
+                    .unwrap_or(0);
+                if pp_near != 0 {
+                    let n = n_near.min(1024);
+                    for i in 0..n {
+                        let near = ctx
+                            .process
+                            .read_memory::<u32>(pp_near as usize + 4 * i as usize)
+                            .unwrap_or(0);
+                        if near != 0 && visited.insert(near) {
+                            next_frontier.push(near);
+                        }
+                    }
+                }
+            }
+        }
+
+        frontier = next_frontier;
+        if frontier.is_empty() {
+            break;
+        }
+    }
+
+    Ok(out)
+}
+
+/// Player's current subtile position, or `None` when out of world.
+pub fn read_player_subtile(ctx: &D2Context) -> Option<(i32, i32)> {
+    let p_player = ctx
+        .process
+        .read_memory::<u32>(ctx.d2_client + d2client::PLAYER_UNIT)
+        .ok()?;
+    if p_player == 0 {
+        return None;
+    }
+    let p_path = ctx
+        .process
+        .read_memory::<u32>(p_player as usize + unit::PATH)
+        .ok()?;
+    if p_path == 0 {
+        return None;
+    }
+    let sx = ctx
+        .process
+        .read_memory::<u16>(p_path as usize + player_path::SUB_X)
+        .ok()? as i32;
+    let sy = ctx
+        .process
+        .read_memory::<u16>(p_path as usize + player_path::SUB_Y)
+        .ok()? as i32;
+    Some((sx, sy))
+}
+
+/// World subtile → automap cell-space. Calibrated per the RE doc; X fits
+/// exactly, Y has ≤5 units of rounding residual.
+pub fn sub_to_cell(sub_x: i32, sub_y: i32) -> (i32, i32) {
+    let cx = (((sub_x - sub_y) as f64) * 8.0 / 5.0).round() as i32;
+    let cy = (((sub_x + sub_y) as f64) * 4.0 / 5.0).round() as i32;
+    (cx, cy)
+}
+
+// ---------- internal helpers ----------
+
+/// Walk `pLess` from `root_slot` (either `layer + P_OBJECTS` itself, or
+/// some existing cell's `pLess` field) until finding a NULL child slot,
+/// returning that slot's address — matches the engine's own documented
+/// insertion algorithm exactly, so our cells land wherever the engine's
+/// own icon insertion would have put a new leaf. Bounded to guard against
+/// a corrupted/cyclic tree; matches the depth bound style used by the BFS
+/// scanner elsewhere in this module.
+fn find_leaf_slot(ctx: &D2Context, root_slot: u32) -> Result<u32, String> {
+    let mut slot = root_slot;
+    for _ in 0..4096 {
+        let node = ctx.process.read_memory::<u32>(slot as usize)?;
+        if node == 0 {
+            return Ok(slot);
+        }
+        slot = node + automap_cell::P_LESS as u32;
+    }
+    Err("find_leaf_slot: pObjects tree exceeds depth bound (corrupted?)".to_string())
+}
+
+fn read_layer(ctx: &D2Context) -> Result<u32, String> {
+    ctx.process
+        .read_memory::<u32>(ctx.d2_client + d2client::AUTOMAP_LAYER)
+}
+
+fn write_cell_fields(ctx: &D2Context, cell: u32, cell_x: i32, cell_y: i32) -> Result<(), String> {
+    let mut buf = [0u8; automap_cell::SIZE];
+    buf[automap_cell::F_SAVED..automap_cell::F_SAVED + 4].copy_from_slice(&1u32.to_le_bytes());
+    buf[automap_cell::N_CELL_NO..automap_cell::N_CELL_NO + 2]
+        .copy_from_slice(&automap_cell::CROSS_CELL_NO.to_le_bytes());
+    buf[automap_cell::X_PIXEL..automap_cell::X_PIXEL + 2]
+        .copy_from_slice(&(cell_x as i16 as u16).to_le_bytes());
+    buf[automap_cell::Y_PIXEL..automap_cell::Y_PIXEL + 2]
+        .copy_from_slice(&(cell_y as i16 as u16).to_le_bytes());
+    // wWeight / pLess / pMore already zero in buf.
+    ctx.process.write_buffer(cell as usize, &buf)
+}
+
+fn hash_markers(items: &[MarkerItem]) -> u64 {
+    // Sort before hashing so iteration-order jitter doesn't trip the hash-gate.
+    let mut v: Vec<MarkerItem> = items.to_vec();
+    v.sort_by_key(|m| (m.unit_id, m.cell_x, m.cell_y));
+    let mut h = DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish()
+}
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+pub(super) mod test_support;

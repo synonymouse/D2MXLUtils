@@ -20,10 +20,10 @@ Markers are no longer in the same synchronous path as notification emission. `ti
 
 Relevant paths:
 
-- Item scan and notifications: `src-tauri/src/notifier.rs`, `src-tauri/src/main.rs`
+- Item scan and notifications: `src-tauri/src/notifier/discovery.rs`, `src-tauri/src/app/scanner_runtime/worker.rs` (attach/bootstrap, item/marker coordination and ordered shutdown); neighboring `mod.rs` keeps discovery/auto-start and `readouts.rs` keeps complete readout/DPS sampling operations over worker-owned counters/last-good values. `src-tauri/src/main.rs` retains composition and the close/join watchdog.
 - Filter matching: `src-tauri/src/rules/matching.rs`, `src-tauri/src/rules/mod.rs`
-- Marker scanning and automap writes: `src-tauri/src/marker_scanner.rs`, `src-tauri/src/map_marker.rs`
-- Hook masks for show/hide/inspected labels: `src-tauri/src/loot_filter_hook.rs`
+- Marker feature entry: `src-tauri/src/map_markers/mod.rs`; private scanning and automap writes: `src-tauri/src/map_markers/scanner.rs`, `src-tauri/src/map_markers/manager/mod.rs`. Commit-specific source references below retain their historical paths.
+- Hook masks for show/hide/inspected labels: `src-tauri/src/notifier/visibility/hook/mod.rs`; bit accounting: `src-tauri/src/notifier/visibility/tracker/mod.rs`. Historical hook references below retain their original paths.
 - Overlay notification and sound playback: `src/views/OverlayWindow.svelte`, `src/lib/sound-player.ts`
 
 Even though marker work is split out, it can still consume CPU through BFS, contend on the shared injector mutex, and mutate the live automap object tree. After `3394422`, marker scanning no longer repeats heavy filter matching for marker candidates; it consumes cached item-scan decisions keyed by filter generation. After `f634595`, marker BFS also publishes raw item candidates into shared scanner state, and the item scanner consumes verified BFS-only candidates through the normal enrichment/filter/notification path.

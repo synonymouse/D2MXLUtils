@@ -6,7 +6,7 @@
 //!   2. Add a `mod` declaration and a call below.
 //!
 //! Each migration must be idempotent (gate on the new field's
-//! presence). After `migrate()` returns true, `settings.rs` re-saves
+//! presence). After `migrate()` returns true, `settings/mod.rs` re-saves
 //! to disk, so legacy keys disappear on the next load.
 
 mod v1_24_loot_history_alt_n;

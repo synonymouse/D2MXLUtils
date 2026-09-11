@@ -1,4 +1,4 @@
-use crate::map_marker::tests::native::Fixture;
+use crate::map_markers::test_support::Fixture;
 use crate::offsets::{body_loc, d2common, inventory, inventory_grid, items_txt, stat_list, unit};
 
 pub const PLAYER: usize = 0x100;

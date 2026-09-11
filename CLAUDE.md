@@ -46,32 +46,35 @@ git checkout -b <type>/<short-description>
 
 ### Rust Backend (`src-tauri/src/`)
 
-The backend handles all low-level Windows operations:
+The backend combines Windows/Linux native operations with portable feature logic:
 
-- **`main.rs`** — Tauri app setup, commands, scanner lifecycle, overlay window management, UAC elevation handling
-- **`process.rs`** — D2 process attachment via WinAPI (`OpenProcess`, `ReadProcessMemory`)
-- **`injection.rs`** — Remote thread injection into D2 process to call internal game functions (e.g. `GetStringById` to resolve localized names)
-- **`notifier.rs`** — `DropScanner` that scans item unit lists and emits `item-drop` events; also builds `class_cache` over `items.txt` which backs both drop notifications and the editor autocomplete dictionary (`items_dictionary_snapshot`)
-- **`scanner_state.rs`** — State shared by the items and marker scanner threads (`injector` and `recent_events` locks must never be held simultaneously)
-- **`marker_scanner.rs`** / **`map_marker.rs`** — Automap markers for loot-filter matches: BFS over the room graph, reconciles the marker chain, allocates `AutomapCell`s via the injector
-- **`dps_meter.rs`** / **`dps_hook/`** — Pure-data DPS accumulator fed by a trampoline hook on HP writes (`dps_hook/trampoline.rs`, `ring.rs`)
-- **`hovered_item.rs`** — Captures the currently hovered in-game item (D2Sigma tooltip hook) for targeted MXL item search
-- **`mxl_item_api.rs`** — Backend for the in-game Median XL item database search overlay (calls the public item API, normalizes/caches/rate-limits)
-- **`loot_history.rs`** — Session-only loot history: items that fired a `notify` rule, with pickup state resolved against the local player's inventory
-- **`sounds.rs`** — Drop-sound file management (`app_data_dir/sounds/slot-{N}.{ext}`)
-- **`weapon_families.rs`** — On-disk catalog of every weapon record in `items.txt` with family chain and WSM, built once per game attach (backs the Breakpoints tab)
-- **`unique_stats_db.rs`** / **`unique_stats_db_sync.rs`** — Local DB of unique/set item stat-roll templates; built offline by `scripts/generate-unique-stats-db.mjs` and kept in sync with a maintainer-published copy on GitHub rather than every client crawling the third-party API
-- **`updater.rs`** — Auto-updater: checks GitHub releases, downloads the platform asset, atomically replaces the running executable, restarts
-- **`keystroke_sim.rs`** — Cross-platform synthetic keystroke injection for the "autofill game create" hotkey
-- **`rules/`** — Loot filter rule engine: DSL parsing (`dsl.rs`), rule matching (`matching.rs`), hover explanations (`explain.rs`)
-- **`d2types.rs`** — `#[repr(C)]` structs for D2 memory structures (`UnitAny`, `ItemData`, etc.)
-- **`offsets.rs`** — D2 memory offsets (DLL bases, unit lists, item data pointers, `items.txt` layout)
-- **`logger.rs`** — File logger writing to `d2mxlutils.log` next to the exe
-- **`settings.rs`** — App settings persistence
-- **`profiles.rs`** — Loot filter profile management
-- **`items_cache.rs`** — On-disk mirror of the items-dictionary snapshot (`items-cache.json` in `app_data_dir`) so editor autocomplete works in sessions without D2 attached
-- **`hotkeys.rs`** — Global hotkey handling
-- **`migrations/`** — Versioned migrations for settings/state shape changes (e.g. widget positions, loot-history alt-nemesis)
+- **`main.rs` / `app/`** — Main owns Tauri composition, AppState, initial filter loading and the close/join watchdog. App holds window/edit controls, window policy/tests, platform preparation and application commands. Private `scanner_runtime/` keeps discovery/auto-start at its entry, attach/coordination/shutdown in `worker.rs`, and borrowed readout/DPS sampling in `readouts.rs`.
+- **`notifier/`** — DropScanner owns item discovery, processing, pickup and catalog/event preparation; private dictionary mirroring sits beside its producer. Private `visibility/` co-locates controls/reveal, the cohesive native `hook/` and pure `tracker/`; their internal exports reach only notifier. The dictionary remains loadable without a game.
+- **`map_markers/`** — Private `scanner.rs` coordinates BFS; `manager/` remains the sole marker-chain owner with child-detach/diagnostics and nearby tests. Windows fixture consumers use `map_markers::test_support::{Fixture,calls}`. Logical/native manager groups deliberately stay together.
+- **`dps/` / `item_search/`** — DPS co-locates accumulator, native hook/ring/trampoline and reset watcher. Item search co-locates private API state/transport/response/index, cohesive tooltip `capture/`, and search watcher; manual API queries are independent of capture. Keep portable entries/tests outside native enclosing gates.
+- **`loot_history/`** — Pilot pattern: entry DTOs/cap/timestamp, private indexed state and complete transitions in `history.rs`, neighboring interface tests; complete toggle watcher in `hotkey.rs`.
+- **`breakpoints/` / `damage_stats/` / `stats_panel/`** — Distinct readouts with neighboring Windows acquisition tests. Breakpoints contains weapon helpers (also consumed by the other readouts), weapon-family catalog/cache and speed-calculator loader/cache. Character-sheet aggregate/scaling/recovery stays over private inventory/base reads; Damage stays cohesive.
+- **`unit_stats_reader/` / `stat_telemetry/`** — Shared acquisition keeps private snapshot/adjustment, production-used `fallback`, and nearby tests/fixtures. Telemetry keeps counters, lifecycle, rendering and memory sampling with nearby tests. Readouts/notifier retain acquisition/fallback decisions; injector records attempts and runtime samples telemetry.
+- **`process/` / `injection/`** — Shared process/context, platform I/O, X11 and ptrace serve scanners/readouts/hooks/input; injector keeps resource fields, platform execution, game calls and ordered installation. Windows test interception/allocator support retain their existing seams; seven Linux live probes in `process/live_probe.rs` remain ignored.
+- **`hotkeys/` / `game_create/`** — Shared input owns config and chord/focus predicates over private platform mechanics. Features own complete watchers/state/commands; game-create owns menu-gated autofill and its sole-use `input.rs`.
+- **`tick_clock.rs` / `remote_io.rs` / `scanner_state.rs`** — DPS and hover share clock and borrowed process I/O; hook allocation/protection stays with each owner. Scanner state joins notifier/markers and DPS/search/annotation; never hold `injector` and `recent_events` locks simultaneously.
+- **`rules/`** — Entry types/compiled state, private decisions and DSL parsing/attributes/tokens/validation; cohesive matching/explanation files. Neighboring tests retain their original logical owners, including explicit relative test paths.
+- **`settings/` / `profiles/` / `migrations/`** — Settings persistence/commands over private schema/defaults; profile workflow over exact private starter text; ordered application persistence migrations with nearby widget-position tests.
+- **`unique_stats_db/` / `updater/` / `sounds/`** — Separate workflows: annotation plus private storage/sync (download does not refresh the attached scanner DB); updater lifecycle plus release/install/progress; compact sound files/playback with neighboring tests where they exist.
+- **`d2types/` / `offsets.rs` / `logger.rs`** — Shared layouts/data catalog with nearby layout test, searchable offsets, and file logging with caller tracking.
+
+#### Backend organization
+
+- **Business-feature entry:** group related owners behind one `<feature>/mod.rs` with private children; remove obsolete physical entries. Expose required symbols explicitly and update internal callers when grouping. Truly shared infrastructure may remain a separate module.
+- **Private implementation:** keep focused children private and grant only the narrow internal access needed. Keep related state and invariants with their existing owner.
+- **Cohesion:** split by responsibility, never arbitrary file size. Compact cohesive modules may stay flat; when only tests need another file, production may remain together in the entry.
+- **Nearby tests:** place existing tests and fixture builders in separate neighboring files. Declare them beneath the owner when private access is needed instead of widening production visibility.
+- **Interface seam:** test through the existing useful interface and preserve scenarios, assertions, names and target/ignore gates. Add tests only for a concrete uncovered invariant; file moves do not justify automatic test growth.
+- **Locality, leverage, depth:** co-location makes related behavior easier to find; leverage means one change reaches its consumers; depth means an interface hides useful knowledge. A file split alone improves locality, not necessarily depth.
+- **Deletion test:** before adding an abstraction, ask whether deleting it loses hidden knowledge or merely removes forwarding. Retain abstractions that hide useful complexity.
+- **Adapter seams:** one adapter is a hypothetical seam; two actually used adapters justify a real one. Introduce an adapter interface only for demonstrated needs.
+- **Relocation contracts:** preserve serialization, command/event paths, cfg gates, lock/drop scopes and operation order. Check source-relative assets, generated command registration and logger call-site tracking when moving their owners.
+- **Verification:** capture baseline discovery/results, compare names on the same target after moving tests, run focused checks and a connected Windows-target build, then the full backend suite per feature stage. Record platform gaps explicitly.
 
 ### Svelte Frontend (`src/`)
 
