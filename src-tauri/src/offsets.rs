@@ -141,8 +141,14 @@ pub mod d2sigma {
     /// embedded data-pointer immediates that shifted because `.rdata`
     /// shrank in this build) — only its position in `.text` moved, from
     /// `0xAE020` to `0xB4F80`.
-    pub const TOOLTIP_ITEM_HOOK: usize = 0xB4F80;
-    pub const TOOLTIP_ITEM_HOOK_RESUME: usize = 0xB4F85;
+    ///
+    /// Relocated again by a later MXL patch: diffing the D2Sigma.dll
+    /// shipping alongside this build against the previous `0xB4F80` copy
+    /// found the function 0x110 bytes earlier, at `0xB4E70` (378/400 bytes
+    /// match; remaining mismatches are again embedded pointer immediates).
+    /// The 5-byte prologue patched here is unchanged.
+    pub const TOOLTIP_ITEM_HOOK: usize = 0xB4E70;
+    pub const TOOLTIP_ITEM_HOOK_RESUME: usize = 0xB4E75;
     pub const TOOLTIP_ITEM_HOOK_PATCH_SIZE: usize = 5;
     pub const TOOLTIP_ITEM_HOOK_PROLOGUE: [u8; TOOLTIP_ITEM_HOOK_PATCH_SIZE] =
         [0x55, 0x8D, 0x6C, 0x24, 0xD8];
@@ -153,7 +159,7 @@ pub mod d2sigma {
 
     /// Absolute low-memory range where RE found the native UTF-16 tooltip text
     /// buffer. It can remain stale on empty hover, so do not use it as the
-    /// primary hovered-item identity source; use the D2Sigma+AE020 pUnit hook.
+    /// primary hovered-item identity source; use the native tooltip pUnit hook.
     pub const TOOLTIP_TEXT_BUFFER_START: usize = 0x00194080;
     pub const TOOLTIP_TEXT_BUFFER_END: usize = 0x00194280;
 }

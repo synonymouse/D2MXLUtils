@@ -198,7 +198,10 @@ pub(super) fn start_scanner_internal(
                     log_error(&format!("DPS hook install failed: {}", e));
                 }
                 #[cfg(any(target_os = "windows", target_os = "linux"))]
-                if let Err(e) = shared_state.hovered_item_hook.install(&shared_state.ctx) {
+                if let Err(e) = shared_state.hovered_item_hook.install(
+                    &shared_state.ctx,
+                    verbose_filter_logging.load(Ordering::SeqCst),
+                ) {
                     log_error(&format!("Hovered-item hook install failed: {}", e));
                 }
 

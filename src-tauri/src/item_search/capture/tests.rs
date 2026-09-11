@@ -38,6 +38,48 @@ fn freshness_handles_get_tick_count_wrap() {
     assert!(is_fresh(20, u32::MAX - 10, 40));
 }
 
+#[test]
+fn tooltip_hook_resume_follows_patched_prologue() {
+    let (target, resume) = tooltip_hook_addresses(0x1000_0000);
+
+    assert_eq!(
+        resume - target,
+        crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PATCH_SIZE
+    );
+}
+
+#[test]
+fn tooltip_hook_signature_starts_with_patched_prologue() {
+    let expected = crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PROLOGUE.map(Some);
+
+    assert_eq!(
+        &TOOLTIP_ITEM_HOOK_SIGNATURE[..expected.len()],
+        expected.as_slice()
+    );
+}
+
+#[test]
+fn tooltip_hook_signature_allows_relocated_data_pointer() {
+    let bytes = TOOLTIP_ITEM_HOOK_SIGNATURE
+        .iter()
+        .enumerate()
+        .map(|(index, byte)| byte.unwrap_or(index as u8))
+        .collect::<Vec<_>>();
+
+    assert!(tooltip_signature_matches(&bytes));
+}
+
+#[test]
+fn tooltip_hook_signature_rejects_changed_function_body() {
+    let mut bytes = TOOLTIP_ITEM_HOOK_SIGNATURE
+        .iter()
+        .map(|byte| byte.unwrap_or(0xAA))
+        .collect::<Vec<_>>();
+    bytes[TOOLTIP_ITEM_HOOK_SIGNATURE.len() - 1] ^= 0xFF;
+
+    assert!(!tooltip_signature_matches(&bytes));
+}
+
 #[cfg(target_os = "windows")]
 #[test]
 fn stable_snapshot_accepts_matching_even_sequence() {

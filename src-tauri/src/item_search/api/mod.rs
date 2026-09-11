@@ -6,6 +6,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+use crate::logger::info as log_info;
+
 mod index;
 mod response;
 mod state;
@@ -84,6 +86,21 @@ impl MxlItemSearchMode {
     }
 }
 
+fn result_kind(result: &MxlItemSearchResult) -> &'static str {
+    match result {
+        MxlItemSearchResult::Results { entries, .. } => {
+            if entries.is_empty() {
+                "results(empty)"
+            } else {
+                "results"
+            }
+        }
+        MxlItemSearchResult::NotFound { .. } => "notFound",
+        MxlItemSearchResult::RateLimited { .. } => "rateLimited",
+        MxlItemSearchResult::Error { .. } => "error",
+    }
+}
+
 #[tauri::command]
 pub fn search_mxl_items(
     query: String,
@@ -91,10 +108,25 @@ pub fn search_mxl_items(
     state: tauri::State<MxlItemApiState>,
 ) -> MxlItemSearchResult {
     let now = Instant::now();
-    match MxlItemSearchMode::from_optional(mode) {
+    let search_mode = MxlItemSearchMode::from_optional(mode);
+    if state.verbose() {
+        log_info(&format!(
+            "[ItemSearch] search_mxl_items query='{}' mode={:?}",
+            query, search_mode
+        ));
+    }
+    let result = match search_mode {
         MxlItemSearchMode::Detail => state.cached_or_fetch(&query, now),
         MxlItemSearchMode::Index => state.search_index(&query, now),
+    };
+    if state.verbose() {
+        log_info(&format!(
+            "[ItemSearch] search_mxl_items result for '{}': {}",
+            query,
+            result_kind(&result)
+        ));
     }
+    result
 }
 
 #[cfg(test)]

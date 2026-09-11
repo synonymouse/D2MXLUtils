@@ -20,10 +20,59 @@ use windows::Win32::System::Memory::{
     VirtualAllocEx, VirtualFreeEx, VirtualProtectEx, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
     PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS,
 };
-#[cfg(target_os = "windows")]
-use windows::Win32::System::SystemInformation::GetTickCount;
-
 pub(crate) const HOVERED_ITEM_FRESH_MS: u32 = 750;
+
+/// Mostly-invariant prefix of the native tooltip builder. The embedded
+/// data pointer at bytes 11-14 relocates with `D2Sigma.dll` and is wildcarded.
+const TOOLTIP_ITEM_HOOK_SIGNATURE: &[Option<u8>] = &[
+    Some(0x55),
+    Some(0x8D),
+    Some(0x6C),
+    Some(0x24),
+    Some(0xD8),
+    Some(0x83),
+    Some(0xEC),
+    Some(0x28),
+    Some(0x6A),
+    Some(0xFF),
+    Some(0x68),
+    None,
+    None,
+    None,
+    None,
+    Some(0x64),
+    Some(0xA1),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x50),
+    Some(0x64),
+    Some(0x89),
+    Some(0x25),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x81),
+    Some(0xEC),
+    Some(0x98),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x53),
+    Some(0x56),
+    Some(0x57),
+    Some(0x8B),
+    Some(0xD9),
+    Some(0xC7),
+    Some(0x45),
+    Some(0x24),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+    Some(0x00),
+];
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 pub(crate) struct HoveredItemHook {
@@ -96,6 +145,21 @@ impl TooltipHookBlob {
     }
 }
 
+fn tooltip_hook_addresses(d2sigma_base: usize) -> (usize, usize) {
+    (
+        d2sigma_base + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK,
+        d2sigma_base + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_RESUME,
+    )
+}
+
+fn tooltip_signature_matches(bytes: &[u8]) -> bool {
+    bytes.len() == TOOLTIP_ITEM_HOOK_SIGNATURE.len()
+        && TOOLTIP_ITEM_HOOK_SIGNATURE
+            .iter()
+            .zip(bytes)
+            .all(|(expected, actual)| expected.map_or(true, |byte| byte == *actual))
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn build_tooltip_hook_blob(
     blob_base: usize,
@@ -164,7 +228,11 @@ impl HoveredItemHook {
         }
     }
 
-    pub(crate) fn install(&self, ctx: &crate::process::D2Context) -> Result<(), String> {
+    pub(crate) fn install(
+        &self,
+        ctx: &crate::process::D2Context,
+        verbose: bool,
+    ) -> Result<(), String> {
         if ctx.d2_sigma == 0 {
             return Err("D2Sigma.dll not found".to_string());
         }
@@ -178,8 +246,7 @@ impl HoveredItemHook {
         }
 
         let get_tick_count_addr = get_tick_count_addr(&ctx.process)?;
-        let target = ctx.d2_sigma + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK;
-        let resume = ctx.d2_sigma + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_RESUME;
+        let (target, resume) = tooltip_hook_addresses(ctx.d2_sigma);
 
         let mut saved = [0u8; crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PATCH_SIZE];
         ctx.process
@@ -187,7 +254,21 @@ impl HoveredItemHook {
             .map_err(|e| format!("read tooltip hook prologue: {}", e))?;
 
         match classify_tooltip_prologue(target, saved) {
-            PrologueState::Original => {}
+            PrologueState::Original => {
+                let mut signature_bytes = vec![0u8; TOOLTIP_ITEM_HOOK_SIGNATURE.len()];
+                ctx.process
+                    .read_buffer_into(target, &mut signature_bytes)
+                    .map_err(|e| format!("read tooltip hook signature: {}", e))?;
+                if !tooltip_signature_matches(&signature_bytes) {
+                    if verbose {
+                        log_relocation_diagnostic(ctx);
+                    }
+                    return Err(
+                        "tooltip hook signature mismatch — D2Sigma.dll may have been updated; RVA needs reverification"
+                            .to_string(),
+                    );
+                }
+            }
             PrologueState::ExistingHook { trampoline_addr } => {
                 let blob = build_tooltip_hook_blob(trampoline_addr, resume, get_tick_count_addr);
                 let mut remote_prefix = vec![0u8; blob.fields_offset];
@@ -225,6 +306,9 @@ impl HoveredItemHook {
                 return Ok(());
             }
             PrologueState::Mismatch(actual) => {
+                if verbose {
+                    log_relocation_diagnostic(ctx);
+                }
                 return Err(format!(
                     "tooltip hook prologue mismatch: expected {:02X?}, got {:02X?} — D2Sigma.dll may have been updated; RVA needs reverification",
                     crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PROLOGUE,
@@ -341,7 +425,7 @@ impl HoveredItemHook {
             None => return Ok(()),
         };
 
-        let target = state.d2sigma_base + crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK;
+        let (target, _) = tooltip_hook_addresses(state.d2sigma_base);
         #[cfg(target_os = "windows")]
         let restore_result =
             write_remote_with_page_protection(state.process, target, &state.saved_bytes);
@@ -578,6 +662,50 @@ fn build_e9_patch(target_addr: usize, trampoline_addr: usize) -> [u8; 5] {
     patch
 }
 
+/// Diagnostic-only: on a prologue mismatch, scan the rest of `D2Sigma.dll`
+/// for the tooltip-builder function's mostly-invariant byte signature and log where it
+/// actually lives now. This does not install the hook there — it only
+/// saves a manual binary diff the next time MXL relocates the function
+/// again, by pointing straight at the new offset to put in `offsets.rs`.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn log_relocation_diagnostic(ctx: &crate::process::D2Context) {
+    if ctx.d2_sigma_size == 0 {
+        crate::logger::info(
+            "[ItemSearch] tooltip hook signature scan skipped: D2Sigma.dll size unknown",
+        );
+        return;
+    }
+
+    let pattern = TOOLTIP_ITEM_HOOK_SIGNATURE;
+    let Some(hit) =
+        ctx.process
+            .scan_pattern_wildcard(ctx.d2_sigma, ctx.d2_sigma_size, pattern, ctx.d2_sigma)
+    else {
+        crate::logger::info(
+            "[ItemSearch] tooltip hook signature scan found no match — the function body itself may have changed, not just relocated",
+        );
+        return;
+    };
+
+    let ambiguous = ctx
+        .process
+        .scan_pattern_wildcard(ctx.d2_sigma, ctx.d2_sigma_size, pattern, hit + 1)
+        .is_some();
+    let rva = hit - ctx.d2_sigma;
+    if ambiguous {
+        crate::logger::info(&format!(
+            "[ItemSearch] tooltip hook signature scan found multiple matches (first at D2Sigma+0x{:X}) — too ambiguous to trust, manual RE still needed",
+            rva
+        ));
+    } else {
+        crate::logger::info(&format!(
+            "[ItemSearch] tooltip hook signature scan found the relocated function at D2Sigma+0x{:X} (offsets.rs currently has TOOLTIP_ITEM_HOOK = 0x{:X}) — update the constant",
+            rva,
+            crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK
+        ));
+    }
+}
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn classify_tooltip_prologue(target_addr: usize, prologue: [u8; 5]) -> PrologueState {
     if prologue == crate::offsets::d2sigma::TOOLTIP_ITEM_HOOK_PROLOGUE {
@@ -631,12 +759,25 @@ fn valid_hovered_item_location(
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-pub(crate) fn read_hovered_item_name(
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub(super) fn read_hovered_item_name(
     shared: &crate::scanner_state::SharedScannerState,
+    verbose: bool,
 ) -> Result<Option<String>, String> {
+    macro_rules! vlog {
+        ($($arg:tt)*) => {
+            if verbose {
+                crate::logger::info(&format!($($arg)*));
+            }
+        };
+    }
+
     let snapshot = match shared.hovered_item_hook.snapshot()? {
         Some(snapshot) => snapshot,
-        None => return Ok(None),
+        None => {
+            vlog!("[ItemSearch] hovered-item hook has no snapshot (not installed or never fired)");
+            return Ok(None);
+        }
     };
 
     // Same time base the trampoline embeds (`GetTickCount`, remote on
@@ -644,13 +785,26 @@ pub(crate) fn read_hovered_item_name(
     // comment for why this needs no ptrace round-trip on Linux.
     let now_ms = crate::tick_clock::now_ms();
     if !is_fresh(now_ms, snapshot.last_seen_ms, HOVERED_ITEM_FRESH_MS) {
+        vlog!(
+            "[ItemSearch] hovered-item snapshot stale: now_ms={} last_seen_ms={} age_ms={} max_age_ms={}",
+            now_ms,
+            snapshot.last_seen_ms,
+            now_ms.wrapping_sub(snapshot.last_seen_ms),
+            HOVERED_ITEM_FRESH_MS
+        );
         return Ok(None);
     }
 
     let candidates = hovered_item_candidates(snapshot);
     if candidates.is_empty() {
+        vlog!("[ItemSearch] hovered-item snapshot fresh but all candidate registers/args are zero");
         return Ok(None);
     }
+    vlog!(
+        "[ItemSearch] hovered-item snapshot fresh, {} candidate(s): {:?}",
+        candidates.len(),
+        candidates
+    );
 
     let Some(player_unit) = shared
         .ctx
@@ -659,6 +813,7 @@ pub(crate) fn read_hovered_item_name(
         .ok()
         .filter(|p| *p != 0)
     else {
+        vlog!("[ItemSearch] failed to read player unit pointer");
         return Ok(None);
     };
     let Some(player_inventory) = shared
@@ -668,25 +823,50 @@ pub(crate) fn read_hovered_item_name(
         .ok()
         .filter(|p| *p != 0)
     else {
+        vlog!("[ItemSearch] failed to read player inventory pointer");
         return Ok(None);
     };
 
-    for (_, candidate) in candidates {
+    for (label, candidate) in candidates {
         let p_unit = candidate as usize;
         let read_u32 = |offset: usize| shared.ctx.process.read_memory::<u32>(p_unit + offset).ok();
         let Some(unit_type) = read_u32(crate::offsets::unit::UNIT_TYPE) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read unit_type",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(class_id) = read_u32(crate::offsets::unit::CLASS) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read class_id",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(mode) = read_u32(crate::offsets::unit::MODE) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read mode",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(p_unit_data) = read_u32(crate::offsets::unit::UNIT_DATA) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read unit_data pointer",
+                label,
+                candidate
+            );
             continue;
         };
         if !valid_hovered_item_unit(unit_type, class_id, mode, p_unit_data) {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): rejected as unit (unit_type={} class_id=0x{:X} mode={} unit_data=0x{:08X})",
+                label, candidate, unit_type, class_id, mode, p_unit_data
+            );
             continue;
         }
 
@@ -707,12 +887,27 @@ pub(crate) fn read_hovered_item_name(
         };
         let Some(owner_inventory) = read_item_u32(crate::offsets::item_data::OWNER_INVENTORY)
         else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read owner_inventory",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(game_location) = read_item_u8(crate::offsets::item_data::GAME_LOCATION) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read game_location",
+                label,
+                candidate
+            );
             continue;
         };
         let Some(body_location) = read_item_u8(crate::offsets::item_data::BODY_LOCATION) else {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): failed to read body_location",
+                label,
+                candidate
+            );
             continue;
         };
         if !valid_hovered_item_location(
@@ -721,9 +916,18 @@ pub(crate) fn read_hovered_item_name(
             game_location,
             body_location,
         ) {
+            vlog!(
+                "[ItemSearch] candidate {} (0x{:08X}): rejected as location (owner_inventory=0x{:08X} player_inventory=0x{:08X} game_location={} body_location={})",
+                label, candidate, owner_inventory, player_inventory, game_location, body_location
+            );
             continue;
         }
 
+        vlog!(
+            "[ItemSearch] candidate {} (0x{:08X}) accepted, resolving item name",
+            label,
+            candidate
+        );
         let injector = shared
             .injector
             .lock()
@@ -736,9 +940,16 @@ pub(crate) fn read_hovered_item_name(
                     candidate, p_unit_data, e
                 )
             })?;
-        return Ok(display_name_from_raw_item_name(&raw));
+        let resolved = display_name_from_raw_item_name(&raw);
+        vlog!(
+            "[ItemSearch] resolved hovered item raw='{}' display={:?}",
+            raw.replace('\n', "\\n"),
+            resolved
+        );
+        return Ok(resolved);
     }
 
+    vlog!("[ItemSearch] no candidate matched a valid hovered item unit/location");
     Ok(None)
 }
 
