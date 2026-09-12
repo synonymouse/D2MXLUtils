@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.27.8 — 2026-09-12
+
+### Bug Fixes
+
+- Fix(notifier): include activation frequency stat (c1b65e9)
+
 ## v1.27.7 — 2026-09-11
 
 ### Bug Fixes
