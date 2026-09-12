@@ -4,7 +4,8 @@ use super::{strip_color_codes, DropScanner, ItemDropEvent};
 use crate::d2types::ScannedItem;
 use crate::injection::D2Injector;
 use crate::logger::error as log_error;
-use crate::offsets::{d2common, item_data, item_quality, items_txt};
+use crate::offsets::{d2common, item_data, item_quality, items_txt, stat_list};
+use crate::unit_stats_reader::{StatReadResult, UnitStatsReader};
 
 impl DropScanner {
     pub(super) fn enrich_event_stats(&mut self, event: &mut ItemDropEvent, p_unit: u32) {
@@ -13,6 +14,14 @@ impl DropScanner {
         }
 
         self.debug_get_item_stats_calls += 1;
+
+        let activation_frequency =
+            match UnitStatsReader::new(&self.state.ctx.process, self.state.ctx.d2_common, p_unit)
+                .read_stat(u32::from(stat_list::STAT_ACTIVATION_FREQUENCY), 0)
+            {
+                Ok(StatReadResult::Found(value)) if value != 0 => Some(value),
+                _ => None,
+            };
 
         let injector = self.state.injector.lock().unwrap();
         match injector.get_item_stats(&self.state.ctx.process, p_unit) {
@@ -45,6 +54,22 @@ impl DropScanner {
                 event.stats = Self::format_event_stats(event.sockets, text);
                 event.runtime_stats_loaded = true;
             }
+        }
+
+        if let Some(value) = activation_frequency {
+            let already_formatted = event
+                .stats
+                .lines()
+                .any(|line| line.starts_with("Activation Frequency "));
+            if !already_formatted {
+                if !event.stats.is_empty() {
+                    event.stats.push('\n');
+                }
+                event
+                    .stats
+                    .push_str(&format!("Activation Frequency {value:+}%"));
+            }
+            event.runtime_stats_loaded = true;
         }
     }
 

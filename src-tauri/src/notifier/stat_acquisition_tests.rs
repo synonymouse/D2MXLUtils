@@ -1,6 +1,7 @@
 use super::*;
 use crate::map_markers::test_support::Fixture;
-use crate::offsets::item_flags;
+use crate::offsets::{d2common, data_tables, item_flags};
+use crate::rules::{MatchContext, Rule};
 use crate::stat_telemetry::{InjectorCall, StatConsumer, TelemetrySnapshot};
 
 fn scanner_fixture(socketed: bool) -> (Fixture, DropScanner) {
@@ -16,8 +17,10 @@ fn scanner_fixture(socketed: bool) -> (Fixture, DropScanner) {
         0xa000 + item_data::FLAGS,
         if socketed { item_flags::SOCKETED } else { 0 },
     );
+    let mut context = fixture.context();
+    context.d2_common = context.d2_client;
     let state = Arc::new(SharedScannerState::new(
-        fixture.context(),
+        context,
         fixture.injector(),
         Default::default(),
     ));
@@ -52,8 +55,50 @@ fn seed_stat(fixture: &Fixture, unit_offset: usize, value: Option<i32>) {
     }
 }
 
+fn seed_activation_frequency(fixture: &Fixture, value: i32) {
+    const DESCRIPTOR: usize = 0xC000;
+    const RECORDS: usize = 0xD000;
+    const DATA_TABLES: usize = 0xE000;
+    const ITEM_STAT_COST: usize = 0xF000;
+
+    fixture.seed(
+        0x5000 + stat_list::UNIT_TO_STATS_LIST,
+        fixture.address(DESCRIPTOR),
+    );
+    fixture.seed(DESCRIPTOR + stat_list::SL_FLAGS, stat_list::SL_FLAG_EX);
+    fixture.seed(
+        DESCRIPTOR + stat_list::SL_FULL_PSTAT,
+        fixture.address(RECORDS),
+    );
+    fixture.seed(DESCRIPTOR + stat_list::SL_FULL_STAT_COUNT, 1);
+    fixture.seed(RECORDS, 427 << 16);
+    fixture.seed(RECORDS + 4, u32::from_ne_bytes(value.to_ne_bytes()));
+
+    fixture.seed(d2common::SGPT_DATA_TABLES, fixture.address(DATA_TABLES));
+    fixture.seed(
+        DATA_TABLES + data_tables::ITEM_STAT_COST_TXT_PTR,
+        fixture.address(ITEM_STAT_COST),
+    );
+    fixture.seed(DATA_TABLES + data_tables::ITEM_STAT_COST_TXT_COUNT, 511);
+}
+
 fn metrics(scanner: &DropScanner) -> TelemetrySnapshot {
     scanner.state.injector.lock().unwrap().telemetry.snapshot()
+}
+
+#[test]
+fn stat_acquisition_includes_activation_frequency_from_custom_stat() {
+    let (fixture, mut scanner) = scanner_fixture(false);
+    seed_activation_frequency(&fixture, 7);
+    let mut events = scanner.tick_items();
+
+    scanner.enrich_event_stats(&mut events[0], fixture.address(0x5000));
+
+    assert_eq!(events[0].stats, "Activation Frequency +7%");
+    assert!(events[0].runtime_stats_loaded);
+    let mut rule = Rule::default();
+    rule.stat_patterns = vec!["Activation Frequency".to_string()];
+    assert!(MatchContext::new(&events[0]).matches(&rule));
 }
 
 #[test]

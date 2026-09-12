@@ -420,6 +420,9 @@ pub mod stat_list {
     /// `docs/dps-meter-scaling-investigation.md`'s player read, both stat 12).
     pub const STAT_LEVEL: u16 = 12;
     pub const STAT_SOCKETS: u16 = 0xC2;
+    /// Median XL 2.14 custom stat. Its custom ItemStatCost `descFunc=38` is
+    /// omitted by the legacy D2Client item-stat formatter used by the scanner.
+    pub const STAT_ACTIVATION_FREQUENCY: u16 = 427;
 }
 
 /// `D2MonStatsTxt` record offsets. Record size = `0x1A8`; indexing is
